@@ -41,8 +41,9 @@ class FyersStream:
         self._ws_client    = None
         self._running      = False
         self._thread: Optional[threading.Thread] = None
-        self._reconnect_delay = 5    # seconds between reconnect attempts
+        self._reconnect_delay = 5
         self._max_reconnects  = 10
+        self._gap_start       = None
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
@@ -126,10 +127,15 @@ class FyersStream:
     def _on_connect(self) -> None:
         logger.info("Fyers WebSocket connected. Subscribing to symbols...")
         self._subscribe()
+        # Fill any data gap since last disconnect
+        if hasattr(self, "_gap_start") and self._gap_start:
+            self._fill_gap(self._gap_start)
+            self._gap_start = None
 
     def _on_close(self, code: int = 0) -> None:
         if self._running:
-            logger.warning(f"Fyers WebSocket closed: [{code}]")
+            logger.warning(f"Fyers WebSocket closed: [{code}] — will reconnect")
+            self._gap_start = datetime.now(tz=timezone.utc)
         else:
             logger.info("FyersStream: closed cleanly on shutdown.")
 
@@ -172,6 +178,23 @@ class FyersStream:
 
         except Exception as e:
             logger.error(f"Error processing Fyers tick: {e}")
+
+    def _fill_gap(self, gap_start: datetime) -> None:
+        """Fetch REST candles to fill data gap after reconnect."""
+        if not self._fyers_client:
+            return
+        gap_minutes = (datetime.now(tz=timezone.utc) - gap_start).total_seconds() / 60
+        if gap_minutes < 1:
+            return
+        logger.info(f"[FyersStream] Filling {gap_minutes:.0f}min data gap...")
+        from config.watchlist import PRIORITY_SYMBOLS
+        for symbol in [s for s in PRIORITY_SYMBOLS if s.startswith("NSE:")][:6]:
+            try:
+                df = self._fetch_historical(symbol, "5", 1)
+                if df is not None:
+                    store.load_historical(symbol, "5m", df)
+            except Exception as e:
+                logger.debug(f"Gap fill failed for {symbol}: {e}")
 
     def _subscribe(self) -> None:
         """Subscribe to all symbols in watchlist."""

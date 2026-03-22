@@ -54,10 +54,12 @@ from execution.alpaca_broker import alpaca_broker
 from risk.portfolio_tracker import portfolio_tracker
 from risk.risk_manager import risk_manager
 from strategies.strategy_selector import strategy_selector
+from execution.position_manager import position_manager
 
 # ── Evaluation loop config ────────────────────────────────────────
-EVAL_INTERVAL_SECONDS = 60    # run strategy evaluation every 60 seconds
-WARMUP_SECONDS        = 30    # wait for data streams to populate before first eval
+EVAL_INTERVAL_SECONDS  = 60   # slow loop — full signal evaluation
+FAST_LOOP_INTERVAL     = 5    # fast loop — position monitoring
+WARMUP_SECONDS         = 30   # wait for data streams to populate
 
 
 class TradingBot:
@@ -130,26 +132,33 @@ class TradingBot:
 
     def _run_loop(self) -> None:
         """
-        Runs strategy evaluation on a fixed interval.
-        Checks market hours before each cycle.
+        Two-loop architecture:
+        Fast loop (5s)  — position monitoring, stop/target hits
+        Slow loop (60s) — full signal evaluation + intelligence pipeline
         """
+        last_slow_run = 0
+
         while self._running:
             try:
                 if self._is_market_hours():
-                    # Log portfolio snapshot every 10 cycles
-                    if strategy_selector._cycle_count % 10 == 0:
-                        self._log_portfolio_snapshot()
+                    # ── Fast loop — runs every 5 seconds ──────────
+                    position_manager.check_all()
 
-                    # Run strategy evaluation
-                    strategy_selector.run_cycle()
+                    # ── Slow loop — runs every 60 seconds ─────────
+                    now = time.time()
+                    if now - last_slow_run >= EVAL_INTERVAL_SECONDS:
+                        last_slow_run = now
+                        if strategy_selector._cycle_count % 10 == 0:
+                            self._log_portfolio_snapshot()
+                        strategy_selector.run_cycle()
                 else:
-                    logger.debug("Outside market hours — evaluation skipped.")
+                    logger.debug("Outside market hours — skipping.")
 
             except Exception as e:
-                logger.error(f"Evaluation loop error: {e}", exc_info=True)
+                logger.error(f"Loop error: {e}", exc_info=True)
 
-            # Sleep in small chunks so Ctrl+C interrupts immediately
-            for _ in range(EVAL_INTERVAL_SECONDS):
+            # Fast sleep — Ctrl+C interrupts within 1 second
+            for _ in range(FAST_LOOP_INTERVAL):
                 if not self._running:
                     break
                 time.sleep(1)
