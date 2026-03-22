@@ -6,310 +6,446 @@ that runs unattended during market hours, makes intelligent buy/sell decisions u
 technical analysis + LLM intelligence + news sentiment, manages risk automatically,
 and generates consistent returns to replace a salary long-term.
 
+Secondary goal: Once profitable for 4+ weeks, extend to a commission-based
+multi-user trading service.
+
 ## Architecture Stack
 - **Language**: Python 3.11
 - **Broker (India)**: Fyers API v3 (NSE/BSE equities + NFO options)
-- **Broker (US)**: Alpaca (future phase)
+- **Broker (US)**: Alpaca (Phase 9 — future)
 - **Intelligence**: Claude API (claude-sonnet-4-20250514)
-- **Dashboard**: React (single HTML file, no build step)
+- **Dashboard**: React (single HTML file, no build step, no npm)
 - **API**: FastAPI + uvicorn
 - **Database**: SQLite (trades, audit log, playbooks)
 - **Alerts**: Telegram Bot API
 - **Scheduler**: Windows Task Scheduler (nightly/weekly agents)
 
-## Repository Structure
+---
+
+## Complete File Structure
+
 ```
 trading-bot/
+│
 ├── config/
-│   ├── settings.py           # all config + env vars
-│   └── watchlist.py          # static watchlist (overridden by dynamic)
+│   ├── __init__.py
+│   ├── settings.py              # All config + env var loading
+│   └── watchlist.py             # Static watchlist (overridden by dynamic at runtime)
+│
 ├── data/
-│   ├── data_store.py         # in-memory tick buffer + candle builder
-│   ├── fyers_stream.py       # Fyers WebSocket consumer
-│   └── alpaca_stream.py      # Alpaca WebSocket (Phase 7)
+│   ├── __init__.py
+│   ├── data_store.py            # In-memory tick buffer + multi-TF candle builder
+│   ├── fyers_stream.py          # Fyers WebSocket v3 consumer + gap recovery
+│   └── alpaca_stream.py         # Alpaca WebSocket (Phase 9)
+│
 ├── analysis/
-│   ├── indicators.py         # 20+ technical indicators
-│   ├── regime_detector.py    # TRENDING/RANGING/VOLATILE/BREAKOUT
-│   └── options_engine.py     # Black-Scholes Greeks + IV rank
+│   ├── __init__.py
+│   ├── indicators.py            # 20+ indicators as pure functions (EMA, RSI, MACD, ATR...)
+│   ├── regime_detector.py       # TRENDING / RANGING / VOLATILE / BREAKOUT classifier
+│   └── options_engine.py        # Black-Scholes Greeks, IV rank, strike selection
+│
 ├── strategies/
-│   ├── base_strategy.py      # Signal dataclass + abstract base
-│   ├── trend_follow.py       # Momentum breakout (1H + Daily confirm)
-│   ├── mean_reversion.py     # RSI + Bollinger Band reversals
-│   ├── options_income.py     # Iron Condor / Short Strangle
-│   ├── directional_options.py # Debit spreads on breakouts
-│   └── strategy_selector.py  # Routes symbols to strategies
+│   ├── __init__.py
+│   ├── base_strategy.py         # Signal dataclass + abstract BaseStrategy
+│   ├── trend_follow.py          # Momentum breakout (1H signal + Daily confirm)
+│   ├── mean_reversion.py        # RSI + Bollinger Band reversals (15m signal)
+│   ├── options_income.py        # Iron Condor / Short Strangle (high IV rank)
+│   ├── directional_options.py   # Debit spreads on strong breakout signals
+│   └── strategy_selector.py     # Routes each symbol to correct strategy by regime
+│
 ├── intelligence/
-│   ├── news_scraper.py       # ET, MC, NSE, StockTwits, Reddit
-│   ├── macro_data.py         # VIX, FII flows, SPX, crude, USD/INR
-│   ├── fundamental_guard.py  # Earnings calendar, corporate actions
-│   ├── analyst_agent.py      # Claude API — trade conviction scoring
-│   ├── intelligence_engine.py # Orchestrates all 4 layers in parallel
-│   ├── theme_detector.py     # Detects market themes from news
-│   └── universe_scanner.py  # Scans all 1800 NSE stocks by theme
+│   ├── __init__.py
+│   ├── news_scraper.py          # ET, Moneycontrol, NSE, StockTwits, Reddit scraper
+│   ├── macro_data.py            # VIX, FII flows, SPX, crude oil, USD/INR
+│   ├── fundamental_guard.py     # Earnings calendar, corporate actions — veto bad trades
+│   ├── analyst_agent.py         # Claude API — conviction scoring per signal
+│   ├── intelligence_engine.py   # Orchestrates layers 1-4 in parallel (ThreadPoolExecutor)
+│   ├── theme_detector.py        # LPG shortage → kitchen appliance stocks (thematic trades)
+│   └── universe_scanner.py      # Scans all 1800 NSE stocks, filters by theme + liquidity
+│
 ├── risk/
-│   ├── risk_manager.py       # Position sizing, kill switch, heat
-│   └── portfolio_tracker.py  # Live P&L, SQLite persistence
+│   ├── __init__.py
+│   ├── risk_manager.py          # Position sizing, kill switch, portfolio heat, daily loss limit
+│   └── portfolio_tracker.py     # Live P&L, SQLite persistence, drawdown, win rate
+│
 ├── execution/
-│   ├── order_manager.py      # AUTO/MANUAL mode gating
-│   ├── fyers_broker.py       # Fyers REST wrapper
-│   └── alpaca_broker.py      # Alpaca REST wrapper (Phase 7)
+│   ├── __init__.py
+│   ├── position_manager.py      # ✅ NEW — Active exit management every 5s
+│   │                            #   - Stop loss hits → market exit
+│   │                            #   - T1 hit → partial exit + SL to breakeven
+│   │                            #   - Trailing stop after 1.5R
+│   │                            #   - EOD forced close at 3:15 PM
+│   │                            #   - Max holding period enforcement
+│   ├── order_manager.py         # ✅ REBUILT — AUTO/MANUAL gating + fill confirmation
+│   │                            #   - Order fill confirmation loop (30s timeout)
+│   │                            #   - Margin check before every order
+│   │                            #   - Minimum net profit threshold (₹500)
+│   │                            #   - Atomic entry+SL (emergency exit if SL fails)
+│   ├── fyers_broker.py          # ✅ REBUILT — Fyers REST wrapper
+│   │                            #   - GTT orders (persist through bot crashes)
+│   │                            #   - Token verification on startup
+│   │                            #   - Position reconciliation after crash
+│   │                            #   - Proper funds/margin checking
+│   └── alpaca_broker.py         # Alpaca REST wrapper (Phase 9)
+│
 ├── backtesting/
-│   ├── data_fetcher.py       # 3-year historical OHLCV
-│   ├── backtest_engine.py    # Realistic simulation + slippage
-│   └── performance.py        # Sharpe, drawdown, profit factor
+│   ├── __init__.py
+│   ├── data_fetcher.py          # 3-year OHLCV from Fyers REST + Yahoo fallback
+│   ├── backtest_engine.py       # Realistic simulation: slippage, brokerage, STT
+│   └── performance.py           # Sharpe, drawdown, profit factor, A-F grading
+│
 ├── notifications/
-│   └── alert_service.py      # Telegram alerts
+│   ├── __init__.py
+│   └── alert_service.py         # Telegram: trade opened/closed, signals, kill switch
+│
 ├── api/
-│   └── dashboard_api.py      # FastAPI REST + WebSocket
+│   ├── __init__.py
+│   └── dashboard_api.py         # FastAPI: REST + WebSocket (/ws/live every 2s)
+│                                #   Endpoints: /stats, /positions, /signals/pending,
+│                                #   /signals/{id}/confirm, /signals/{id}/reject,
+│                                #   /risk, /mode/{mode}, /kill-switch/reset,
+│                                #   /portfolio/analysis, /plan/today, /plan/done/{id},
+│                                #   /journal/analysis
+│
 ├── dashboard/
-│   └── index.html            # React dashboard (single file)
-├── db/
-│   ├── trades.db             # SQLite — all trades
-│   ├── playbooks/            # nightly playbook JSON files
-│   ├── daily_plans/          # daily checklist JSON files
-│   ├── historical/           # cached OHLCV CSV files
-│   ├── journal_reports/      # journal analysis outputs
-│   ├── portfolio_reports/    # portfolio analysis outputs
-│   └── weekly_reports/       # weekly agent outputs
+│   └── index.html               # React dashboard (single file, no build step)
+│                                #   - Live P&L + positions panel
+│                                #   - Pending signals with confirm/reject buttons
+│                                #   - Risk metrics + portfolio heat bar
+│                                #   - Daily trading checklist (pre-market → closing)
+│                                #   - Portfolio analysis (correlation, stress test, hedging)
+│                                #   - Journal analysis (behavioural biases, 3 rules)
+│                                #   - AUTO/MANUAL mode toggle
+│                                #   - Kill switch reset button
+│
+├── db/                          # Auto-created on first run
+│   ├── trades.db                # SQLite — all trades (open + closed)
+│   ├── dynamic_watchlist.json   # Written by nightly_agent — tomorrow's symbols
+│   ├── playbooks/               # nightly_agent output — YYYYMMDD.json
+│   ├── daily_plans/             # daily_plan output — plan_YYYY-MM-DD.json
+│   ├── historical/              # Cached OHLCV CSV files (auto-refreshed daily)
+│   ├── journal_reports/         # journal_analyser output
+│   ├── portfolio_reports/       # portfolio_analyser output
+│   └── weekly_reports/          # weekly_agent output
+│
 ├── logs/
-│   └── bot.log
-├── generate_token.py         # Fyers auto-login (TOTP + PIN)
-├── main.py                   # Master orchestrator
-├── nightly_agent.py          # Runs 8:30 PM — tomorrow's playbook
-├── weekly_agent.py           # Runs Sunday — deep backtest + outlook
-├── daily_plan.py             # Morning checklist generator
-├── portfolio_analyser.py     # Correlation, stress test, hedging
-├── journal_analyser.py       # Behavioural bias detection
-├── requirements.txt
-├── .env                      # secrets — never commit this
-├── .gitignore
-└── PLAN.md                   # THIS FILE
+│   ├── bot.log                  # Main bot log (INFO level)
+│   └── watchdog.log             # Watchdog process log
+│
+├── generate_token.py            # Fyers auto-login: TOTP + PIN → saves token to .env
+├── watchdog.py                  # ✅ NEW — Master process manager
+│                                #   - Starts main.py as subprocess
+│                                #   - Auto-restarts within 10s of crash
+│                                #   - Token auto-refresh at 11:45 PM daily
+│                                #   - Position reconciliation after restarts
+│                                #   - Telegram alerts on every crash
+├── main.py                      # ✅ UPDATED — Bot orchestrator
+│                                #   - Two-loop architecture:
+│                                #     Fast loop (5s): position_manager.check_all()
+│                                #     Slow loop (60s): strategy_selector.run_cycle()
+│                                #   - Loads dynamic watchlist on startup
+│                                #   - Starts FastAPI dashboard in background thread
+├── nightly_agent.py             # Runs 8:30 PM — reads news, detects themes,
+│                                #   scans universe, backtests candidates, saves playbook
+├── weekly_agent.py              # Runs Sunday 9 AM — full 3-year backtest all symbols,
+│                                #   deep universe scan, Claude weekly outlook
+├── daily_plan.py                # Morning checklist: 25 time-stamped tasks across
+│                                #   4 phases (pre-market, opening, midday, closing)
+├── portfolio_analyser.py        # Correlation matrix, sector overexposure, stress tests
+│                                #   (10%/20%/40% Nifty drops), hedging suggestions
+├── journal_analyser.py          # Reads all trades from SQLite, detects 6 behavioural
+│                                #   biases, generates 3 personalised trading rules
+│
+├── requirements.txt             # All Python dependencies (pinned versions)
+├── .env                         # Secrets — NEVER commit. Contains:
+│                                #   FYERS_APP_ID, FYERS_SECRET_KEY, FYERS_ACCESS_TOKEN
+│                                #   FYERS_CLIENT_ID, FYERS_PIN, FYERS_TOTP_SECRET
+│                                #   ALPACA_API_KEY, ALPACA_SECRET_KEY
+│                                #   ANTHROPIC_API_KEY
+│                                #   BOT_MODE (MANUAL/AUTO)
+│                                #   TOTAL_CAPITAL, RISK_PER_TRADE_PCT
+│                                #   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+├── .gitignore                   # Excludes .env, db/, logs/, venv/, __pycache__/
+└── PLAN.md                      # This file — master development plan
 ```
 
 ---
 
-## Completion Status
+## Phase Completion Status
 
 ### Phase 1 — Data Layer ✅ COMPLETE
-- [x] config/settings.py
-- [x] config/watchlist.py
-- [x] data/data_store.py
-- [x] data/fyers_stream.py
-- [x] data/alpaca_stream.py
-- [x] analysis/indicators.py
-- [x] analysis/regime_detector.py
+- [x] config/settings.py — all env vars, capital, risk params, market hours
+- [x] config/watchlist.py — NSE large cap, mid cap, indices, options universe
+- [x] data/data_store.py — thread-safe tick buffer, multi-TF OHLCV builder
+- [x] data/fyers_stream.py — WebSocket v3, historical seeding, reconnect, gap recovery
+- [x] data/alpaca_stream.py — Alpaca WebSocket + historical seeding
+- [x] analysis/indicators.py — EMA, SMA, VWAP, RSI, MACD, Stochastic, ATR, BB, ADX, OBV
+- [x] analysis/regime_detector.py — ADX + BB Width + EMA slope classifier
 - [x] requirements.txt
 - [x] .env template
 
 ### Phase 2 — Strategy + Execution ✅ COMPLETE
-- [x] strategies/base_strategy.py
-- [x] strategies/trend_follow.py
-- [x] strategies/mean_reversion.py
-- [x] strategies/strategy_selector.py
-- [x] risk/risk_manager.py
-- [x] risk/portfolio_tracker.py
-- [x] execution/order_manager.py
-- [x] execution/fyers_broker.py
-- [x] execution/alpaca_broker.py
-- [x] main.py (skeleton)
+- [x] strategies/base_strategy.py — Signal dataclass, Direction, SignalType
+- [x] strategies/trend_follow.py — breakout above 20-bar high + EMA + volume
+- [x] strategies/mean_reversion.py — RSI oversold/overbought + Bollinger Band
+- [x] strategies/strategy_selector.py — regime-based routing + cooldowns
+- [x] risk/risk_manager.py — fixed fractional sizing, kill switch, heat check
+- [x] risk/portfolio_tracker.py — SQLite persistence, live P&L, drawdown
+- [x] execution/order_manager.py — ✅ REBUILT with fill confirmation + margin check
+- [x] execution/fyers_broker.py — ✅ REBUILT with GTT + reconciliation
+- [x] execution/alpaca_broker.py — paper + live mode
+- [x] main.py — ✅ UPDATED with two-loop architecture
 
 ### Phase 3 — Dashboard + Options ✅ COMPLETE
-- [x] notifications/alert_service.py
-- [x] api/dashboard_api.py
-- [x] dashboard/index.html
-- [x] analysis/options_engine.py
-- [x] strategies/options_income.py
-- [x] strategies/directional_options.py
+- [x] notifications/alert_service.py — Telegram: all trade events
+- [x] api/dashboard_api.py — FastAPI REST + WebSocket + all endpoints
+- [x] dashboard/index.html — React: P&L, signals, risk, checklist, analysis panels
+- [x] analysis/options_engine.py — Black-Scholes, IV rank, PCR, strike selection
+- [x] strategies/options_income.py — Iron Condor / Short Strangle
+- [x] strategies/directional_options.py — Debit spreads
 
 ### Phase 4 — Intelligence Layer ✅ COMPLETE
-- [x] intelligence/news_scraper.py
-- [x] intelligence/macro_data.py
-- [x] intelligence/fundamental_guard.py
-- [x] intelligence/analyst_agent.py
-- [x] intelligence/intelligence_engine.py
+- [x] intelligence/news_scraper.py — ET, MC, NSE, StockTwits, Reddit + 15min cache
+- [x] intelligence/macro_data.py — VIX, FII flows, SPX, crude, USD/INR + 30min cache
+- [x] intelligence/fundamental_guard.py — earnings guard, corporate actions veto
+- [x] intelligence/analyst_agent.py — Claude API conviction scoring (0-10)
+- [x] intelligence/intelligence_engine.py — parallel orchestration, hard veto logic
 
 ### Phase 5 — Agents + Backtesting ✅ COMPLETE
-- [x] intelligence/theme_detector.py
-- [x] intelligence/universe_scanner.py
-- [x] backtesting/data_fetcher.py
-- [x] backtesting/backtest_engine.py
-- [x] backtesting/performance.py
-- [x] nightly_agent.py
-- [x] weekly_agent.py
+- [x] intelligence/theme_detector.py — news → investment themes (LPG→kitchen stocks)
+- [x] intelligence/universe_scanner.py — all 1800 NSE stocks, theme + liquidity filter
+- [x] backtesting/data_fetcher.py — 3y OHLCV, Fyers + Yahoo fallback, CSV cache
+- [x] backtesting/backtest_engine.py — bar-by-bar, no lookahead, slippage + STT
+- [x] backtesting/performance.py — Sharpe, max DD, profit factor, A-F grade
+- [x] nightly_agent.py — 8:30 PM: news → themes → scan → backtest → playbook
+- [x] weekly_agent.py — Sunday: full backtest all symbols + Claude weekly outlook
 
 ### Phase 6 — Analysis Tools ✅ COMPLETE
-- [x] portfolio_analyser.py
-- [x] daily_plan.py
-- [x] journal_analyser.py
+- [x] portfolio_analyser.py — HHI concentration, correlation matrix, stress tests, hedges
+- [x] daily_plan.py — 25-task time-stamped checklist + Claude morning briefing
+- [x] journal_analyser.py — 6 bias detectors + 3 personalised rules from trade history
+
+### Phase 7A — Execution Reliability ✅ COMPLETE
+- [x] execution/position_manager.py — active exit management every 5 seconds
+  - SL hit → market exit
+  - T1 hit → 50% exit + SL to breakeven
+  - Trailing stop after 1.5R (ratchet — never moves backward)
+  - EOD forced close at 3:15 PM
+  - Max 20-day holding period enforcement
+  - Failed exit → Telegram alert for manual intervention
+- [x] execution/order_manager.py — rebuilt with:
+  - Fill confirmation loop (polls every 2s, 30s timeout)
+  - Margin check before every order
+  - Minimum net profit check (₹500 after fees)
+  - Atomic entry+SL (emergency exit if SL fails after 3 retries)
+- [x] execution/fyers_broker.py — rebuilt with:
+  - GTT (Good Till Triggered) orders — SL persists through crashes
+  - Token verification on initialise()
+  - reconcile_positions() for crash recovery
+  - Proper funds/margin API
+
+### Phase 7B — Crash Resilience ✅ COMPLETE
+- [x] watchdog.py — process monitor + auto-restart
+  - Starts main.py as subprocess, monitors continuously
+  - Auto-restarts within 10s of crash
+  - Token auto-refresh at 11:45 PM
+  - Position reconciliation after every restart
+  - Telegram alert on crash + restart
+  - Gives up after 10 consecutive restarts
+- [x] main.py — two-loop architecture
+  - Fast loop (5s): position_manager.check_all()
+  - Slow loop (60s): strategy_selector.run_cycle()
+- [x] data/fyers_stream.py — WebSocket gap recovery
+  - Fetches REST candles on reconnect to fill gap
+  - Tracks gap start time, fills on reconnect
 
 ---
 
-## Phase 7 — Production Hardening 🔴 NOT STARTED
-**Priority: CRITICAL — must complete before running real money unattended**
+## Phase 7C — Two-Loop + Profit Filter ✅ COMPLETE (in Phase 7B)
+- [x] Fast loop every 5s in main.py
+- [x] Minimum profit threshold in order_manager.py
 
-### 7A — Execution Reliability (Week 1)
-- [ ] execution/position_manager.py
-  - Active exit management every tick
-  - Trailing stop logic (move SL to BE after 1R profit)
-  - Partial exit at T1 (close 50%, trail rest)
-  - EOD forced close for intraday positions (3:15 PM)
-  - Max holding period enforcement (20 bars)
-- [ ] execution/order_manager.py — order fill confirmation loop
-  - Poll get_orders() after every place_order()
-  - Confirm actual fill price + quantity
-  - Handle partial fills
-  - Handle rejections — alert + cancel position record
-- [ ] execution/fyers_broker.py — atomic entry+SL placement
-  - If SL placement fails after 3 retries: exit entry
-  - Use GTT (Good Till Triggered) orders for persistent SL
-  - Margin check before every order
+---
 
-### 7B — Crash Resilience (Week 1)
-- [ ] watchdog.py
-  - Monitors main.py process
-  - Restarts within 10 seconds of crash
-  - On restart: reconciles positions from Fyers vs local DB
-  - Sends Telegram alert on every crash + restart
-- [ ] Token auto-refresh (inside main.py)
-  - At 11:45 PM: auto-run token refresh
-  - Reconnect WebSocket with new token
-  - If refresh fails: halt new orders, alert
-- [ ] WebSocket gap recovery (fyers_stream.py)
-  - On reconnect: fetch REST candles to fill gap
-  - Mark signals during gap window as LOW CONFIDENCE
-  - WebSocket health monitoring + daily disconnect report
+## Phase 7D — Paper Trading Engine 🔴 NOT STARTED
+**Build this before switching to AUTO mode with real money**
 
-### 7C — Two-Loop Architecture (Week 2)
-- [ ] main.py refactor
-  - Fast loop (every 5s): monitors open positions, entry zone hits
-  - Slow loop (every 60s): full signal evaluation + intelligence
-  - Pre-load entry zones from nightly playbook at 9:15 AM
-- [ ] Minimum profit threshold in risk_manager.py
-  - Compute expected_net = expected_gross - fees
-  - Skip if expected_net < MIN_TRADE_PROFIT (₹500)
-
-### 7D — Paper Trading Engine (Week 2)
 - [ ] paper_trading.py
-  - Real signals, simulated execution
-  - Fills at next-bar open + slippage simulation
-  - Separate P&L tracking from live
-  - Runs in parallel with live mode
-  - Generates same alerts labeled [PAPER]
+  - Receives real signals from strategy_selector
+  - Simulates fills at next-bar open + slippage
+  - Tracks simulated P&L completely separately from live
+  - Generates same Telegram alerts labeled [PAPER]
+  - Runs in parallel with live MANUAL mode
+  - Dashboard shows paper P&L separately
+  - Validate: 2 weeks paper trading before going live AUTO
 
-### 7E — Options Execution (Week 3)
+---
+
+## Phase 7E — Options Execution 🔴 NOT STARTED
 - [ ] execution/options_executor.py
-  - Fetch live NFO options chain
+  - Fetch live NFO options chain from Fyers
   - Select liquid strike nearest to target delta
-  - Construct NSE:SYMBOL+DATE+STRIKE+CE/PE string
-  - Place order with correct lot size
-  - Greeks-based exit (close when theta > premium)
-  - Roll position when near expiry
+  - Construct full NSE symbol: NSE:NIFTY2522324500CE
+  - Place order with correct lot size (Nifty=50, BankNifty=15)
+  - Greeks-based exit (close when theta > 50% of premium received)
+  - Roll position when <7 DTE
 
-### 7F — Audit Trail (Week 3)
+---
+
+## Phase 7F — Audit Trail 🔴 NOT STARTED
 - [ ] audit_log.py
-  - Append-only SQLite table — never UPDATE/DELETE
-  - Log: every signal, every order, every fill, every rejection
-  - Log: every manual override, mode change, kill switch event
-  - Export to CSV for review
+  - Append-only SQLite table (never UPDATE/DELETE)
+  - Log every: signal generated, order placed, fill received,
+    rejection, manual override, mode change, kill switch
+  - CSV export for review
+  - Required for SEBI compliance when managing others' money
 
 ---
 
 ## Phase 8 — Multi-User Platform 🔴 NOT STARTED
-**Only start after single-user version profitable for 4+ weeks**
+**Only start after single-user version profitable for 4+ consecutive weeks**
 
-### Legal Prerequisites (Do Before Code)
-- [ ] Consult CA/lawyer — SEBI regulations for managing others' money
-- [ ] Understand SEBI registered investment advisor (RIA) requirements
-- [ ] Structure: fee-based advisory vs discretionary management
+### Legal Prerequisites (Do Before Any Code)
+- [ ] Consult CA/lawyer on SEBI regulations
+- [ ] Understand SEBI RIA requirements for managing others' money
+- [ ] Decide structure: fee-based advisory vs discretionary management
 
 ### 8A — User Management
-- [ ] User model: user_id, name, broker_credentials (encrypted), capital, risk_settings
-- [ ] Credential encryption (Fernet symmetric encryption — never plain text in DB)
-- [ ] Per-user Fyers token management
-- [ ] Per-user capital and risk parameter isolation
+- [ ] User model: user_id, name, encrypted broker credentials, capital, risk settings
+- [ ] Fernet symmetric encryption for credentials (never plain text in DB)
+- [ ] Per-user Fyers token management and refresh
 
 ### 8B — Multi-User Execution
 - [ ] All orders tagged with user_id
-- [ ] Position sizing per user's capital (not global TOTAL_CAPITAL)
+- [ ] Position sizing from per-user capital (not global TOTAL_CAPITAL)
 - [ ] Per-user daily loss limit and kill switch
-- [ ] Per-user portfolio tracking and P&L
+- [ ] Per-user portfolio tracking, P&L, drawdown
 
 ### 8C — Client Dashboard
-- [ ] Separate client view (read-only, shows their P&L only)
-- [ ] Admin view (sees all users, aggregate stats)
+- [ ] Client view (read-only — shows their P&L, open positions, alerts only)
+- [ ] Admin view (all users, aggregate stats, kill switch controls)
 - [ ] Monthly P&L statements (PDF export)
 - [ ] Commission calculation (e.g. 20% of profits above high watermark)
 
-### 8D — Infrastructure
-- [ ] Move from laptop to cloud (AWS/GCP — always-on VM)
-- [ ] Process separation (data engine / trading engine / intelligence)
+### 8D — Infrastructure Upgrade
+- [ ] Move from laptop to cloud VM (AWS/GCP — always-on)
+- [ ] Separate processes: data engine / trading engine / intelligence
 - [ ] Redis for inter-process communication
-- [ ] PostgreSQL instead of SQLite (for multi-user concurrent access)
-- [ ] HTTPS for dashboard (nginx reverse proxy)
-- [ ] Automated backups
+- [ ] PostgreSQL instead of SQLite (concurrent multi-user access)
+- [ ] HTTPS dashboard (nginx reverse proxy + SSL cert)
+- [ ] Automated daily DB backups
 
 ---
 
 ## Phase 9 — US Markets + Advanced Features 🔴 FUTURE
 - [ ] Alpaca execution (paper + live)
-- [ ] US market theme detection (Fed, earnings, macro)
-- [ ] Cross-market correlation (Nifty vs SPX relationship)
-- [ ] Reinforcement learning — self-improving strategy parameters
-- [ ] Earnings play strategies (strangle before earnings)
+- [ ] US market intelligence (Fed, earnings season, macro)
+- [ ] Cross-market correlation model (Nifty vs SPX)
+- [ ] Self-improving strategy parameters (reinforcement learning)
+- [ ] Earnings play strategies (pre-earnings strangles)
 - [ ] Sector rotation model
+- [ ] scan_now.py — on-demand "give me top 5 setups right now"
 
 ---
 
-## Deployment Checklist (Before Going Live)
-- [ ] Phase 7A complete and tested in paper mode
-- [ ] Phase 7B complete — bot survives overnight unattended
-- [ ] 2 weeks paper trading — win rate > 50%, profit factor > 1.3
-- [ ] Kill switch tested — confirms it actually stops orders
-- [ ] One manual order tested via API (not bot) to confirm Fyers execution
-- [ ] SL order placement confirmed on Fyers order book
-- [ ] Telegram alerts tested end-to-end
-- [ ] Dashboard accessible and live P&L updating
-- [ ] .env backed up securely (not in git)
-- [ ] generate_token.py scheduled in Task Scheduler
-- [ ] nightly_agent.py scheduled at 8:30 PM
-- [ ] weekly_agent.py scheduled Sunday 9:00 AM
+## Daily Workflow (Current)
+
+```
+08:30 AM  python generate_token.py        # refresh Fyers token
+08:45 AM  python watchdog.py              # starts + monitors bot
+          cd dashboard && python -m http.server 3000  # serve dashboard
+          Open browser: http://localhost:3000
+
+08:30 PM  nightly_agent.py runs auto      # Task Scheduler
+Sunday    weekly_agent.py runs auto       # Task Scheduler
+```
+
+**Watchdog replaces main.py as your entry point.**
+Watchdog starts main.py, monitors it, restarts on crash, refreshes token at 11:45 PM.
+
+---
+
+## Task Scheduler Setup (Windows)
+
+Run in PowerShell as Administrator:
+
+```powershell
+# Nightly agent — 8:30 PM daily
+$a1 = New-ScheduledTaskAction -Execute "D:\Tech\trading-bot\venv\Scripts\python.exe" `
+      -Argument "D:\Tech\trading-bot\nightly_agent.py" -WorkingDirectory "D:\Tech\trading-bot"
+$t1 = New-ScheduledTaskTrigger -Daily -At "8:30PM"
+Register-ScheduledTask -Action $a1 -Trigger $t1 -TaskName "TradingBotNightly"
+
+# Weekly agent — Sunday 9:00 AM
+$a2 = New-ScheduledTaskAction -Execute "D:\Tech\trading-bot\venv\Scripts\python.exe" `
+      -Argument "D:\Tech\trading-bot\weekly_agent.py" -WorkingDirectory "D:\Tech\trading-bot"
+$t2 = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At "9:00AM"
+Register-ScheduledTask -Action $a2 -Trigger $t2 -TaskName "TradingBotWeekly"
+```
+
+---
+
+## Go-Live Checklist (Before Running Real Money AUTO Mode)
+
+- [ ] Phase 7D complete — paper trading engine built
+- [ ] 2 weeks paper trading completed
+- [ ] Paper mode win rate > 50%, profit factor > 1.3
+- [ ] Kill switch tested — confirmed it stops orders
+- [ ] One manual test order placed via Fyers API (not bot)
+- [ ] SL order confirmed on Fyers order book after bot entry
+- [ ] GTT order confirmed persisting on Fyers after bot restart
+- [ ] Telegram alerts working end-to-end
+- [ ] Dashboard live P&L updating correctly
+- [ ] Watchdog tested: kill main.py manually, confirm auto-restart
+- [ ] Token refresh tested: confirm new token picked up correctly
+- [ ] Position reconciliation tested: stop bot mid-trade, restart, confirm positions match
+- [ ] .env file backed up securely (encrypted, not in git)
 
 ---
 
 ## How to Continue in a New Claude Session
 
-1. Paste this into the new chat:
-
+**Option A — Public repo (recommended):**
 ```
-I am building an autonomous trading bot for NSE/BSE.
-GitHub repo: [YOUR REPO URL]
-Current status: [copy the phase you're on from this file]
-Next task: [copy the specific item to build]
-
-Read the PLAN.md in the repo for full context.
-Continue from where we left off.
+Continue my trading bot.
+GitHub: github.com/YOUR_USERNAME/trading-bot
+Current phase: Phase 7D — paper trading engine
+Read PLAN.md for full context and continue.
 ```
 
-2. Claude will read the repo and continue without re-explaining anything.
+**Option B — Paste PLAN.md:**
+```
+Continue my trading bot. Here is the full plan:
+[paste contents of this file]
+Next task: Phase 7D — build paper_trading.py
+```
 
 ---
 
-## Key Design Decisions (Don't Change Without Good Reason)
-- Python over .NET — trading ecosystem, libraries, community
-- FastAPI over Django — lightweight, async, perfect for this use case
-- Single HTML dashboard — no npm, no build step, easy to modify
-- SQLite over PostgreSQL — sufficient for single user, zero ops overhead
-- Simulation mode default — never live without explicit opt-in
-- MANUAL mode default — never auto-execute without explicit trust
-- Intelligence layer async — never blocks the trading engine
-- GTT orders for SL — persist even if bot crashes
+## Key Design Decisions (Do Not Change Without Good Reason)
+
+| Decision | Reason |
+|---|---|
+| Python over .NET | Trading ecosystem, libraries, community support |
+| FastAPI over Django/Flask | Lightweight, async, WebSocket support built-in |
+| Single HTML dashboard | No npm, no build step, easy to modify and share |
+| SQLite over PostgreSQL | Zero ops for single user, sufficient performance |
+| Simulation mode default | Never live without explicit FYERS_ACCESS_TOKEN |
+| MANUAL mode default | Never auto-execute without explicit trust built |
+| Intelligence layer async | Never blocks the trading engine |
+| GTT orders for SL | Persists even if bot crashes — critical safety net |
+| Watchdog over cron | Handles crashes mid-session, not just daily restarts |
+| Two-loop architecture | Fast position monitoring without blocking signals |
 
 ---
 
-## Risk Warnings (Read Before Every Session)
-- Never disable the kill switch
-- Never set RISK_PER_TRADE_PCT above 2%
-- Never run live without confirmed SL orders on broker
-- Never skip paper trading validation
-- Test every new feature in paper mode first
-- Keep .env file backed up — losing it means regenerating all tokens
+## Risk Rules (Non-Negotiable)
+
+1. RISK_PER_TRADE_PCT must never exceed 2%
+2. DAILY_LOSS_LIMIT_PCT must never exceed 3%
+3. Never disable the kill switch
+4. Every position MUST have a confirmed broker-side SL order
+5. Test every new feature in paper mode before live
+6. Never commit .env to git — it contains all your credentials
+7. Run paper trading for minimum 2 weeks before switching to AUTO
+8. After 2 consecutive losses on a day — stop trading, review tomorrow
