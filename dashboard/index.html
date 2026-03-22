@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AlphaLens Trading Bot</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e2e8f0; }
+    .app { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #1e2433; }
+    .header h1 { font-size: 20px; font-weight: 600; color: #f1f5f9; letter-spacing: 0.02em; }
+    .pulse { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; margin-right: 8px; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .mode-btn { padding: 6px 16px; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #94a3b8; cursor: pointer; font-size: 13px; }
+    .mode-btn.auto { background: #14532d; color: #86efac; border-color: #166534; }
+    .mode-btn.manual { background: #1e3a5f; color: #93c5fd; border-color: #1d4ed8; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+    .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+    .card { background: #1e2433; border: 1px solid #2d3748; border-radius: 12px; padding: 20px; }
+    .card h2 { font-size: 13px; color: #64748b; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 16px; font-weight: 500; }
+    .metric { background: #151a28; border-radius: 8px; padding: 14px 16px; }
+    .metric .label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+    .metric .value { font-size: 22px; font-weight: 600; font-family: 'Courier New', monospace; }
+    .up { color: #22c55e; }
+    .down { color: #ef4444; }
+    .neutral { color: #94a3b8; }
+    .position-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #1e2433; font-size: 13px; }
+    .position-row:last-child { border-bottom: none; }
+    .symbol { font-weight: 600; color: #f1f5f9; font-family: monospace; }
+    .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+    .badge.long { background: #14532d; color: #86efac; }
+    .badge.short { background: #450a0a; color: #fca5a5; }
+    .badge.auto { background: #14532d; color: #86efac; }
+    .badge.manual { background: #1e3a5f; color: #93c5fd; }
+    .signal-card { background: #151a28; border: 1px solid #f59e0b44; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+    .signal-card h3 { font-size: 14px; font-weight: 600; color: #f1f5f9; margin-bottom: 8px; }
+    .signal-meta { font-size: 12px; color: #64748b; margin-bottom: 12px; line-height: 1.6; }
+    .signal-levels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+    .level { background: #1e2433; border-radius: 6px; padding: 8px; text-align: center; }
+    .level .lbl { font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px; }
+    .level .val { font-size: 14px; font-weight: 600; font-family: monospace; }
+    .btn-row { display: flex; gap: 8px; }
+    .btn { padding: 8px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; }
+    .btn-confirm { background: #166534; color: #86efac; }
+    .btn-reject  { background: #7f1d1d; color: #fca5a5; }
+    .btn:hover { opacity: 0.85; }
+    .kill-banner { background: #7f1d1d; border: 1px solid #dc2626; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+    .kill-banner span { color: #fca5a5; font-size: 13px; font-weight: 500; }
+    .risk-bar { height: 6px; background: #1e2433; border-radius: 3px; overflow: hidden; margin-top: 8px; }
+    .risk-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+    .empty { color: #475569; font-size: 13px; text-align: center; padding: 24px; }
+    .ws-status { font-size: 11px; color: #475569; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const API = "http://localhost:8000";
+const WS  = "ws://localhost:8000/ws/live";
+
+function App() {
+  const [data, setData]     = React.useState(null);
+  const [wsOk, setWsOk]     = React.useState(false);
+  const [error, setError]   = React.useState("");
+  const [analysis, setAnalysis] = React.useState(null);
+  const [analysisLoading, setAnalysisLoading] = React.useState(false);
+  const [plan, setPlan]           = React.useState(null);
+  const [planLoading, setPlanLoading] = React.useState(false);
+  const [expandedTask, setExpandedTask] = React.useState(null);
+  const [journal, setJournal]           = React.useState(null);
+  const [journalLoading, setJournalLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    let ws;
+    function connect() {
+      ws = new WebSocket(WS);
+      ws.onopen  = () => setWsOk(true);
+      ws.onclose = () => { setWsOk(false); setTimeout(connect, 3000); };
+      ws.onerror = () => setWsOk(false);
+      ws.onmessage = (e) => {
+        try { setData(JSON.parse(e.data)); } catch {}
+      };
+    }
+    connect();
+    return () => ws && ws.close();
+  }, []);
+
+  const switchMode = async (mode) => {
+    await fetch(`${API}/mode/${mode}`, { method: "POST" });
+  };
+
+  const confirm = async (id) => {
+    await fetch(`${API}/signals/${id}/confirm`, { method: "POST" });
+  };
+
+  const reject = async (id) => {
+    await fetch(`${API}/signals/${id}/reject`, { method: "POST" });
+  };
+
+  const loadPlan = async (refresh=false) => {
+    setPlanLoading(true);
+    try {
+      if (refresh) await fetch(`${API}/plan/refresh`, {method:"POST"});
+      const resp = await fetch(`${API}/plan/today`);
+      const data = await resp.json();
+      setPlan(data);
+    } catch(e) { console.error(e); }
+    setPlanLoading(false);
+  };
+
+  const markDone = async (id) => {
+    await fetch(`${API}/plan/done/${id}`, {method:"POST"});
+    setPlan(prev => prev ? {
+      ...prev,
+      checklist: prev.checklist.map(i => i.id === id ? {...i, done: true} : i)
+    } : prev);
+  };
+
+  React.useEffect(() => { loadPlan(); }, []);
+
+  const loadJournal = async () => {
+    setJournalLoading(true);
+    try {
+      const resp = await fetch(`${API}/journal/analysis`);
+      const data = await resp.json();
+      setJournal(data);
+    } catch(e) { console.error(e); }
+    setJournalLoading(false);
+  };
+
+  const loadAnalysis = async () => {
+    setAnalysisLoading(true);
+    try {
+      const resp = await fetch(`${API}/portfolio/analysis`);
+      const data = await resp.json();
+      setAnalysis(data);
+    } catch(e) { console.error(e); }
+    setAnalysisLoading(false);
+  };
+
+  const resetKill = async () => {
+    await fetch(`${API}/kill-switch/reset`, { method: "POST" });
+  };
+
+  if (!data) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",color:"#475569"}}>
+      {wsOk ? "Loading..." : "Connecting to bot..."}
+    </div>
+  );
+
+  const { stats, risk, positions, pending_signals, mode } = data;
+  const pnl     = stats?.total_pnl || 0;
+  const pnlPct  = stats?.total_pnl_pct || 0;
+  const heat    = positions?.reduce((s, p) => s + (p.capital_at_risk || 0), 0) / (stats?.total_capital || 1) * 100;
+
+  return (
+    <div className="app">
+      <div className="header">
+        <div>
+          <span className="pulse"/>
+          <span className="header h1">AlphaLens Trading Bot</span>
+          <span className="ws-status" style={{marginLeft:12}}>{wsOk ? "● Live" : "○ Reconnecting..."}</span>
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <span className={`badge ${mode?.toLowerCase()}`}>{mode}</span>
+          <button className="mode-btn auto"   onClick={() => switchMode("AUTO")}>AUTO</button>
+          <button className="mode-btn manual" onClick={() => switchMode("MANUAL")}>MANUAL</button>
+        </div>
+      </div>
+
+      {risk?.kill_switch_active && (
+        <div className="kill-banner">
+          <span>🚨 KILL SWITCH ACTIVE — {risk.kill_switch_reason}</span>
+          <button className="btn" style={{background:"#dc2626",color:"#fff"}} onClick={resetKill}>Reset</button>
+        </div>
+      )}
+
+      {/* Metric cards */}
+      <div className="grid4">
+        <div className="metric">
+          <div className="label">Portfolio value</div>
+          <div className={`value ${pnl >= 0 ? "up" : "down"}`}>
+            ₹{(stats?.portfolio_value || 0).toLocaleString("en-IN", {maximumFractionDigits:0})}
+          </div>
+        </div>
+        <div className="metric">
+          <div className="label">Total P&L</div>
+          <div className={`value ${pnl >= 0 ? "up" : "down"}`}>
+            {pnl >= 0 ? "+" : ""}₹{Math.abs(pnl).toLocaleString("en-IN", {maximumFractionDigits:0})}
+            <span style={{fontSize:14,marginLeft:6}}>{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%</span>
+          </div>
+        </div>
+        <div className="metric">
+          <div className="label">Win rate</div>
+          <div className="value neutral">{stats?.win_rate?.toFixed(0) || 0}%</div>
+        </div>
+        <div className="metric">
+          <div className="label">Drawdown</div>
+          <div className={`value ${(stats?.drawdown_pct || 0) > 2 ? "down" : "neutral"}`}>
+            {stats?.drawdown_pct?.toFixed(1) || 0}%
+          </div>
+        </div>
+      </div>
+
+      <div className="grid2">
+        {/* Open Positions */}
+        <div className="card">
+          <h2>Open positions ({positions?.length || 0})</h2>
+          {!positions?.length
+            ? <div className="empty">No open positions</div>
+            : positions.map(p => (
+              <div key={p.id} className="position-row">
+                <div>
+                  <span className="symbol">{p.symbol.replace("NSE:","").replace("-EQ","")}</span>
+                  <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:8}}>{p.direction}</span>
+                  <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{p.strategy} · {p.position_size} shares</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div className={`value ${p.unrealised_pnl >= 0 ? "up" : "down"}`} style={{fontSize:16}}>
+                    {p.unrealised_pnl >= 0 ? "+" : ""}₹{Math.abs(p.unrealised_pnl).toLocaleString("en-IN",{maximumFractionDigits:0})}
+                  </div>
+                  <div style={{fontSize:11,color:"#64748b"}}>
+                    Entry ₹{p.entry_price} · LTP ₹{p.ltp}
+                  </div>
+                </div>
+              </div>
+            ))
+          }
+        </div>
+
+        {/* Risk metrics */}
+        <div className="card">
+          <h2>Risk metrics</h2>
+          <div style={{display:"grid",gap:12}}>
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
+                <span style={{color:"#64748b"}}>Portfolio heat</span>
+                <span className={heat > 50 ? "down" : "neutral"}>{heat.toFixed(1)}%</span>
+              </div>
+              <div className="risk-bar">
+                <div className="risk-bar-fill" style={{
+                  width:`${Math.min(heat, 100)}%`,
+                  background: heat > 50 ? "#ef4444" : heat > 30 ? "#f59e0b" : "#22c55e"
+                }}/>
+              </div>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
+              <span style={{color:"#64748b"}}>Daily P&L</span>
+              <span className={risk?.daily_realised_pnl >= 0 ? "up" : "down"}>
+                ₹{(risk?.daily_realised_pnl || 0).toLocaleString("en-IN",{maximumFractionDigits:0})}
+              </span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
+              <span style={{color:"#64748b"}}>Daily loss limit</span>
+              <span className="neutral">{risk?.daily_loss_limit}%</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
+              <span style={{color:"#64748b"}}>Risk per trade</span>
+              <span className="neutral">{risk?.risk_per_trade_pct}%</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
+              <span style={{color:"#64748b"}}>Open positions</span>
+              <span className="neutral">{stats?.open_positions_count || 0}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
+              <span style={{color:"#64748b"}}>Total trades</span>
+              <span className="neutral">{stats?.total_trades || 0}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
+              <span style={{color:"#64748b"}}>Avg R:R</span>
+              <span className="neutral">{stats?.avg_rr?.toFixed(2) || "—"}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Pending signals */}
+      <div className="card">
+        <h2>Signals awaiting confirmation ({pending_signals?.length || 0})</h2>
+        {!pending_signals?.length
+          ? <div className="empty">No pending signals — bot is scanning markets</div>
+          : pending_signals.map(s => (
+            <div key={s.signal_id} className="signal-card">
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <h3>{s.symbol.replace("NSE:","").replace("-EQ","")} — {s.direction}</h3>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <span style={{fontSize:11,color:"#f59e0b"}}>{(s.confidence*100).toFixed(0)}% confident</span>
+                  <span className={`badge ${s.strategy === "TrendFollow" ? "long" : "manual"}`}>{s.strategy}</span>
+                </div>
+              </div>
+              <div className="signal-meta">{s.reason}</div>
+              <div className="signal-levels">
+                <div className="level">
+                  <div className="lbl">Entry</div>
+                  <div className="val" style={{color:"#93c5fd"}}>₹{s.entry}</div>
+                </div>
+                <div className="level">
+                  <div className="lbl">Stop</div>
+                  <div className="val" style={{color:"#fca5a5"}}>₹{s.stop_loss}</div>
+                </div>
+                <div className="level">
+                  <div className="lbl">Target</div>
+                  <div className="val" style={{color:"#86efac"}}>₹{s.target_1}</div>
+                </div>
+              </div>
+              <div style={{fontSize:12,color:"#64748b",marginBottom:12}}>
+                R:R {s.risk_reward} · Size {s.position_size} shares · Risk ₹{s.capital_at_risk?.toLocaleString("en-IN")}
+              </div>
+              <div className="btn-row">
+                <button className="btn btn-confirm" onClick={() => confirm(s.signal_id)}>✓ Confirm Trade</button>
+                <button className="btn btn-reject"  onClick={() => reject(s.signal_id)}>✕ Reject</button>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+    {/* Portfolio Analysis Panel */}
+      <div className="card" style={{marginTop:0}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <h2 style={{margin:0}}>Portfolio risk analysis</h2>
+          <button className="mode-btn" onClick={loadAnalysis} style={{fontSize:11}}>
+            {analysisLoading ? "Analysing..." : "Run analysis ↻"}
+          </button>
+        </div>
+        {!analysis ? (
+          <div className="empty">Click "Run analysis" to see correlation, stress tests and hedging suggestions</div>
+        ) : (
+          <div>
+            <div className="grid4" style={{marginBottom:12}}>
+              <div className="metric"><div className="label">Portfolio beta</div>
+                <div className={`value ${analysis.portfolio_beta > 1.2 ? "down" : "neutral"}`}>{analysis.portfolio_beta?.toFixed(2)}x</div></div>
+              <div className="metric"><div className="label">Risk rating</div>
+                <div className={`value ${analysis.risk_rating === "CRITICAL" || analysis.risk_rating === "HIGH" ? "down" : analysis.risk_rating === "LOW" ? "up" : "neutral"}`}>{analysis.risk_rating}</div></div>
+              <div className="metric"><div className="label">Concentration</div>
+                <div className={`value ${analysis.concentration > 6 ? "down" : "neutral"}`}>{analysis.concentration?.toFixed(1)}/10</div></div>
+              <div className="metric"><div className="label">Sectors</div>
+                <div className="value neutral">{Object.keys(analysis.sector_exposure || {}).length}</div></div>
+            </div>
+            <div className="grid2" style={{marginBottom:12}}>
+              <div>
+                <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Sector exposure</div>
+                {Object.entries(analysis.sector_exposure || {}).map(([s, d]) => (
+                  <div key={s} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #1e2433",fontSize:12}}>
+                    <span style={{color:"#94a3b8",textTransform:"capitalize"}}>{s}</span>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontFamily:"monospace"}}>{d.pct}%</span>
+                      {d.status !== "OK" && <span className={`badge ${d.status === "CRITICAL" || d.status === "HIGH" ? "short" : "manual"}`}>{d.status}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Stress tests</div>
+                {(analysis.stress_tests || []).map((st, i) => (
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #1e2433",fontSize:12}}>
+                    <span style={{color:"#94a3b8"}}>{st.scenario}</span>
+                    <span className={st.loss_pct < -20 ? "down" : "neutral"} style={{fontFamily:"monospace"}}>
+                      {st.loss_pct?.toFixed(1)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {(analysis.correlations || []).filter(c => c.risk === "HIGH").length > 0 && (
+              <div style={{marginBottom:12}}>
+                <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>High correlations — hidden concentration risk</div>
+                {analysis.correlations.filter(c => c.risk === "HIGH").slice(0,3).map((c, i) => (
+                  <div key={i} style={{background:"#450a0a22",border:"1px solid #dc262633",borderRadius:6,padding:"8px 12px",marginBottom:6,fontSize:12}}>
+                    <span style={{color:"#fca5a5",fontFamily:"monospace"}}>{c.a.replace("NSE:","").replace("-EQ","")} ↔ {c.b.replace("NSE:","").replace("-EQ","")}: {c.corr} corr</span>
+                    <div style={{color:"#94a3b8",marginTop:3}}>{c.note}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {(analysis.hedge_suggestions || []).length > 0 && (
+              <div style={{marginBottom:12}}>
+                <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Hedging suggestions</div>
+                {analysis.hedge_suggestions.slice(0,3).map((h, i) => (
+                  <div key={i} style={{background:"#1e3a5f22",border:"1px solid #1d4ed833",borderRadius:6,padding:"8px 12px",marginBottom:6,fontSize:12}}>
+                    <div style={{color:"#93c5fd",fontWeight:500}}>{h.instrument}</div>
+                    <div style={{color:"#94a3b8",marginTop:3}}>{h.strategy}</div>
+                    <div style={{color:"#64748b",marginTop:2,fontSize:11}}>{h.cost} · {h.protection}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{background:"#151a28",borderRadius:8,padding:"12px 14px",marginBottom:12}}>
+              <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Analyst assessment</div>
+              <div style={{fontSize:12,color:"#94a3b8",lineHeight:1.7,whiteSpace:"pre-line"}}>{analysis.analyst_narrative}</div>
+            </div>
+            <div>
+              <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Action items</div>
+              {(analysis.action_items || []).map((item, i) => (
+                <div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"6px 0",fontSize:12}}>
+                  <span style={{color:"#f59e0b",minWidth:16}}>{i+1}.</span>
+                  <span style={{color:"#e2e8f0"}}>{item}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Journal Analyser Panel */}
+      <div className="card">
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+          <div>
+            <h2 style={{margin:0}}>Trading journal analysis</h2>
+            {journal && <div style={{fontSize:11,color:"#64748b",marginTop:3}}>{journal.date_range} · {journal.total_trades} trades</div>}
+          </div>
+          <button className="mode-btn" onClick={loadJournal} style={{fontSize:11}}>
+            {journalLoading ? "Analysing..." : "Run analysis ↻"}
+          </button>
+        </div>
+        {!journal ? (
+          <div className="empty">Click "Run analysis" to review your trade history and get personalised coaching</div>
+        ) : journal.error ? (
+          <div className="empty">{journal.error}</div>
+        ) : (
+          <div>
+            {/* Core metrics */}
+            <div className="grid4" style={{marginBottom:16}}>
+              <div className="metric"><div className="label">Win rate</div>
+                <div className={`value ${journal.win_rate >= 55 ? "up" : journal.win_rate >= 45 ? "neutral" : "down"}`}>{journal.win_rate?.toFixed(0)}%</div></div>
+              <div className="metric"><div className="label">Profit factor</div>
+                <div className={`value ${journal.profit_factor >= 1.5 ? "up" : journal.profit_factor >= 1.0 ? "neutral" : "down"}`}>{journal.profit_factor?.toFixed(2)}</div></div>
+              <div className="metric"><div className="label">Avg R:R achieved</div>
+                <div className={`value ${journal.avg_rr_achieved >= 1.5 ? "up" : "neutral"}`}>{journal.avg_rr_achieved?.toFixed(2)}x</div></div>
+              <div className="metric"><div className="label">Avg holding</div>
+                <div className="value neutral">{journal.avg_holding_days?.toFixed(1)}d</div></div>
+            </div>
+            {/* Patterns */}
+            <div className="grid2" style={{marginBottom:16}}>
+              <div style={{background:"#151a28",borderRadius:8,padding:"12px 14px"}}>
+                <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>Patterns</div>
+                {[["Best day",journal.best_day,"up"],["Worst day",journal.worst_day,"down"],["Best hour",journal.best_hour,"up"],["Best strategy",journal.best_strategy,"up"]].map(([label,val,cls]) => (
+                  <div key={label} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:12}}>
+                    <span style={{color:"#64748b"}}>{label}</span>
+                    <span className={cls}>{val}</span>
+                  </div>
+                ))}
+                <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:12}}>
+                  <span style={{color:"#64748b"}}>Exits winners early</span>
+                  <span className={journal.exit_too_early ? "down" : "up"}>{journal.exit_too_early ? "YES ⚠" : "NO ✓"}</span>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:12}}>
+                  <span style={{color:"#64748b"}}>Holds losers long</span>
+                  <span className={journal.hold_losers_long ? "down" : "up"}>{journal.hold_losers_long ? "YES ⚠" : "NO ✓"}</span>
+                </div>
+              </div>
+              <div style={{background:"#151a28",borderRadius:8,padding:"12px 14px"}}>
+                <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>Behavioural biases</div>
+                {(journal.biases || []).map((b, i) => (
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:12}}>
+                    <span style={{color:"#94a3b8",flex:1}}>{b.name}</span>
+                    <span className={b.detected ? (b.severity === "HIGH" ? "down" : "neutral") : "up"} style={{fontSize:11,minWidth:60,textAlign:"right"}}>
+                      {b.detected ? `⚠ ${b.severity}` : "✓ clean"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* Detected bias details */}
+            {(journal.biases || []).filter(b => b.detected).length > 0 && (
+              <div style={{marginBottom:16}}>
+                <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Bias details & fixes</div>
+                {journal.biases.filter(b => b.detected).map((b, i) => (
+                  <div key={i} style={{background:"#450a0a22",border:"1px solid #dc262633",borderRadius:6,padding:"10px 12px",marginBottom:8}}>
+                    <div style={{color:"#fca5a5",fontWeight:500,fontSize:12,marginBottom:4}}>{b.name}</div>
+                    <div style={{color:"#94a3b8",fontSize:11,marginBottom:4}}>{b.evidence}</div>
+                    <div style={{color:"#f59e0b",fontSize:11}}>Fix: {b.fix}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* Strengths */}
+            {(journal.strengths || []).length > 0 && (
+              <div style={{marginBottom:16}}>
+                <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Strengths</div>
+                {journal.strengths.map((s, i) => (
+                  <div key={i} style={{fontSize:12,color:"#86efac",padding:"3px 0"}}>+ {s}</div>
+                ))}
+              </div>
+            )}
+            {/* Narrative */}
+            <div style={{background:"#151a28",borderRadius:8,padding:"12px 14px",marginBottom:16}}>
+              <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6}}>Coach assessment</div>
+              <div style={{fontSize:12,color:"#94a3b8",lineHeight:1.7,whiteSpace:"pre-line"}}>{journal.narrative}</div>
+            </div>
+            {/* Personalised rules */}
+            <div>
+              <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>Your 3 personalised rules</div>
+              {(journal.personalised_rules || []).map((rule, i) => (
+                <div key={i} style={{background:"#1e3a5f22",border:"1px solid #1d4ed833",borderRadius:6,padding:"12px 14px",marginBottom:8}}>
+                  <div style={{color:"#f59e0b",fontSize:11,marginBottom:4,fontWeight:500}}>Rule {i+1}</div>
+                  <div style={{color:"#e2e8f0",fontSize:13,lineHeight:1.6}}>{rule}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

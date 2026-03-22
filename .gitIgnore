@@ -1,0 +1,39 @@
+# Secrets — NEVER commit these
+.env
+*.env
+
+# Database — has real trade data, don't commit
+db/
+*.db
+*.sqlite
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+
+# Cache
+db/historical/
+db/playbooks/
+db/daily_plans/
+db/weekly_reports/
+db/portfolio_reports/
+db/journal_reports/
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
