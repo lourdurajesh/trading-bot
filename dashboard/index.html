@@ -434,13 +434,20 @@ function App() {
             <h2>Quick commands</h2>
             <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
               {[
-                ["Run nightly agent now","/plan/refresh"],
-                ["Refresh daily plan","/plan/today"],
-                ["Reset kill switch","/kill-switch/reset"],
-              ].map(([label,endpoint])=>(
-                <button key={endpoint} className="mode-btn" style={{padding:"10px 14px",textAlign:"left"}}
-                  onClick={()=>fetch(`${API}${endpoint}`,{method:endpoint==="/plan/today"?"GET":"POST"}).then(()=>alert(`Done: ${label}`))}>
-                  {label}
+                ["Run nightly agent","/agents/nightly","POST","Takes 2-5 mins — watch Live Logs"],
+                ["Run weekly backtest","/agents/weekly","POST","Takes 10-15 mins — watch Live Logs"],
+                ["Refresh daily plan","/plan/refresh","POST","Regenerates today checklist"],
+                ["Reset kill switch","/kill-switch/reset","POST","Re-enables trading after kill"],
+              ].map(([label,endpoint,method,note])=>(
+                <button key={endpoint} className="mode-btn"
+                  style={{padding:"10px 14px",textAlign:"left",display:"block",width:"100%",marginBottom:4}}
+                  onClick={()=>{
+                    fetch(`${API}${endpoint}`,{method}).then(r=>r.json()).then(d=>{
+                      alert(d.message || d.ok ? `Started: ${label}\n${note}` : `Error: ${JSON.stringify(d)}`);
+                    }).catch(e=>alert(`Error: ${e}`));
+                  }}>
+                  <div style={{fontWeight:500,color:"#e2e8f0"}}>{label}</div>
+                  <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{note}</div>
                 </button>
               ))}
             </div>
@@ -459,8 +466,8 @@ function App() {
                 <div style={{color:"#94a3b8",marginBottom:8}}>{backtest.message||"No backtest results yet"}</div>
                 <div style={{fontSize:11,color:"#475569"}}>Run weekly_agent.py to generate backtest results</div>
                 <button className="mode-btn" style={{marginTop:14}}
-                  onClick={()=>fetch(`${API}/plan/refresh`,{method:"POST"})}>
-                  Run nightly agent (generates partial results)
+                  onClick={()=>fetch(`${API}/agents/nightly`,{method:"POST"}).then(r=>r.json()).then(d=>alert(d.message||"Started — check Live Logs tab"))}>
+                  Run nightly agent (generates backtest results)
                 </button>
               </div>
             </div>

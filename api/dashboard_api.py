@@ -408,6 +408,36 @@ def refresh_plan():
         return {"error": str(e)}
 
 
+@app.post("/agents/nightly")
+def run_nightly_agent():
+    """Trigger nightly agent in background thread."""
+    import threading
+    def run():
+        try:
+            from nightly_agent import run_nightly_agent
+            run_nightly_agent()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Nightly agent failed: {e}")
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "message": "Nightly agent started in background — check Live Logs tab"}
+
+
+@app.post("/agents/weekly")
+def run_weekly_agent():
+    """Trigger weekly agent in background thread."""
+    import threading
+    def run():
+        try:
+            from weekly_agent import run_weekly_agent
+            run_weekly_agent()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Weekly agent failed: {e}")
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "message": "Weekly agent started — this takes 10-15 minutes. Check Live Logs tab"}
+
+
 @app.get("/portfolio/analysis")
 def get_portfolio_analysis():
     try:
