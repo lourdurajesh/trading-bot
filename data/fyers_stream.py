@@ -92,7 +92,7 @@ class FyersStream:
             return
         self._fyers_client = fyersModel.FyersModel(
             client_id=settings.FYERS_APP_ID,
-            token=settings.FYERS_ACCESS_TOKEN,
+            token=f"{settings.FYERS_APP_ID}:{settings.FYERS_ACCESS_TOKEN}",
             log_path="logs/",
             is_async=False,
         )
