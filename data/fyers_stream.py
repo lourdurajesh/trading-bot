@@ -92,7 +92,7 @@ class FyersStream:
             return
         self._fyers_client = fyersModel.FyersModel(
             client_id=settings.FYERS_APP_ID,
-            token=f"{settings.FYERS_APP_ID}:{settings.FYERS_ACCESS_TOKEN}",
+            token=settings.FYERS_ACCESS_TOKEN,
             log_path="logs/",
             is_async=False,
         )
@@ -105,7 +105,7 @@ class FyersStream:
             return
 
         self._ws_client = data_ws.FyersDataSocket(
-            access_token=f"{settings.FYERS_APP_ID}:{settings.FYERS_ACCESS_TOKEN}",
+            access_token=settings.FYERS_ACCESS_TOKEN,
             log_path="logs/",
             litemode=True,
             write_to_file=False,
