@@ -49,6 +49,22 @@ _ws_clients: list[WebSocket] = []
 # REST ENDPOINTS
 # ─────────────────────────────────────────────────────────────────
 
+@app.get("/paper/stats")
+def get_paper_stats():
+    try:
+        from paper_trading import paper_trading_engine
+        return paper_trading_engine.get_paper_stats()
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/paper/positions")
+def get_paper_positions():
+    try:
+        from paper_trading import paper_trading_engine
+        return paper_trading_engine.get_paper_positions()
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.now(tz=timezone.utc).isoformat()}

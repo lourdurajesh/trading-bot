@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from config.settings import BOT_MODE, TOTAL_CAPITAL
+import os
+PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 from risk.portfolio_tracker import portfolio_tracker
 from risk.risk_manager import risk_manager
 from strategies.base_strategy import Direction, Signal
@@ -174,9 +176,17 @@ class OrderManager:
 
     def _execute(self, signal: Signal) -> None:
         """
-        Atomic execution: entry order → confirm fill → SL order → confirm SL.
-        If any step fails after retries, the position is exited immediately.
+        Atomic execution — routes to paper trading or live broker.
         """
+        # Paper trading mode — simulate execution
+        if PAPER_TRADING:
+            from paper_trading import paper_trading_engine
+            order_id = paper_trading_engine.place_order(signal)
+            if order_id:
+                portfolio_tracker.open_position(signal, fill_price=signal.entry)
+                logger.info(f"[OrderManager] [PAPER] Trade recorded: {signal.symbol}")
+            return
+
         broker = self._get_broker(signal.symbol)
 
         # ── Step 1: Place entry order ─────────────────────────────
