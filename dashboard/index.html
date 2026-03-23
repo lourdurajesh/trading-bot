@@ -8,75 +8,101 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e2e8f0; }
-    .app { max-width: 1400px; margin: 0 auto; padding: 20px; }
-    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #1e2433; }
-    .header h1 { font-size: 20px; font-weight: 600; color: #f1f5f9; letter-spacing: 0.02em; }
-    .pulse { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; margin-right: 8px; animation: pulse 1.5s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-    .mode-btn { padding: 6px 16px; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #94a3b8; cursor: pointer; font-size: 13px; }
-    .mode-btn.auto { background: #14532d; color: #86efac; border-color: #166534; }
-    .mode-btn.manual { background: #1e3a5f; color: #93c5fd; border-color: #1d4ed8; }
-    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
-    .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
-    .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
-    .card { background: #1e2433; border: 1px solid #2d3748; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
-    .card h2 { font-size: 13px; color: #64748b; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 16px; font-weight: 500; }
-    .metric { background: #151a28; border-radius: 8px; padding: 14px 16px; }
-    .metric .label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
-    .metric .value { font-size: 22px; font-weight: 600; font-family: 'Courier New', monospace; }
-    .up { color: #22c55e; }
-    .down { color: #ef4444; }
-    .neutral { color: #94a3b8; }
-    .position-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #1e2433; font-size: 13px; }
-    .position-row:last-child { border-bottom: none; }
-    .symbol { font-weight: 600; color: #f1f5f9; font-family: monospace; }
-    .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
-    .badge.long { background: #14532d; color: #86efac; }
-    .badge.short { background: #450a0a; color: #fca5a5; }
-    .badge.auto { background: #14532d; color: #86efac; }
-    .badge.manual { background: #1e3a5f; color: #93c5fd; }
-    .signal-card { background: #151a28; border: 1px solid #f59e0b44; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
-    .signal-card h3 { font-size: 14px; font-weight: 600; color: #f1f5f9; margin-bottom: 8px; }
-    .signal-meta { font-size: 12px; color: #64748b; margin-bottom: 12px; line-height: 1.6; }
-    .signal-levels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
-    .level { background: #1e2433; border-radius: 6px; padding: 8px; text-align: center; }
-    .level .lbl { font-size: 10px; color: #64748b; text-transform: uppercase; margin-bottom: 4px; }
-    .level .val { font-size: 14px; font-weight: 600; font-family: monospace; }
-    .btn-row { display: flex; gap: 8px; }
-    .btn { padding: 8px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; }
-    .btn-confirm { background: #166534; color: #86efac; }
-    .btn-reject  { background: #7f1d1d; color: #fca5a5; }
-    .btn:hover { opacity: 0.85; }
-    .kill-banner { background: #7f1d1d; border: 1px solid #dc2626; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
-    .kill-banner span { color: #fca5a5; font-size: 13px; font-weight: 500; }
-    .risk-bar { height: 6px; background: #1e2433; border-radius: 3px; overflow: hidden; margin-top: 8px; }
-    .risk-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
-    .empty { color: #475569; font-size: 13px; text-align: center; padding: 24px; }
-    .ws-status { font-size: 11px; color: #475569; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;font-size:14px}
+    .app{max-width:1400px;margin:0 auto;padding:16px}
+    .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid #1e2433}
+    .header h1{font-size:18px;font-weight:600;color:#f1f5f9}
+    .pulse{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;margin-right:8px;animation:pulse 1.5s infinite}
+    .pulse.off{background:#ef4444;animation:none}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+    .tabs{display:flex;gap:4px;background:#151a28;border-radius:8px;padding:4px;margin-bottom:20px;flex-wrap:wrap}
+    .tab{padding:7px 16px;border-radius:6px;border:none;cursor:pointer;background:transparent;color:#64748b;font-size:13px;transition:all .15s}
+    .tab.active{background:#1e293b;color:#f1f5f9;border:1px solid #334155}
+    .tab:hover:not(.active){color:#94a3b8}
+    .card{background:#1e2433;border:1px solid #2d3748;border-radius:12px;padding:18px;margin-bottom:16px}
+    .card h2{font-size:12px;color:#64748b;letter-spacing:.08em;text-transform:uppercase;margin-bottom:14px;font-weight:500}
+    .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+    .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}
+    .metric{background:#151a28;border-radius:8px;padding:12px 14px}
+    .metric .lbl{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px}
+    .metric .val{font-size:20px;font-weight:600;font-family:'Courier New',monospace}
+    .up{color:#22c55e}.down{color:#ef4444}.neutral{color:#94a3b8}.amber{color:#f59e0b}
+    .badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
+    .badge.long{background:#14532d;color:#86efac}
+    .badge.short{background:#450a0a;color:#fca5a5}
+    .badge.auto{background:#14532d;color:#86efac}
+    .badge.manual{background:#1e3a5f;color:#93c5fd}
+    .badge.paper{background:#3b2f0a;color:#fcd34d}
+    .badge.ok{background:#14532d;color:#86efac}
+    .badge.err{background:#450a0a;color:#fca5a5}
+    .mode-btn{padding:6px 14px;border-radius:6px;border:1px solid #334155;background:#1e293b;color:#94a3b8;cursor:pointer;font-size:12px}
+    .mode-btn:hover{background:#263548}
+    .signal-card{background:#151a28;border:1px solid #f59e0b44;border-radius:8px;padding:14px;margin-bottom:10px}
+    .signal-levels{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:10px 0}
+    .level{background:#1e2433;border-radius:6px;padding:8px;text-align:center}
+    .level .lbl{font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:3px}
+    .level .val{font-size:13px;font-weight:600;font-family:monospace}
+    .btn-row{display:flex;gap:8px}
+    .btn{padding:7px 18px;border-radius:6px;border:none;cursor:pointer;font-size:12px;font-weight:500}
+    .btn-confirm{background:#166534;color:#86efac}
+    .btn-reject{background:#7f1d1d;color:#fca5a5}
+    .btn:hover{opacity:.85}
+    .kill-banner{background:#7f1d1d;border:1px solid #dc2626;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}
+    .risk-bar{height:5px;background:#1e2433;border-radius:3px;overflow:hidden;margin-top:6px}
+    .risk-bar-fill{height:100%;border-radius:3px;transition:width .5s}
+    .empty{color:#475569;font-size:12px;text-align:center;padding:20px}
+    .pos-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #1e2433;font-size:12px}
+    .pos-row:last-child{border-bottom:none}
+
+    /* Log viewer */
+    .log-box{background:#0a0e17;border:1px solid #1e2433;border-radius:8px;padding:12px;height:320px;overflow-y:auto;font-family:'Courier New',monospace;font-size:11px;line-height:1.6}
+    .log-line{padding:1px 0;white-space:pre-wrap;word-break:break-all}
+    .log-line.info{color:#64748b}
+    .log-line.warn{color:#f59e0b}
+    .log-line.error{color:#ef4444}
+    .log-line.critical{color:#ff0000;font-weight:bold}
+    .log-line.signal{color:#22c55e}
+    .log-line.trade{color:#93c5fd}
+
+    /* Service status */
+    .svc-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1e2433;font-size:12px}
+    .svc-row:last-child{border-bottom:none}
+    .svc-dot{width:8px;height:8px;border-radius:50%;margin-right:8px;display:inline-block;flex-shrink:0}
+
+    /* Backtest table */
+    .bt-table{width:100%;border-collapse:collapse;font-size:11px}
+    .bt-table th{color:#64748b;text-align:left;padding:6px 8px;border-bottom:1px solid #1e2433;font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+    .bt-table td{padding:6px 8px;border-bottom:1px solid #111827;color:#cbd5e1}
+    .bt-table tr:hover td{background:#151a28}
+    .bt-table .good{color:#22c55e}
+    .bt-table .bad{color:#ef4444}
+
+    /* Paper trading */
+    .paper-banner{background:#3b2f0a;border:1px solid #f59e0b44;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#fcd34d;display:flex;align-items:center;gap:8px}
   </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-{/* const API = "http://localhost:8000";
-const WS  = "ws://localhost:8000/ws/live"; */}
 const API = "http://140.245.26.69:8000";
 const WS  = "ws://140.245.26.69:8000/ws/live";
+const WS_LOGS = "ws://140.245.26.69:8000/ws/logs";
 
 function App() {
-  const [data, setData]     = React.useState(null);
-  const [wsOk, setWsOk]     = React.useState(false);
-  const [error, setError]   = React.useState("");
-  const [analysis, setAnalysis] = React.useState(null);
-  const [analysisLoading, setAnalysisLoading] = React.useState(false);
-  const [plan, setPlan]           = React.useState(null);
-  const [planLoading, setPlanLoading] = React.useState(false);
-  const [expandedTask, setExpandedTask] = React.useState(null);
-  const [journal, setJournal]           = React.useState(null);
-  const [journalLoading, setJournalLoading] = React.useState(false);
+  const [data, setData]         = React.useState(null);
+  const [wsOk, setWsOk]         = React.useState(false);
+  const [tab, setTab]           = React.useState("trading");
+  const [logs, setLogs]         = React.useState([]);
+  const [services, setServices] = React.useState(null);
+  const [backtest, setBacktest] = React.useState(null);
+  const [btStrat, setBtStrat]   = React.useState(null);
+  const [paperStats, setPaperStats] = React.useState(null);
+  const [paperPos, setPaperPos] = React.useState([]);
+  const logRef = React.useRef(null);
 
+  // Live data WebSocket
   React.useEffect(() => {
     let ws;
     function connect() {
@@ -84,428 +110,424 @@ function App() {
       ws.onopen  = () => setWsOk(true);
       ws.onclose = () => { setWsOk(false); setTimeout(connect, 3000); };
       ws.onerror = () => setWsOk(false);
-      ws.onmessage = (e) => {
-        try { setData(JSON.parse(e.data)); } catch {}
-      };
+      ws.onmessage = e => { try { setData(JSON.parse(e.data)); } catch{} };
     }
     connect();
     return () => ws && ws.close();
   }, []);
 
-  const switchMode = async (mode) => {
-    await fetch(`${API}/mode/${mode}`, { method: "POST" });
+  // Log WebSocket
+  React.useEffect(() => {
+    let ws;
+    function connectLogs() {
+      ws = new WebSocket(WS_LOGS);
+      ws.onmessage = e => {
+        setLogs(prev => {
+          const next = [...prev, e.data].slice(-200);
+          return next;
+        });
+        setTimeout(() => {
+          if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+        }, 50);
+      };
+      ws.onclose = () => setTimeout(connectLogs, 3000);
+    }
+    connectLogs();
+    return () => ws && ws.close();
+  }, []);
+
+  // Load services + backtest + paper stats
+  React.useEffect(() => {
+    const loadServices = () =>
+      fetch(`${API}/services/status`).then(r=>r.json()).then(setServices).catch(()=>{});
+    const loadBacktest = () =>
+      fetch(`${API}/backtest/results`).then(r=>r.json()).then(d=>{
+        setBacktest(d);
+        if (d.strategies) setBtStrat(Object.keys(d.strategies)[0]);
+      }).catch(()=>{});
+    const loadPaper = () => {
+      fetch(`${API}/paper/stats`).then(r=>r.json()).then(setPaperStats).catch(()=>{});
+      fetch(`${API}/paper/positions`).then(r=>r.json()).then(setPaperPos).catch(()=>{});
+    };
+    loadServices(); loadBacktest(); loadPaper();
+    const t1 = setInterval(loadServices, 15000);
+    const t2 = setInterval(loadPaper, 5000);
+    return () => { clearInterval(t1); clearInterval(t2); };
+  }, []);
+
+  const switchMode = m => fetch(`${API}/mode/${m}`, {method:"POST"});
+  const confirm    = id => fetch(`${API}/signals/${id}/confirm`, {method:"POST"});
+  const reject     = id => fetch(`${API}/signals/${id}/reject`, {method:"POST"});
+  const resetKill  = () => fetch(`${API}/kill-switch/reset`, {method:"POST"});
+
+  const { stats, risk, positions, pending_signals, mode } = data || {};
+  const pnl    = stats?.total_pnl || 0;
+  const pnlPct = stats?.total_pnl_pct || 0;
+  const heat   = (positions||[]).reduce((s,p)=>s+(p.capital_at_risk||0),0) / ((stats?.total_capital||1)) * 100;
+  const isPaper = mode === "AUTO" && paperStats?.mode === "PAPER";
+
+  const logColor = line => {
+    if (line.includes("CRITICAL") || line.includes("ERROR")) return "error";
+    if (line.includes("WARNING")) return "warn";
+    if (line.includes("SIGNAL") || line.includes("signal")) return "signal";
+    if (line.includes("TRADE") || line.includes("PAPER") || line.includes("ORDER")) return "trade";
+    return "info";
   };
-
-  const confirm = async (id) => {
-    await fetch(`${API}/signals/${id}/confirm`, { method: "POST" });
-  };
-
-  const reject = async (id) => {
-    await fetch(`${API}/signals/${id}/reject`, { method: "POST" });
-  };
-
-  const loadPlan = async (refresh=false) => {
-    setPlanLoading(true);
-    try {
-      if (refresh) await fetch(`${API}/plan/refresh`, {method:"POST"});
-      const resp = await fetch(`${API}/plan/today`);
-      const data = await resp.json();
-      setPlan(data);
-    } catch(e) { console.error(e); }
-    setPlanLoading(false);
-  };
-
-  const markDone = async (id) => {
-    await fetch(`${API}/plan/done/${id}`, {method:"POST"});
-    setPlan(prev => prev ? {
-      ...prev,
-      checklist: prev.checklist.map(i => i.id === id ? {...i, done: true} : i)
-    } : prev);
-  };
-
-  React.useEffect(() => { loadPlan(); }, []);
-
-  const loadJournal = async () => {
-    setJournalLoading(true);
-    try {
-      const resp = await fetch(`${API}/journal/analysis`);
-      const data = await resp.json();
-      setJournal(data);
-    } catch(e) { console.error(e); }
-    setJournalLoading(false);
-  };
-
-  const loadAnalysis = async () => {
-    setAnalysisLoading(true);
-    try {
-      const resp = await fetch(`${API}/portfolio/analysis`);
-      const data = await resp.json();
-      setAnalysis(data);
-    } catch(e) { console.error(e); }
-    setAnalysisLoading(false);
-  };
-
-  const resetKill = async () => {
-    await fetch(`${API}/kill-switch/reset`, { method: "POST" });
-  };
-
-  if (!data) return (
-    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",color:"#475569"}}>
-      {wsOk ? "Loading..." : "Connecting to bot..."}
-    </div>
-  );
-
-  const { stats, risk, positions, pending_signals, mode } = data;
-  const pnl     = stats?.total_pnl || 0;
-  const pnlPct  = stats?.total_pnl_pct || 0;
-  const heat    = positions?.reduce((s, p) => s + (p.capital_at_risk || 0), 0) / (stats?.total_capital || 1) * 100;
 
   return (
     <div className="app">
+      {/* Header */}
       <div className="header">
         <div>
-          <span className="pulse"/>
-          <span className="header h1">AlphaLens Trading Bot</span>
-          <span className="ws-status" style={{marginLeft:12}}>{wsOk ? "● Live" : "○ Reconnecting..."}</span>
+          <span className={`pulse ${wsOk?"":"off"}`}/>
+          <span style={{fontSize:18,fontWeight:600,color:"#f1f5f9"}}>AlphaLens Trading Bot</span>
+          <span style={{fontSize:11,color:"#475569",marginLeft:10}}>{wsOk?"● Live":"○ Reconnecting..."}</span>
+          {isPaper && <span className="badge paper" style={{marginLeft:10}}>PAPER TRADING</span>}
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
-          <span className={`badge ${mode?.toLowerCase()}`}>{mode}</span>
-          <button className="mode-btn auto"   onClick={() => switchMode("AUTO")}>AUTO</button>
-          <button className="mode-btn manual" onClick={() => switchMode("MANUAL")}>MANUAL</button>
+          <span className={`badge ${(mode||"").toLowerCase()}`}>{mode||"--"}</span>
+          <button className="mode-btn" onClick={()=>switchMode("AUTO")}>AUTO</button>
+          <button className="mode-btn" onClick={()=>switchMode("MANUAL")}>MANUAL</button>
         </div>
       </div>
 
-      {risk?.kill_switch_active && (
-        <div className="kill-banner">
-          <span>🚨 KILL SWITCH ACTIVE — {risk.kill_switch_reason}</span>
-          <button className="btn" style={{background:"#dc2626",color:"#fff"}} onClick={resetKill}>Reset</button>
-        </div>
-      )}
-
-      {/* Metric cards */}
-      <div className="grid4">
-        <div className="metric">
-          <div className="label">Portfolio value</div>
-          <div className={`value ${pnl >= 0 ? "up" : "down"}`}>
-            ₹{(stats?.portfolio_value || 0).toLocaleString("en-IN", {maximumFractionDigits:0})}
-          </div>
-        </div>
-        <div className="metric">
-          <div className="label">Total P&L</div>
-          <div className={`value ${pnl >= 0 ? "up" : "down"}`}>
-            {pnl >= 0 ? "+" : ""}₹{Math.abs(pnl).toLocaleString("en-IN", {maximumFractionDigits:0})}
-            <span style={{fontSize:14,marginLeft:6}}>{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%</span>
-          </div>
-        </div>
-        <div className="metric">
-          <div className="label">Win rate</div>
-          <div className="value neutral">{stats?.win_rate?.toFixed(0) || 0}%</div>
-        </div>
-        <div className="metric">
-          <div className="label">Drawdown</div>
-          <div className={`value ${(stats?.drawdown_pct || 0) > 2 ? "down" : "neutral"}`}>
-            {stats?.drawdown_pct?.toFixed(1) || 0}%
-          </div>
-        </div>
+      {/* Tabs */}
+      <div className="tabs">
+        {[["trading","Trading"],["paper","Paper P&L"],["logs","Live Logs"],["services","Services"],["backtest","Backtest"]].map(([id,label])=>(
+          <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>{label}</button>
+        ))}
       </div>
 
-      <div className="grid2">
-        {/* Open Positions */}
-        <div className="card">
-          <h2>Open positions ({positions?.length || 0})</h2>
-          {!positions?.length
-            ? <div className="empty">No open positions</div>
-            : positions.map(p => (
-              <div key={p.id} className="position-row">
-                <div>
-                  <span className="symbol">{p.symbol.replace("NSE:","").replace("-EQ","")}</span>
-                  <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:8}}>{p.direction}</span>
-                  <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{p.strategy} · {p.position_size} shares</div>
-                </div>
-                <div style={{textAlign:"right"}}>
-                  <div className={`value ${p.unrealised_pnl >= 0 ? "up" : "down"}`} style={{fontSize:16}}>
-                    {p.unrealised_pnl >= 0 ? "+" : ""}₹{Math.abs(p.unrealised_pnl).toLocaleString("en-IN",{maximumFractionDigits:0})}
+      {/* ── TRADING TAB ── */}
+      {tab==="trading" && (
+        <div>
+          {risk?.kill_switch_active && (
+            <div className="kill-banner">
+              <span>🚨 KILL SWITCH — {risk.kill_switch_reason}</span>
+              <button className="btn" style={{background:"#dc2626",color:"#fff"}} onClick={resetKill}>Reset</button>
+            </div>
+          )}
+          <div className="grid4">
+            <div className="metric"><div className="lbl">Portfolio value</div>
+              <div className={`val ${pnl>=0?"up":"down"}`}>₹{(stats?.portfolio_value||0).toLocaleString("en-IN",{maximumFractionDigits:0})}</div></div>
+            <div className="metric"><div className="lbl">Total P&L</div>
+              <div className={`val ${pnl>=0?"up":"down"}`}>{pnl>=0?"+":""}₹{Math.abs(pnl).toLocaleString("en-IN",{maximumFractionDigits:0})} <span style={{fontSize:13}}>({pnlPct>=0?"+":""}{pnlPct.toFixed(1)}%)</span></div></div>
+            <div className="metric"><div className="lbl">Win rate</div>
+              <div className="val neutral">{stats?.win_rate?.toFixed(0)||0}%</div></div>
+            <div className="metric"><div className="lbl">Drawdown</div>
+              <div className={`val ${(stats?.drawdown_pct||0)>2?"down":"neutral"}`}>{stats?.drawdown_pct?.toFixed(1)||0}%</div></div>
+          </div>
+          <div className="grid2">
+            <div className="card">
+              <h2>Open positions ({positions?.length||0})</h2>
+              {!positions?.length ? <div className="empty">No open positions</div>
+              : positions.map(p=>(
+                <div key={p.id} className="pos-row">
+                  <div>
+                    <span style={{fontWeight:600,fontFamily:"monospace",color:"#f1f5f9"}}>{p.symbol.replace("NSE:","").replace("-EQ","")}</span>
+                    <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
+                    <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{p.strategy} · {p.position_size} shares</div>
                   </div>
-                  <div style={{fontSize:11,color:"#64748b"}}>
-                    Entry ₹{p.entry_price} · LTP ₹{p.ltp}
-                  </div>
-                </div>
-              </div>
-            ))
-          }
-        </div>
-
-        {/* Risk metrics */}
-        <div className="card">
-          <h2>Risk metrics</h2>
-          <div style={{display:"grid",gap:12}}>
-            <div>
-              <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
-                <span style={{color:"#64748b"}}>Portfolio heat</span>
-                <span className={heat > 50 ? "down" : "neutral"}>{heat.toFixed(1)}%</span>
-              </div>
-              <div className="risk-bar">
-                <div className="risk-bar-fill" style={{
-                  width:`${Math.min(heat, 100)}%`,
-                  background: heat > 50 ? "#ef4444" : heat > 30 ? "#f59e0b" : "#22c55e"
-                }}/>
-              </div>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
-              <span style={{color:"#64748b"}}>Daily P&L</span>
-              <span className={risk?.daily_realised_pnl >= 0 ? "up" : "down"}>
-                ₹{(risk?.daily_realised_pnl || 0).toLocaleString("en-IN",{maximumFractionDigits:0})}
-              </span>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
-              <span style={{color:"#64748b"}}>Daily loss limit</span>
-              <span className="neutral">{risk?.daily_loss_limit}%</span>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
-              <span style={{color:"#64748b"}}>Risk per trade</span>
-              <span className="neutral">{risk?.risk_per_trade_pct}%</span>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
-              <span style={{color:"#64748b"}}>Open positions</span>
-              <span className="neutral">{stats?.open_positions_count || 0}</span>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
-              <span style={{color:"#64748b"}}>Total trades</span>
-              <span className="neutral">{stats?.total_trades || 0}</span>
-            </div>
-            <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}>
-              <span style={{color:"#64748b"}}>Avg R:R</span>
-              <span className="neutral">{stats?.avg_rr?.toFixed(2) || "—"}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Pending signals */}
-      <div className="card">
-        <h2>Signals awaiting confirmation ({pending_signals?.length || 0})</h2>
-        {!pending_signals?.length
-          ? <div className="empty">No pending signals — bot is scanning markets</div>
-          : pending_signals.map(s => (
-            <div key={s.signal_id} className="signal-card">
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <h3>{s.symbol.replace("NSE:","").replace("-EQ","")} — {s.direction}</h3>
-                <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                  <span style={{fontSize:11,color:"#f59e0b"}}>{(s.confidence*100).toFixed(0)}% confident</span>
-                  <span className={`badge ${s.strategy === "TrendFollow" ? "long" : "manual"}`}>{s.strategy}</span>
-                </div>
-              </div>
-              <div className="signal-meta">{s.reason}</div>
-              <div className="signal-levels">
-                <div className="level">
-                  <div className="lbl">Entry</div>
-                  <div className="val" style={{color:"#93c5fd"}}>₹{s.entry}</div>
-                </div>
-                <div className="level">
-                  <div className="lbl">Stop</div>
-                  <div className="val" style={{color:"#fca5a5"}}>₹{s.stop_loss}</div>
-                </div>
-                <div className="level">
-                  <div className="lbl">Target</div>
-                  <div className="val" style={{color:"#86efac"}}>₹{s.target_1}</div>
-                </div>
-              </div>
-              <div style={{fontSize:12,color:"#64748b",marginBottom:12}}>
-                R:R {s.risk_reward} · Size {s.position_size} shares · Risk ₹{s.capital_at_risk?.toLocaleString("en-IN")}
-              </div>
-              <div className="btn-row">
-                <button className="btn btn-confirm" onClick={() => confirm(s.signal_id)}>✓ Confirm Trade</button>
-                <button className="btn btn-reject"  onClick={() => reject(s.signal_id)}>✕ Reject</button>
-              </div>
-            </div>
-          ))
-        }
-      </div>
-    {/* Portfolio Analysis Panel */}
-      <div className="card" style={{marginTop:0}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-          <h2 style={{margin:0}}>Portfolio risk analysis</h2>
-          <button className="mode-btn" onClick={loadAnalysis} style={{fontSize:11}}>
-            {analysisLoading ? "Analysing..." : "Run analysis ↻"}
-          </button>
-        </div>
-        {!analysis ? (
-          <div className="empty">Click "Run analysis" to see correlation, stress tests and hedging suggestions</div>
-        ) : (
-          <div>
-            <div className="grid4" style={{marginBottom:12}}>
-              <div className="metric"><div className="label">Portfolio beta</div>
-                <div className={`value ${analysis.portfolio_beta > 1.2 ? "down" : "neutral"}`}>{analysis.portfolio_beta?.toFixed(2)}x</div></div>
-              <div className="metric"><div className="label">Risk rating</div>
-                <div className={`value ${analysis.risk_rating === "CRITICAL" || analysis.risk_rating === "HIGH" ? "down" : analysis.risk_rating === "LOW" ? "up" : "neutral"}`}>{analysis.risk_rating}</div></div>
-              <div className="metric"><div className="label">Concentration</div>
-                <div className={`value ${analysis.concentration > 6 ? "down" : "neutral"}`}>{analysis.concentration?.toFixed(1)}/10</div></div>
-              <div className="metric"><div className="label">Sectors</div>
-                <div className="value neutral">{Object.keys(analysis.sector_exposure || {}).length}</div></div>
-            </div>
-            <div className="grid2" style={{marginBottom:12}}>
-              <div>
-                <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Sector exposure</div>
-                {Object.entries(analysis.sector_exposure || {}).map(([s, d]) => (
-                  <div key={s} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #1e2433",fontSize:12}}>
-                    <span style={{color:"#94a3b8",textTransform:"capitalize"}}>{s}</span>
-                    <div style={{display:"flex",alignItems:"center",gap:8}}>
-                      <span style={{fontFamily:"monospace"}}>{d.pct}%</span>
-                      {d.status !== "OK" && <span className={`badge ${d.status === "CRITICAL" || d.status === "HIGH" ? "short" : "manual"}`}>{d.status}</span>}
+                  <div style={{textAlign:"right"}}>
+                    <div className={p.unrealised_pnl>=0?"up":"down"} style={{fontSize:15,fontWeight:600}}>
+                      {p.unrealised_pnl>=0?"+":""}₹{Math.abs(p.unrealised_pnl).toLocaleString("en-IN",{maximumFractionDigits:0})}
                     </div>
+                    <div style={{fontSize:10,color:"#64748b"}}>₹{p.entry_price} → ₹{p.ltp}</div>
                   </div>
-                ))}
-              </div>
-              <div>
-                <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Stress tests</div>
-                {(analysis.stress_tests || []).map((st, i) => (
-                  <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #1e2433",fontSize:12}}>
-                    <span style={{color:"#94a3b8"}}>{st.scenario}</span>
-                    <span className={st.loss_pct < -20 ? "down" : "neutral"} style={{fontFamily:"monospace"}}>
-                      {st.loss_pct?.toFixed(1)}%
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            {(analysis.correlations || []).filter(c => c.risk === "HIGH").length > 0 && (
-              <div style={{marginBottom:12}}>
-                <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>High correlations — hidden concentration risk</div>
-                {analysis.correlations.filter(c => c.risk === "HIGH").slice(0,3).map((c, i) => (
-                  <div key={i} style={{background:"#450a0a22",border:"1px solid #dc262633",borderRadius:6,padding:"8px 12px",marginBottom:6,fontSize:12}}>
-                    <span style={{color:"#fca5a5",fontFamily:"monospace"}}>{c.a.replace("NSE:","").replace("-EQ","")} ↔ {c.b.replace("NSE:","").replace("-EQ","")}: {c.corr} corr</span>
-                    <div style={{color:"#94a3b8",marginTop:3}}>{c.note}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {(analysis.hedge_suggestions || []).length > 0 && (
-              <div style={{marginBottom:12}}>
-                <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Hedging suggestions</div>
-                {analysis.hedge_suggestions.slice(0,3).map((h, i) => (
-                  <div key={i} style={{background:"#1e3a5f22",border:"1px solid #1d4ed833",borderRadius:6,padding:"8px 12px",marginBottom:6,fontSize:12}}>
-                    <div style={{color:"#93c5fd",fontWeight:500}}>{h.instrument}</div>
-                    <div style={{color:"#94a3b8",marginTop:3}}>{h.strategy}</div>
-                    <div style={{color:"#64748b",marginTop:2,fontSize:11}}>{h.cost} · {h.protection}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div style={{background:"#151a28",borderRadius:8,padding:"12px 14px",marginBottom:12}}>
-              <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Analyst assessment</div>
-              <div style={{fontSize:12,color:"#94a3b8",lineHeight:1.7,whiteSpace:"pre-line"}}>{analysis.analyst_narrative}</div>
-            </div>
-            <div>
-              <div className="section-label" style={{fontSize:10,color:"var(--color-text-secondary)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Action items</div>
-              {(analysis.action_items || []).map((item, i) => (
-                <div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"6px 0",fontSize:12}}>
-                  <span style={{color:"#f59e0b",minWidth:16}}>{i+1}.</span>
-                  <span style={{color:"#e2e8f0"}}>{item}</span>
                 </div>
               ))}
             </div>
-          </div>
-        )}
-      </div>
-      {/* Journal Analyser Panel */}
-      <div className="card">
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
-          <div>
-            <h2 style={{margin:0}}>Trading journal analysis</h2>
-            {journal && <div style={{fontSize:11,color:"#64748b",marginTop:3}}>{journal.date_range} · {journal.total_trades} trades</div>}
-          </div>
-          <button className="mode-btn" onClick={loadJournal} style={{fontSize:11}}>
-            {journalLoading ? "Analysing..." : "Run analysis ↻"}
-          </button>
-        </div>
-        {!journal ? (
-          <div className="empty">Click "Run analysis" to review your trade history and get personalised coaching</div>
-        ) : journal.error ? (
-          <div className="empty">{journal.error}</div>
-        ) : (
-          <div>
-            {/* Core metrics */}
-            <div className="grid4" style={{marginBottom:16}}>
-              <div className="metric"><div className="label">Win rate</div>
-                <div className={`value ${journal.win_rate >= 55 ? "up" : journal.win_rate >= 45 ? "neutral" : "down"}`}>{journal.win_rate?.toFixed(0)}%</div></div>
-              <div className="metric"><div className="label">Profit factor</div>
-                <div className={`value ${journal.profit_factor >= 1.5 ? "up" : journal.profit_factor >= 1.0 ? "neutral" : "down"}`}>{journal.profit_factor?.toFixed(2)}</div></div>
-              <div className="metric"><div className="label">Avg R:R achieved</div>
-                <div className={`value ${journal.avg_rr_achieved >= 1.5 ? "up" : "neutral"}`}>{journal.avg_rr_achieved?.toFixed(2)}x</div></div>
-              <div className="metric"><div className="label">Avg holding</div>
-                <div className="value neutral">{journal.avg_holding_days?.toFixed(1)}d</div></div>
-            </div>
-            {/* Patterns */}
-            <div className="grid2" style={{marginBottom:16}}>
-              <div style={{background:"#151a28",borderRadius:8,padding:"12px 14px"}}>
-                <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>Patterns</div>
-                {[["Best day",journal.best_day,"up"],["Worst day",journal.worst_day,"down"],["Best hour",journal.best_hour,"up"],["Best strategy",journal.best_strategy,"up"]].map(([label,val,cls]) => (
-                  <div key={label} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:12}}>
-                    <span style={{color:"#64748b"}}>{label}</span>
+            <div className="card">
+              <h2>Risk metrics</h2>
+              <div style={{display:"grid",gap:10}}>
+                <div>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                    <span style={{color:"#64748b"}}>Portfolio heat</span>
+                    <span className={heat>50?"down":"neutral"}>{heat.toFixed(1)}%</span>
+                  </div>
+                  <div className="risk-bar"><div className="risk-bar-fill" style={{width:`${Math.min(heat,100)}%`,background:heat>50?"#ef4444":heat>30?"#f59e0b":"#22c55e"}}/></div>
+                </div>
+                {[["Daily P&L",`₹${(risk?.daily_realised_pnl||0).toLocaleString("en-IN",{maximumFractionDigits:0})}`,risk?.daily_realised_pnl>=0?"up":"down"],
+                  ["Daily loss limit",`${risk?.daily_loss_limit}%`,"neutral"],
+                  ["Risk per trade",`${risk?.risk_per_trade_pct}%`,"neutral"],
+                  ["Open positions",stats?.open_positions_count||0,"neutral"],
+                  ["Total trades",stats?.total_trades||0,"neutral"],
+                  ["Avg R:R",stats?.avg_rr?.toFixed(2)||"—","neutral"],
+                ].map(([lbl,val,cls])=>(
+                  <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                    <span style={{color:"#64748b"}}>{lbl}</span>
                     <span className={cls}>{val}</span>
                   </div>
                 ))}
-                <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:12}}>
-                  <span style={{color:"#64748b"}}>Exits winners early</span>
-                  <span className={journal.exit_too_early ? "down" : "up"}>{journal.exit_too_early ? "YES ⚠" : "NO ✓"}</span>
-                </div>
-                <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:12}}>
-                  <span style={{color:"#64748b"}}>Holds losers long</span>
-                  <span className={journal.hold_losers_long ? "down" : "up"}>{journal.hold_losers_long ? "YES ⚠" : "NO ✓"}</span>
-                </div>
-              </div>
-              <div style={{background:"#151a28",borderRadius:8,padding:"12px 14px"}}>
-                <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>Behavioural biases</div>
-                {(journal.biases || []).map((b, i) => (
-                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",fontSize:12}}>
-                    <span style={{color:"#94a3b8",flex:1}}>{b.name}</span>
-                    <span className={b.detected ? (b.severity === "HIGH" ? "down" : "neutral") : "up"} style={{fontSize:11,minWidth:60,textAlign:"right"}}>
-                      {b.detected ? `⚠ ${b.severity}` : "✓ clean"}
-                    </span>
-                  </div>
-                ))}
               </div>
             </div>
-            {/* Detected bias details */}
-            {(journal.biases || []).filter(b => b.detected).length > 0 && (
-              <div style={{marginBottom:16}}>
-                <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Bias details & fixes</div>
-                {journal.biases.filter(b => b.detected).map((b, i) => (
-                  <div key={i} style={{background:"#450a0a22",border:"1px solid #dc262633",borderRadius:6,padding:"10px 12px",marginBottom:8}}>
-                    <div style={{color:"#fca5a5",fontWeight:500,fontSize:12,marginBottom:4}}>{b.name}</div>
-                    <div style={{color:"#94a3b8",fontSize:11,marginBottom:4}}>{b.evidence}</div>
-                    <div style={{color:"#f59e0b",fontSize:11}}>Fix: {b.fix}</div>
+          </div>
+          <div className="card">
+            <h2>Signals awaiting confirmation ({pending_signals?.length||0})</h2>
+            {!pending_signals?.length ? <div className="empty">No pending signals — bot is scanning markets</div>
+            : pending_signals.map(s=>(
+              <div key={s.signal_id} className="signal-card">
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontWeight:600,color:"#f1f5f9"}}>{s.symbol.replace("NSE:","").replace("-EQ","")} — {s.direction}</span>
+                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                    <span style={{fontSize:11,color:"#f59e0b"}}>{(s.confidence*100).toFixed(0)}% conf</span>
+                    <span className="badge manual">{s.strategy}</span>
                   </div>
-                ))}
+                </div>
+                <div style={{fontSize:11,color:"#64748b",margin:"6px 0"}}>{s.reason}</div>
+                <div className="signal-levels">
+                  <div className="level"><div className="lbl">Entry</div><div className="val" style={{color:"#93c5fd"}}>₹{s.entry}</div></div>
+                  <div className="level"><div className="lbl">Stop</div><div className="val" style={{color:"#fca5a5"}}>₹{s.stop_loss}</div></div>
+                  <div className="level"><div className="lbl">Target</div><div className="val" style={{color:"#86efac"}}>₹{s.target_1}</div></div>
+                </div>
+                <div style={{fontSize:11,color:"#64748b",marginBottom:10}}>R:R {s.risk_reward} · {s.position_size} shares · ₹{s.capital_at_risk?.toLocaleString("en-IN")}</div>
+                <div className="btn-row">
+                  <button className="btn btn-confirm" onClick={()=>confirm(s.signal_id)}>✓ Confirm</button>
+                  <button className="btn btn-reject" onClick={()=>reject(s.signal_id)}>✕ Reject</button>
+                </div>
               </div>
-            )}
-            {/* Strengths */}
-            {(journal.strengths || []).length > 0 && (
-              <div style={{marginBottom:16}}>
-                <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>Strengths</div>
-                {journal.strengths.map((s, i) => (
-                  <div key={i} style={{fontSize:12,color:"#86efac",padding:"3px 0"}}>+ {s}</div>
-                ))}
-              </div>
-            )}
-            {/* Narrative */}
-            <div style={{background:"#151a28",borderRadius:8,padding:"12px 14px",marginBottom:16}}>
-              <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6}}>Coach assessment</div>
-              <div style={{fontSize:12,color:"#94a3b8",lineHeight:1.7,whiteSpace:"pre-line"}}>{journal.narrative}</div>
-            </div>
-            {/* Personalised rules */}
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── PAPER P&L TAB ── */}
+      {tab==="paper" && (
+        <div>
+          <div className="paper-banner">
+            📝 Paper trading mode — all trades are simulated. No real money at risk.
+          </div>
+          {paperStats ? (
             <div>
-              <div style={{fontSize:10,color:"#64748b",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>Your 3 personalised rules</div>
-              {(journal.personalised_rules || []).map((rule, i) => (
-                <div key={i} style={{background:"#1e3a5f22",border:"1px solid #1d4ed833",borderRadius:6,padding:"12px 14px",marginBottom:8}}>
-                  <div style={{color:"#f59e0b",fontSize:11,marginBottom:4,fontWeight:500}}>Rule {i+1}</div>
-                  <div style={{color:"#e2e8f0",fontSize:13,lineHeight:1.6}}>{rule}</div>
+              <div className="grid4">
+                <div className="metric"><div className="lbl">Total P&L</div>
+                  <div className={`val ${(paperStats.total_pnl||0)>=0?"up":"down"}`}>
+                    {(paperStats.total_pnl||0)>=0?"+":""}₹{Math.abs(paperStats.total_pnl||0).toLocaleString("en-IN",{maximumFractionDigits:0})}
+                  </div></div>
+                <div className="metric"><div className="lbl">Win rate</div>
+                  <div className={`val ${(paperStats.win_rate||0)>=50?"up":"down"}`}>{paperStats.win_rate||0}%</div></div>
+                <div className="metric"><div className="lbl">Profit factor</div>
+                  <div className={`val ${(paperStats.profit_factor||0)>=1.5?"up":(paperStats.profit_factor||0)>=1?"neutral":"down"}`}>{paperStats.profit_factor||0}</div></div>
+                <div className="metric"><div className="lbl">Total trades</div>
+                  <div className="val neutral">{paperStats.total_trades||0}</div></div>
+              </div>
+              <div className="grid2">
+                <div className="card">
+                  <h2>Performance</h2>
+                  {[["Realised P&L",`₹${(paperStats.total_realised||0).toLocaleString("en-IN",{maximumFractionDigits:0})}`,(paperStats.total_realised||0)>=0?"up":"down"],
+                    ["Unrealised P&L",`₹${(paperStats.total_unrealised||0).toLocaleString("en-IN",{maximumFractionDigits:0})}`,(paperStats.total_unrealised||0)>=0?"up":"down"],
+                    ["Return %",`${paperStats.total_pnl_pct||0}%`,(paperStats.total_pnl_pct||0)>=0?"up":"down"],
+                    ["Avg winner",`₹${(paperStats.avg_winner||0).toLocaleString("en-IN",{maximumFractionDigits:0})}`,"up"],
+                    ["Avg loser",`₹${(paperStats.avg_loser||0).toLocaleString("en-IN",{maximumFractionDigits:0})}`,"down"],
+                    ["Open positions",paperStats.open_positions||0,"neutral"],
+                  ].map(([lbl,val,cls])=>(
+                    <div key={lbl} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #111827",fontSize:12}}>
+                      <span style={{color:"#64748b"}}>{lbl}</span>
+                      <span className={cls}>{val}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="card">
+                  <h2>Open paper positions ({paperPos.length})</h2>
+                  {!paperPos.length ? <div className="empty">No open paper positions</div>
+                  : paperPos.map(p=>(
+                    <div key={p.id} className="pos-row">
+                      <div>
+                        <span style={{fontWeight:600,fontFamily:"monospace"}}>{p.symbol.replace("NSE:","").replace("-EQ","")}</span>
+                        <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
+                        <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{p.strategy}</div>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <div className={p.unrealised_pnl>=0?"up":"down"} style={{fontWeight:600}}>
+                          {p.unrealised_pnl>=0?"+":""}₹{Math.abs(p.unrealised_pnl).toLocaleString("en-IN",{maximumFractionDigits:0})}
+                        </div>
+                        <div style={{fontSize:10,color:"#64748b"}}>₹{p.entry_price} → ₹{p.ltp}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : <div className="empty">Loading paper trading stats...</div>}
+        </div>
+      )}
+
+      {/* ── LIVE LOGS TAB ── */}
+      {tab==="logs" && (
+        <div>
+          <div className="card">
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <h2 style={{margin:0}}>Live bot log</h2>
+              <div style={{display:"flex",gap:8}}>
+                <button className="mode-btn" onClick={()=>setLogs([])}>Clear</button>
+                <span style={{fontSize:11,color:"#475569"}}>{logs.length} lines</span>
+              </div>
+            </div>
+            <div className="log-box" ref={logRef}>
+              {logs.map((line,i)=>(
+                <div key={i} className={`log-line ${logColor(line)}`}>{line}</div>
+              ))}
+              {!logs.length && <div style={{color:"#475569"}}>Connecting to log stream...</div>}
+            </div>
+          </div>
+          <div className="card">
+            <h2>Color guide</h2>
+            <div style={{display:"flex",gap:16,fontSize:12,flexWrap:"wrap"}}>
+              {[["#22c55e","SIGNAL — trade setup found"],["#93c5fd","TRADE — order placed/closed"],["#f59e0b","WARNING — non-critical issue"],["#ef4444","ERROR — needs attention"],["#64748b","INFO — normal activity"]].map(([c,lbl])=>(
+                <div key={c} style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{width:10,height:10,borderRadius:"50%",background:c,display:"inline-block"}}></span>
+                  <span style={{color:"#94a3b8"}}>{lbl}</span>
                 </div>
               ))}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* ── SERVICES TAB ── */}
+      {tab==="services" && (
+        <div>
+          <div className="grid2">
+            <div className="card">
+              <h2>Process status</h2>
+              {services ? (
+                [["bot","Trading Bot"],["watchdog","Watchdog"],["dashboard","Dashboard Server"],["cron","Cron Scheduler"]].map(([key,label])=>{
+                  const svc = services[key];
+                  const running = svc?.running;
+                  return (
+                    <div key={key} className="svc-row">
+                      <div style={{display:"flex",alignItems:"center"}}>
+                        <span className="svc-dot" style={{background:running?"#22c55e":"#ef4444"}}></span>
+                        <span style={{color:"#e2e8f0"}}>{label}</span>
+                      </div>
+                      <span className={`badge ${running?"ok":"err"}`}>{running?"RUNNING":"STOPPED"}</span>
+                    </div>
+                  );
+                })
+              ) : <div className="empty">Loading...</div>}
+              {services?.uptime && (
+                <div style={{marginTop:12,fontSize:11,color:"#475569"}}>Bot uptime: {services.uptime}</div>
+              )}
+            </div>
+            <div className="card">
+              <h2>Scheduled jobs</h2>
+              {services ? (
+                [["token_refresh","Token Refresh","11:45 PM IST daily"],["nightly_agent","Nightly Agent","8:30 PM IST daily"],["weekly_agent","Weekly Agent","9:00 AM IST Sunday"]].map(([key,label,schedule])=>{
+                  const svc = services[key];
+                  return (
+                    <div key={key} className="svc-row">
+                      <div>
+                        <div style={{color:"#e2e8f0",fontSize:12}}>{label}</div>
+                        <div style={{color:"#475569",fontSize:10}}>{schedule}</div>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontSize:10,color:"#64748b"}}>Last run</div>
+                        <div style={{fontSize:11,color:"#94a3b8"}}>{svc?.last_run||"Never"}</div>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : <div className="empty">Loading...</div>}
+            </div>
+          </div>
+          <div className="card">
+            <h2>Quick commands</h2>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+              {[
+                ["Run nightly agent now","/plan/refresh"],
+                ["Refresh daily plan","/plan/today"],
+                ["Reset kill switch","/kill-switch/reset"],
+              ].map(([label,endpoint])=>(
+                <button key={endpoint} className="mode-btn" style={{padding:"10px 14px",textAlign:"left"}}
+                  onClick={()=>fetch(`${API}${endpoint}`,{method:endpoint==="/plan/today"?"GET":"POST"}).then(()=>alert(`Done: ${label}`))}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── BACKTEST TAB ── */}
+      {tab==="backtest" && (
+        <div>
+          {!backtest ? <div className="empty">Loading backtest results...</div>
+          : !backtest.available ? (
+            <div className="card">
+              <div className="empty" style={{padding:40}}>
+                <div style={{fontSize:24,marginBottom:12}}>📊</div>
+                <div style={{color:"#94a3b8",marginBottom:8}}>{backtest.message||"No backtest results yet"}</div>
+                <div style={{fontSize:11,color:"#475569"}}>Run weekly_agent.py to generate backtest results</div>
+                <button className="mode-btn" style={{marginTop:14}}
+                  onClick={()=>fetch(`${API}/plan/refresh`,{method:"POST"})}>
+                  Run nightly agent (generates partial results)
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+                <div style={{fontSize:12,color:"#64748b"}}>Week ending: {backtest.week_ending}</div>
+                <div style={{display:"flex",gap:6}}>
+                  {Object.keys(backtest.strategies||{}).map(s=>(
+                    <button key={s} className={`mode-btn ${btStrat===s?"active":""}`}
+                      style={{background:btStrat===s?"#1e3a5f":"",color:btStrat===s?"#93c5fd":""}}
+                      onClick={()=>setBtStrat(s)}>{s}</button>
+                  ))}
+                </div>
+              </div>
+              {btStrat && backtest.strategies[btStrat] && (() => {
+                const st = backtest.strategies[btStrat];
+                return (
+                  <div>
+                    <div className="grid3">
+                      <div className="metric"><div className="lbl">Avg profit factor</div>
+                        <div className={`val ${st.avg_profit_factor>=1.5?"up":st.avg_profit_factor>=1?"neutral":"down"}`}>{st.avg_profit_factor?.toFixed(2)}</div></div>
+                      <div className="metric"><div className="lbl">Top symbols</div>
+                        <div style={{fontSize:11,color:"#22c55e",marginTop:4,lineHeight:1.6}}>
+                          {(st.top_10||[]).slice(0,5).map(s=>s.replace("NSE:","").replace("-EQ","")).join(", ")}
+                        </div></div>
+                      <div className="metric"><div className="lbl">Avoid</div>
+                        <div style={{fontSize:11,color:"#ef4444",marginTop:4,lineHeight:1.6}}>
+                          {(st.avoid||[]).slice(0,5).map(s=>s.replace("NSE:","").replace("-EQ","")).join(", ")}
+                        </div></div>
+                    </div>
+                    <div className="card">
+                      <h2>Symbol performance leaderboard</h2>
+                      <table className="bt-table">
+                        <thead>
+                          <tr>
+                            <th>Symbol</th>
+                            <th>Trades</th>
+                            <th>Win %</th>
+                            <th>PF</th>
+                            <th>Sharpe</th>
+                            <th>Return</th>
+                            <th>Max DD</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(st.leaderboard||[]).map((r,i)=>(
+                            <tr key={i}>
+                              <td style={{fontFamily:"monospace",color:"#f1f5f9"}}>{r.symbol.replace("NSE:","").replace("-EQ","")}</td>
+                              <td>{r.total_trades}</td>
+                              <td className={r.win_rate>=55?"good":r.win_rate>=45?"":"bad"}>{r.win_rate?.toFixed(0)}%</td>
+                              <td className={r.profit_factor>=1.5?"good":r.profit_factor>=1?"":"bad"}>{r.profit_factor?.toFixed(2)}</td>
+                              <td className={r.sharpe>=1?"good":r.sharpe>=0.5?"":"bad"}>{r.sharpe?.toFixed(2)}</td>
+                              <td className={r.total_return>=0?"good":"bad"}>{r.total_return>=0?"+":""}{r.total_return?.toFixed(1)}%</td>
+                              <td className={r.max_drawdown>20?"bad":r.max_drawdown>10?"":"good"}>{r.max_drawdown?.toFixed(1)}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

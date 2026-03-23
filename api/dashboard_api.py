@@ -65,6 +65,205 @@ def get_paper_positions():
     except Exception as e:
         return {"error": str(e)}
 
+@app.get("/logs")
+def get_logs(lines: int = 50):
+    """Return last N lines from bot log."""
+    try:
+        import os
+        log_path = "logs/bot.log"
+        if not os.path.exists(log_path):
+            return {"lines": [], "error": "Log file not found"}
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        last_lines = all_lines[-lines:]
+        return {
+            "lines": [l.rstrip() for l in last_lines],
+            "total": len(all_lines),
+            "file":  log_path,
+        }
+    except Exception as e:
+        return {"lines": [], "error": str(e)}
+
+
+@app.get("/services/status")
+def get_services_status():
+    """Return status of all bot services and cron jobs."""
+    import subprocess, os
+    status = {}
+
+    # Check processes running
+    def is_running(name):
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", name],
+                capture_output=True, text=True
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    status["bot"]       = {"running": is_running("main.py"),      "label": "Trading Bot"}
+    status["watchdog"]  = {"running": is_running("watchdog.py"),  "label": "Watchdog"}
+    status["dashboard"] = {"running": is_running("http.server"),  "label": "Dashboard Server"}
+
+    # Check last run times from log files
+    def last_run(log_file):
+        try:
+            if os.path.exists(log_file):
+                mtime = os.path.getmtime(log_file)
+                from datetime import datetime, timezone
+                dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+                return dt.strftime("%Y-%m-%d %H:%M UTC")
+        except Exception:
+            pass
+        return "Never"
+
+    status["nightly_agent"] = {
+        "label":    "Nightly Agent",
+        "last_run": last_run("logs/nightly.log"),
+        "running":  False,
+    }
+    status["weekly_agent"] = {
+        "label":    "Weekly Agent",
+        "last_run": last_run("logs/weekly.log"),
+        "running":  False,
+    }
+    status["token_refresh"] = {
+        "label":    "Token Refresh",
+        "last_run": last_run("logs/token.log"),
+        "running":  False,
+    }
+
+    # Check cron is active
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "cron"],
+            capture_output=True, text=True
+        )
+        status["cron"] = {
+            "label":   "Cron Scheduler",
+            "running": result.stdout.strip() == "active",
+        }
+    except Exception:
+        status["cron"] = {"label": "Cron Scheduler", "running": False}
+
+    # Bot uptime
+    try:
+        result = subprocess.run(
+            ["stat", "-c", "%Y", "logs/bot.log"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            from datetime import datetime, timezone
+            mtime  = int(result.stdout.strip())
+            start  = datetime.fromtimestamp(mtime, tz=timezone.utc)
+            now    = datetime.now(tz=timezone.utc)
+            uptime = str(now - start).split(".")[0]
+            status["uptime"] = uptime
+    except Exception:
+        status["uptime"] = "Unknown"
+
+    return status
+
+
+@app.get("/backtest/results")
+def get_backtest_results():
+    """Return latest backtest results from weekly report."""
+    import os, json, glob
+    try:
+        reports = sorted(
+            glob.glob("db/weekly_reports/*.json"),
+            reverse=True
+        )
+        if not reports:
+            return {"available": False, "message": "No backtest results yet. Run weekly_agent.py first."}
+
+        with open(reports[0]) as f:
+            data = json.load(f)
+
+        grades = data.get("strategy_grades", {})
+        result = {
+            "available":   True,
+            "week_ending": data.get("week_ending", ""),
+            "strategies":  {},
+        }
+
+        for strat, info in grades.items():
+            results   = info.get("results", {})
+            top_10    = info.get("top_10", [])
+            avoid     = info.get("avoid", [])
+            avg_pf    = info.get("avg_pf", 0)
+
+            # Build leaderboard
+            leaderboard = sorted(
+                [
+                    {
+                        "symbol":       sym,
+                        "win_rate":     r.get("win_rate", 0),
+                        "profit_factor": r.get("profit_factor", 0),
+                        "sharpe":       r.get("sharpe", 0),
+                        "total_return": r.get("total_return", 0),
+                        "total_trades": r.get("total_trades", 0),
+                        "max_drawdown": r.get("max_drawdown", 0),
+                    }
+                    for sym, r in results.items()
+                ],
+                key=lambda x: x["profit_factor"],
+                reverse=True,
+            )
+
+            result["strategies"][strat] = {
+                "avg_profit_factor": avg_pf,
+                "top_10":           top_10,
+                "avoid":            avoid,
+                "leaderboard":      leaderboard[:15],
+            }
+
+        return result
+
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+
+@app.websocket("/ws/logs")
+async def websocket_logs(ws: WebSocket):
+    """Stream live log lines via WebSocket."""
+    import asyncio, os
+    await ws.accept()
+    log_path = "logs/bot.log"
+    last_pos  = 0
+
+    # Send last 30 lines immediately on connect
+    try:
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+                for line in lines[-30:]:
+                    await ws.send_text(line.rstrip())
+                last_pos = f.tell()
+    except Exception:
+        pass
+
+    # Then stream new lines as they appear
+    try:
+        while True:
+            try:
+                if os.path.exists(log_path):
+                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                        f.seek(last_pos)
+                        new_lines = f.readlines()
+                        last_pos  = f.tell()
+                    for line in new_lines:
+                        line = line.rstrip()
+                        if line:
+                            await ws.send_text(line)
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        pass
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.now(tz=timezone.utc).isoformat()}
