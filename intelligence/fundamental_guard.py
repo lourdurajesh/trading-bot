@@ -86,6 +86,8 @@ class FundamentalGuard:
     def check(self, symbol: str) -> FundamentalRisk:
         """Run all fundamental checks for a symbol."""
         ticker = self._to_ticker(symbol)
+        if "INDEX" in symbol or "NIFTY" in ticker:
+            return FundamentalRisk(symbol=symbol, notes="Index — no fundamental check")
         risk   = FundamentalRisk(symbol=symbol)
 
         self._check_earnings(ticker, risk)

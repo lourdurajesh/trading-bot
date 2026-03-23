@@ -71,6 +71,8 @@ class StrategySelector:
                 intel = intelligence_engine.evaluate(signal)
                 if not intel.approved:
                     logger.info(f"[StrategySelector] {symbol} blocked by intelligence: {intel.summary[:100]}")
+                    # Apply cooldown so we don't re-evaluate every 60 seconds
+                    self.apply_cooldown(symbol, minutes=60)
                     continue
                 # Adjust position size if analyst says reduce
                 if intel.size_factor < 1.0:

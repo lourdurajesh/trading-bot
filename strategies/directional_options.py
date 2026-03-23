@@ -30,6 +30,16 @@ class DirectionalOptionsStrategy(BaseStrategy):
         self.timeframe = "1H"
 
     def evaluate(self, symbol: str) -> Optional[Signal]:
+        # Only trade indices, not equity symbols
+        if "-EQ" in symbol:
+            return None
+        
+        # Also skip if price data looks wrong (Nifty should be > 10000)
+        ltp = self.get_ltp(symbol)
+        if not ltp or ltp < 1000:
+            self.log_skip(symbol, f"Price ₹{ltp} looks incorrect for options")
+            return None
+        
         if not self.enabled:
             return None
 
