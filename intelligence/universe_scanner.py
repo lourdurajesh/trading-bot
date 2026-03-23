@@ -190,7 +190,7 @@ class UniverseScanner:
         if (
             self._nse_universe is not None
             and self._universe_fetched_at is not None
-            and (now - self._universe_fetched_at).hours < 24
+            and (now - self._universe_fetched_at).total_seconds() < 86400  # 24 * 3600
         ):
             return self._nse_universe
 
