@@ -215,7 +215,9 @@ def main():
         request_key  = step1_send_otp()
         request_key  = step2_verify_totp(request_key)
         login_token  = step3_verify_pin(request_key)
-        access_token = step4_get_access_token(login_token)
+        auth_code    = step4_get_access_token(login_token)
+        access_token = step5_generate_token(auth_code)
+
         save_token(access_token)
         logger.info("")
         logger.info("Done. Run:  python main.py")
