@@ -78,10 +78,15 @@ class Signal:
         """Basic sanity check before passing to risk manager."""
         if self.entry <= 0 or self.stop_loss <= 0:
             return False
-        if self.direction == Direction.LONG and self.stop_loss >= self.entry:
-            return False
-        if self.direction == Direction.SHORT and self.stop_loss <= self.entry:
-            return False
+        if self.signal_type == SignalType.OPTIONS:
+            # Debit spread: entry = premium paid; stop < entry (exit if premium drops 50%)
+            if self.stop_loss >= self.entry:
+                return False
+        else:
+            if self.direction == Direction.LONG and self.stop_loss >= self.entry:
+                return False
+            if self.direction == Direction.SHORT and self.stop_loss <= self.entry:
+                return False
         if self.target_1 <= 0:
             return False
         if self.confidence < 0.0 or self.confidence > 1.0:

@@ -67,6 +67,15 @@ class StrategySelector:
         for symbol in symbols:
             signal = self._evaluate_symbol(symbol)
             if signal:
+                # Gate: reject structurally invalid signals before the expensive
+                # intelligence layer (news scraper, macro, Claude analyst).
+                if not signal.is_valid():
+                    logger.warning(
+                        f"[StrategySelector] {symbol} signal invalid before intelligence "
+                        f"(entry={signal.entry}, sl={signal.stop_loss}, t1={signal.target_1}) — skipping"
+                    )
+                    continue
+
                 # Run intelligence layer before submission
                 intel = intelligence_engine.evaluate(signal)
                 if not intel.approved:
@@ -83,6 +92,10 @@ class StrategySelector:
                 signal_id = order_manager.submit(signal)
                 if signal_id:
                     signals_submitted.append(signal)
+                else:
+                    # Order rejected post-intelligence (risk/margin/profit check failed).
+                    # Apply a short cooldown to avoid hammering the same symbol next cycle.
+                    self.apply_cooldown(symbol, minutes=5)
 
         if signals_submitted:
             logger.info(

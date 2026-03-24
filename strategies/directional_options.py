@@ -87,6 +87,9 @@ class DirectionalOptionsStrategy(BaseStrategy):
         otm_strike  = options_engine.get_otm_strike(spot, option_type, 0.5, iv, 14)
 
         # Debit spread cost estimate
+        # entry  = net debit paid for the spread
+        # stop   = exit if spread loses 50% of premium (risk = 0.5× debit)
+        # target = max spread width (when both legs expire ITM)
         debit_cost  = spot * iv * 0.015
         max_profit  = spot * iv * 0.025
         confidence  = min(regime.confidence * 0.9, 0.85)
@@ -99,9 +102,9 @@ class DirectionalOptionsStrategy(BaseStrategy):
             strategy    = self.name,
             direction   = direction,
             signal_type = SignalType.OPTIONS,
-            entry       = debit_cost,
-            stop_loss   = debit_cost,      # max loss = premium paid
-            target_1    = max_profit,
+            entry       = round(debit_cost, 2),
+            stop_loss   = round(debit_cost * 0.5, 2),   # exit at 50% premium loss
+            target_1    = round(max_profit, 2),
             confidence  = round(confidence, 2),
             timeframe   = self.timeframe,
             regime      = regime.regime.value,
