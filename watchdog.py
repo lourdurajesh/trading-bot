@@ -19,6 +19,9 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 logging.basicConfig(
     level  = logging.INFO,
@@ -191,7 +194,7 @@ class Watchdog:
 
     def _check_token_refresh(self) -> None:
         """Auto-refresh Fyers token at 11:45 PM daily."""
-        now   = datetime.now()
+        now   = datetime.now(tz=IST)
         today = now.date()
 
         # Reset daily flag at midnight

@@ -13,6 +13,9 @@ import threading
 import logging
 from collections import defaultdict, deque
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 from typing import Optional
 
 import pandas as pd
@@ -96,7 +99,7 @@ class DataStore:
             # Normalise timestamp to UTC datetime
             ts = tick.get("timestamp")
             if isinstance(ts, (int, float)):
-                ts = datetime.fromtimestamp(ts, tz=timezone.utc)
+                ts = datetime.fromtimestamp(ts, tz=IST)
             tick["timestamp"] = ts
 
             ltp = float(tick["ltp"])
@@ -187,7 +190,7 @@ class DataStore:
             candle_start_epoch = ((epoch + _IST_OFFSET_SEC) // tf_seconds) * tf_seconds - _IST_OFFSET_SEC
         else:
             candle_start_epoch = (epoch // tf_seconds) * tf_seconds
-        candle_start = datetime.fromtimestamp(candle_start_epoch, tz=timezone.utc)
+        candle_start = datetime.fromtimestamp(candle_start_epoch, tz=IST)
 
         open_candle = self._open_candle[symbol][tf]
 

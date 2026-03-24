@@ -32,6 +32,9 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import requests
 
@@ -221,7 +224,7 @@ class JournalAnalyser:
         )
 
         analysis = JournalAnalysis(
-            generated_at      = datetime.now(tz=timezone.utc).isoformat(),
+            generated_at      = datetime.now(tz=IST).isoformat(),
             total_trades      = len(trades),
             date_range        = date_range,
             win_rate          = round(win_rate * 100, 1),
@@ -786,7 +789,7 @@ NOT generic advice like "stick to your plan" or "manage your emotions"."""
     # ─────────────────────────────────────────────────────────────
 
     def _save_report(self, analysis: JournalAnalysis) -> None:
-        ts   = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M")
+        ts   = datetime.now(tz=IST).strftime("%Y%m%d_%H%M")
         path = os.path.join(REPORTS_DIR, f"journal_{ts}.json")
         data = {
             "generated_at":      analysis.generated_at,
@@ -836,7 +839,7 @@ NOT generic advice like "stick to your plan" or "manage your emotions"."""
 
     def _insufficient_data_result(self, count: int, needed: int) -> JournalAnalysis:
         return JournalAnalysis(
-            generated_at      = datetime.now(tz=timezone.utc).isoformat(),
+            generated_at      = datetime.now(tz=IST).isoformat(),
             total_trades      = count,
             date_range        = "Insufficient data",
             win_rate          = 0, avg_winner_pnl=0, avg_loser_pnl=0,

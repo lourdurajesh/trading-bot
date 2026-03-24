@@ -24,6 +24,9 @@ import sys
 import time
 import threading
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from config.settings import (
     API_HOST, API_PORT, BOT_MODE, LOG_DIR, LOG_LEVEL, NSE_OPEN, NSE_CLOSE,
@@ -75,7 +78,7 @@ class TradingBot:
         logger.info("=" * 60)
         logger.info("  AlphaLens Trading Bot — Starting")
         logger.info(f"  Mode: {BOT_MODE}")
-        logger.info(f"  Time: {datetime.now(tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        logger.info(f"  Time: {datetime.now(tz=IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
         logger.info("=" * 60)
 
         # Validate environment on every startup — catches misconfigurations early
@@ -229,7 +232,7 @@ class TradingBot:
         Simple time-based check — extend with holiday calendar if needed.
         """
         from datetime import time as dtime
-        now_ist = datetime.now()   # assumes server is in IST; adjust for UTC offset if needed
+        now_ist = datetime.now(tz=IST)   # always IST regardless of server timezone
         current_time = now_ist.time()
         weekday = now_ist.weekday()   # 0=Mon … 6=Sun
 

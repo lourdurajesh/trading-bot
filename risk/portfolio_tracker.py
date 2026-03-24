@@ -14,6 +14,9 @@ import sqlite3
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from config.settings import DB_PATH, TOTAL_CAPITAL
 from data.data_store import store
@@ -78,7 +81,7 @@ class PortfolioTracker:
                       paper: bool = False) -> Position:
         """Record a newly filled trade entry."""
         self._trade_counter += 1
-        trade_id = f"T{datetime.now(tz=timezone.utc).strftime('%Y%m%d%H%M%S')}-{self._trade_counter:04d}"
+        trade_id = f"T{datetime.now(tz=IST).strftime('%Y%m%d%H%M%S')}-{self._trade_counter:04d}"
 
         position = Position(
             id              = trade_id,
@@ -92,7 +95,7 @@ class PortfolioTracker:
             target_2        = signal.target_2,
             position_size   = signal.position_size,
             capital_at_risk = signal.capital_at_risk,
-            entry_time      = datetime.now(tz=timezone.utc),
+            entry_time      = datetime.now(tz=IST),
             options_meta    = signal.options_meta,
         )
 
@@ -134,7 +137,7 @@ class PortfolioTracker:
             return None
 
         position.exit_price  = fill_price
-        position.exit_time   = datetime.now(tz=timezone.utc)
+        position.exit_time   = datetime.now(tz=IST)
         position.exit_reason = reason
         position.status      = "CLOSED"
 
@@ -264,6 +267,7 @@ class PortfolioTracker:
                     exit_price      REAL,
                     stop_loss       REAL,
                     target_1        REAL,
+                    target_2        REAL DEFAULT 0,
                     position_size   INTEGER,
                     capital_at_risk REAL,
                     realised_pnl    REAL,
@@ -280,12 +284,12 @@ class PortfolioTracker:
             conn.execute("""
                 INSERT OR REPLACE INTO trades
                 (id, symbol, strategy, direction, signal_type, entry_price,
-                 exit_price, stop_loss, target_1, position_size, capital_at_risk,
+                 exit_price, stop_loss, target_1, target_2, position_size, capital_at_risk,
                  realised_pnl, status, exit_reason, entry_time, exit_time)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 pos.id, pos.symbol, pos.strategy, pos.direction, pos.signal_type,
-                pos.entry_price, pos.exit_price, pos.stop_loss, pos.target_1,
+                pos.entry_price, pos.exit_price, pos.stop_loss, pos.target_1, pos.target_2,
                 pos.position_size, pos.capital_at_risk, pos.realised_pnl,
                 pos.status, pos.exit_reason,
                 pos.entry_time.isoformat() if pos.entry_time else None,
@@ -314,7 +318,7 @@ class PortfolioTracker:
                     entry_price     = row["entry_price"],
                     stop_loss       = row["stop_loss"],
                     target_1        = row["target_1"],
-                    target_2        = 0.0,
+                    target_2        = float(row["target_2"]) if row["target_2"] else 0.0,
                     position_size   = row["position_size"],
                     capital_at_risk = row["capital_at_risk"],
                     entry_time      = datetime.fromisoformat(row["entry_time"]),

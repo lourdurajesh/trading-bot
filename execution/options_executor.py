@@ -40,6 +40,9 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +171,7 @@ class OptionsExecutor:
 
     def _get_chain(self, underlying: str, force: bool = False) -> Optional[dict]:
         """Fetch options chain from Fyers, with 60-second cache."""
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=IST)
 
         if not force and underlying in self._chain_cache:
             cached, fetched_at = self._chain_cache[underlying]
@@ -349,7 +352,7 @@ class OptionsExecutor:
 
             # Approximate expiry date
             from datetime import timedelta
-            expiry_dt  = datetime.now(tz=timezone.utc) + timedelta(days=dte)
+            expiry_dt  = datetime.now(tz=IST) + timedelta(days=dte)
             expiry_str = expiry_dt.strftime("%Y-%m-%d")
 
             fyers_symbol = self._build_nfo_symbol(short_name, expiry_str, strike, option_type)
@@ -435,8 +438,8 @@ class OptionsExecutor:
     @staticmethod
     def _days_to_expiry(expiry_str: str) -> int:
         try:
-            expiry = datetime.strptime(expiry_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            now    = datetime.now(tz=timezone.utc)
+            expiry = datetime.strptime(expiry_str, "%Y-%m-%d").replace(tzinfo=IST)
+            now    = datetime.now(tz=IST)
             return max(0, (expiry - now).days)
         except Exception:
             return 0

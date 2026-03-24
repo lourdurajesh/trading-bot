@@ -22,6 +22,9 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import numpy as np
 import pandas as pd
@@ -213,7 +216,7 @@ class PortfolioAnalyser:
         )
 
         analysis = PortfolioAnalysis(
-            generated_at      = datetime.now(tz=timezone.utc),
+            generated_at      = datetime.now(tz=IST),
             total_value       = total_value,
             total_pnl         = total_pnl,
             positions         = position_analyses,
@@ -789,7 +792,7 @@ ACTIONS: ["action 1", "action 2", "action 3"]"""
 
     def _empty_analysis(self) -> PortfolioAnalysis:
         return PortfolioAnalysis(
-            generated_at      = datetime.now(tz=timezone.utc),
+            generated_at      = datetime.now(tz=IST),
             total_value       = 0,
             total_pnl         = 0,
             positions         = [],

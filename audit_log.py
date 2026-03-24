@@ -49,6 +49,9 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from config.settings import DB_PATH
 
@@ -314,7 +317,7 @@ class AuditLog:
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            datetime.now(tz=timezone.utc).isoformat(),
+                            datetime.now(tz=IST).isoformat(),
                             event_type, symbol, direction, qty, price,
                             order_id, strategy, reason, details_json,
                             1 if paper else 0,

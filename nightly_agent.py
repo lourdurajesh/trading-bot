@@ -23,6 +23,9 @@ import os
 import sys
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import requests
 
@@ -48,12 +51,12 @@ def run_nightly_agent():
     """Main nightly agent routine."""
     logger.info("=" * 60)
     logger.info("  Nightly Agent — Starting")
-    logger.info(f"  {datetime.now(tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    logger.info(f"  {datetime.now(tz=IST).strftime('%Y-%m-%d %H:%M IST')}")
     logger.info("=" * 60)
 
     playbook = {
-        "date":          datetime.now(tz=timezone.utc).strftime("%Y-%m-%d"),
-        "generated_at":  datetime.now(tz=timezone.utc).isoformat(),
+        "date":          datetime.now(tz=IST).strftime("%Y-%m-%d"),
+        "generated_at":  datetime.now(tz=IST).isoformat(),
         "themes":        [],
         "watchlist":     [],
         "stock_plays":   [],
@@ -103,11 +106,17 @@ def run_nightly_agent():
     logger.info("Step 4: Scanning NSE universe...")
     from intelligence.universe_scanner import universe_scanner
     from config.watchlist import ALL_NSE_SYMBOLS
-    candidates = universe_scanner.scan(themes, max_stocks=30)
+    candidates = universe_scanner.scan(themes, max_stocks=40)
 
-    # Build dynamic watchlist
-    dynamic_watchlist = universe_scanner.get_dynamic_watchlist(
-        themes, ALL_NSE_SYMBOLS, max_add=20
+    # Build dynamic watchlist from already-scanned candidates (avoids double scan)
+    additions = []
+    for c in candidates:
+        if c.symbol not in ALL_NSE_SYMBOLS and len(additions) < 20:
+            additions.append(c.symbol)
+    dynamic_watchlist = list(ALL_NSE_SYMBOLS) + additions
+    logger.info(
+        f"[UniverseScanner] Watchlist: {len(ALL_NSE_SYMBOLS)} base + "
+        f"{len(additions)} theme additions = {len(dynamic_watchlist)} total"
     )
     playbook["watchlist"] = dynamic_watchlist
     logger.info(f"  {len(candidates)} candidates | {len(dynamic_watchlist)} total watchlist")
@@ -125,7 +134,7 @@ def run_nightly_agent():
     logger.info(f"  {len(stock_plays)} stock plays generated")
 
     # ── Step 7: Save playbook ─────────────────────────────────────
-    date_str      = datetime.now(tz=timezone.utc).strftime("%Y%m%d")
+    date_str      = datetime.now(tz=IST).strftime("%Y%m%d")
     playbook_path = os.path.join(PLAYBOOK_DIR, f"playbook_{date_str}.json")
     with open(playbook_path, "w") as f:
         json.dump(playbook, f, indent=2, default=str)
@@ -317,7 +326,7 @@ Generate a specific trade setup for tomorrow. Respond ONLY with JSON:
                 "content-type":      "application/json",
             },
             json={
-                "model":      "claude-sonnet-4-20250514",
+                "model":      "claude-sonnet-4-6",
                 "max_tokens": 800,
                 "messages":   [{"role": "user", "content": prompt}],
             },
@@ -367,7 +376,7 @@ def _update_live_watchlist(symbols: list[str]) -> None:
     os.makedirs("db", exist_ok=True)
     with open(watchlist_path, "w") as f:
         json.dump({
-            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+            "generated_at": datetime.now(tz=IST).isoformat(),
             "symbols":      symbols,
         }, f, indent=2)
     logger.info(f"Dynamic watchlist saved: {len(symbols)} symbols → {watchlist_path}")

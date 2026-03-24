@@ -18,6 +18,9 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 from typing import Optional
 
 import pandas as pd
@@ -81,7 +84,7 @@ class RegimeDetector:
         Uses cache unless stale (> REGIME_REFRESH_MINUTES old).
         """
         cache_key = f"{symbol}_{timeframe}"
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=IST)
 
         if not force_refresh and cache_key in self._cache:
             cached_result, cached_at = self._cache[cache_key]
@@ -116,7 +119,7 @@ class RegimeDetector:
                 regime=Regime.UNKNOWN,
                 confidence=0.0,
                 adx_value=0, bb_width=0, atr_pct=0, rsi_value=50, slope=0,
-                timestamp=datetime.now(tz=timezone.utc),
+                timestamp=datetime.now(tz=IST),
                 notes="Insufficient data",
             )
 
@@ -150,7 +153,7 @@ class RegimeDetector:
                 confidence=confidence,
                 adx_value=adx_val, bb_width=bb_w,
                 atr_pct=atr_pct, rsi_value=rsi_val, slope=slope_val,
-                timestamp=datetime.now(tz=timezone.utc),
+                timestamp=datetime.now(tz=IST),
                 notes=f"High ATR {atr_pct:.1f}% or extreme RSI {rsi_val:.0f}",
             )
 
@@ -172,7 +175,7 @@ class RegimeDetector:
                 confidence=confidence,
                 adx_value=adx_val, bb_width=bb_w,
                 atr_pct=atr_pct, rsi_value=rsi_val, slope=slope_val,
-                timestamp=datetime.now(tz=timezone.utc),
+                timestamp=datetime.now(tz=IST),
                 notes=f"BB squeeze breakout ({direction}), ADX {adx_val:.0f}",
             )
 
@@ -190,7 +193,7 @@ class RegimeDetector:
                 confidence=confidence,
                 adx_value=adx_val, bb_width=bb_w,
                 atr_pct=atr_pct, rsi_value=rsi_val, slope=slope_val,
-                timestamp=datetime.now(tz=timezone.utc),
+                timestamp=datetime.now(tz=IST),
                 notes=f"Trending {direction}, ADX {adx_val:.0f}, slope {slope_val:.2f}%",
             )
 
@@ -207,7 +210,7 @@ class RegimeDetector:
                 confidence=confidence,
                 adx_value=adx_val, bb_width=bb_w,
                 atr_pct=atr_pct, rsi_value=rsi_val, slope=slope_val,
-                timestamp=datetime.now(tz=timezone.utc),
+                timestamp=datetime.now(tz=IST),
                 notes=f"Ranging, ADX {adx_val:.0f}, BB width {bb_w:.3f}",
             )
 
@@ -217,7 +220,7 @@ class RegimeDetector:
             confidence=0.4,
             adx_value=adx_val, bb_width=bb_w,
             atr_pct=atr_pct, rsi_value=rsi_val, slope=slope_val,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=datetime.now(tz=IST),
             notes=f"Ambiguous — ADX {adx_val:.0f}, slope {slope_val:.2f}%",
         )
 

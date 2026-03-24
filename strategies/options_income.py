@@ -47,6 +47,9 @@ class OptionsIncomeStrategy(BaseStrategy):
 
         # IV rank check
         iv_rank = options_engine.get_iv_rank(symbol)
+        if iv_rank is None or iv_rank < 0:
+            self.log_skip(symbol, "IV rank unavailable (insufficient history) — cannot confirm options are expensive enough to sell")
+            return None
         if iv_rank < MIN_IV_RANK:
             self.log_skip(symbol, f"IV rank {iv_rank:.0f} below minimum {MIN_IV_RANK}")
             return None

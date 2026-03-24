@@ -19,8 +19,11 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+IST = ZoneInfo("Asia/Kolkata")
 from fastapi.middleware.cors import CORSMiddleware
 
 from data.data_store import store
@@ -153,7 +156,7 @@ def get_services_status():
             if os.path.exists(log_file):
                 mtime = os.path.getmtime(log_file)
                 from datetime import datetime, timezone
-                dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+                dt = datetime.fromtimestamp(mtime, tz=IST)
                 return dt.strftime("%Y-%m-%d %H:%M UTC")
         except Exception:
             pass
@@ -197,8 +200,8 @@ def get_services_status():
         if result.returncode == 0:
             from datetime import datetime, timezone
             mtime  = int(result.stdout.strip())
-            start  = datetime.fromtimestamp(mtime, tz=timezone.utc)
-            now    = datetime.now(tz=timezone.utc)
+            start  = datetime.fromtimestamp(mtime, tz=IST)
+            now    = datetime.now(tz=IST)
             uptime = str(now - start).split(".")[0]
             status["uptime"] = uptime
     except Exception:
@@ -307,7 +310,7 @@ async def websocket_logs(ws: WebSocket):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "time": datetime.now(tz=timezone.utc).isoformat()}
+    return {"status": "ok", "time": datetime.now(tz=IST).isoformat()}
 
 
 @app.get("/stats")
@@ -555,7 +558,7 @@ def _build_live_payload() -> dict:
     }
 
     return {
-        "timestamp":       datetime.now(tz=timezone.utc).isoformat(),
+        "timestamp":       datetime.now(tz=IST).isoformat(),
         "mode":            order_manager.mode,
         "stats":           stats,
         "risk":            risk,

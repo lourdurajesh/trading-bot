@@ -20,6 +20,9 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 from typing import Optional
 
 import requests
@@ -96,7 +99,7 @@ class ThemeDetector:
 
         # Merge with existing active themes
         self._merge_themes(themes)
-        self._last_detection = datetime.now(tz=timezone.utc)
+        self._last_detection = datetime.now(tz=IST)
 
         logger.info(f"[ThemeDetector] {len(self._active_themes)} active themes: "
                     f"{[t.name for t in self._active_themes]}")
@@ -104,7 +107,7 @@ class ThemeDetector:
 
     def get_active_themes(self) -> list[Theme]:
         """Return currently active themes (not expired)."""
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=IST)
         self._active_themes = [
             t for t in self._active_themes
             if t.expires_at is None or t.expires_at > now
@@ -178,7 +181,7 @@ consumer_durables, agrochemicals, oil_gas, telecom, infra, nbfc, textiles."""
 
             theme_data = json.loads(content)
             themes     = []
-            now        = datetime.now(tz=timezone.utc)
+            now        = datetime.now(tz=IST)
 
             duration_days = {"SHORT": 5, "MEDIUM": 21, "LONG": 90}
 
@@ -211,7 +214,7 @@ consumer_durables, agrochemicals, oil_gas, telecom, infra, nbfc, textiles."""
     def _detect_with_rules(self, headlines: list[str]) -> list[Theme]:
         """Simple keyword-based theme detection."""
         text  = " ".join(headlines).lower()
-        now   = datetime.now(tz=timezone.utc)
+        now   = datetime.now(tz=IST)
         found = []
 
         rules = [

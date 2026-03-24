@@ -18,6 +18,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 from typing import Optional
 
 import pandas as pd
@@ -71,7 +74,7 @@ class Signal:
     capital_at_risk: float = 0.0    # INR / USD
 
     # Lifecycle
-    created_at:   datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    created_at:   datetime = field(default_factory=lambda: datetime.now(tz=IST))
     expires_at:   Optional[datetime] = None   # signal expires if not acted on
 
     def is_valid(self) -> bool:
@@ -79,9 +82,15 @@ class Signal:
         if self.entry <= 0 or self.stop_loss <= 0:
             return False
         if self.signal_type == SignalType.OPTIONS:
-            # Debit spread: entry = premium paid; stop < entry (exit if premium drops 50%)
-            if self.stop_loss >= self.entry:
-                return False
+            strategy_type = (self.options_meta or {}).get("strategy", "")
+            if strategy_type == "short_strangle":
+                # Short strangle: entry = credit received; stop = 2× credit (value rises = loss)
+                if self.stop_loss <= self.entry:
+                    return False
+            else:
+                # Debit spread: entry = premium paid; stop < entry (exit when premium decays 50%)
+                if self.stop_loss >= self.entry:
+                    return False
         else:
             if self.direction == Direction.LONG and self.stop_loss >= self.entry:
                 return False

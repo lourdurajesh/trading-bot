@@ -17,6 +17,9 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from config.settings import (
     DAILY_LOSS_LIMIT_PCT,
@@ -57,7 +60,7 @@ class RiskManager:
         self._kill_switch_active = False
         self._kill_switch_reason = ""
         self._daily_realised_pnl  = 0.0   # updated by portfolio_tracker
-        self._daily_reset_date    = date.today()
+        self._daily_reset_date    = datetime.now(tz=IST).date()
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
@@ -225,7 +228,15 @@ class RiskManager:
         risk_amount    = capital * (RISK_PER_TRADE_PCT / 100)
         risk_per_share = abs(signal.entry - signal.stop_loss)
 
-        if risk_per_share <= 0:
+        # Minimum meaningful risk: 0.1% of entry price.
+        # Smaller stop = stop is practically at entry = strategy error, not a real signal.
+        # Without this guard, a ₹0.01 stop on a ₹100 stock = 750,000 shares on ₹500k capital.
+        min_risk = signal.entry * 0.001
+        if risk_per_share < min_risk:
+            logger.warning(
+                f"[RiskManager] {signal.symbol}: stop loss too tight "
+                f"(risk ₹{risk_per_share:.4f} < min ₹{min_risk:.4f}) — rejecting"
+            )
             return 0, 0.0
 
         shares      = int(risk_amount / risk_per_share)
@@ -260,7 +271,7 @@ class RiskManager:
 
     def _check_daily_reset(self) -> None:
         """Reset daily P&L counter at the start of each new trading day."""
-        today = date.today()
+        today = datetime.now(tz=IST).date()
         if today != self._daily_reset_date:
             logger.info(
                 f"[RiskManager] New trading day. "

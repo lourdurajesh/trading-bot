@@ -26,6 +26,9 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, date, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import requests
 
@@ -78,7 +81,7 @@ class DailyPlanGenerator:
         Generate today's trading plan.
         Uses cached plan if already generated today.
         """
-        today     = date.today().strftime("%Y-%m-%d")
+        today     = datetime.now(tz=IST).date().strftime("%Y-%m-%d")
         plan_path = os.path.join(PLANS_DIR, f"plan_{today}.json")
 
         # Return cached plan if exists and not forced
@@ -115,7 +118,7 @@ class DailyPlanGenerator:
 
         plan = DailyPlan(
             date             = today,
-            generated_at     = datetime.now(tz=timezone.utc).isoformat(),
+            generated_at     = datetime.now(tz=IST).isoformat(),
             market_theme     = self._detect_theme(macro, playbook),
             risk_level       = risk_level,
             focus_stocks     = focus_stocks,
@@ -522,7 +525,7 @@ class DailyPlanGenerator:
 Be concise, specific, and actionable. Write like a Bloomberg terminal alert.
 
 TODAY'S CONTEXT:
-  Date:       {date.today().strftime('%A, %d %b %Y')}
+  Date:       {datetime.now(tz=IST).date().strftime('%A, %d %b %Y')}
   Risk level: {risk_level}
   VIX:        {macro.get('nifty_vix', 0):.1f} ({macro.get('vix_signal', 'unknown')})
   FII flow:   ₹{macro.get('fii_net_flow', 0):+,.0f} Cr ({macro.get('fii_signal', 'unknown')})
@@ -804,7 +807,7 @@ RULES: ["rule 1", "rule 2", "rule 3"]"""
 
     def mark_done(self, item_id: str, today: str = None) -> bool:
         """Mark a checklist item as done and save."""
-        today     = today or date.today().strftime("%Y-%m-%d")
+        today     = today or datetime.now(tz=IST).date().strftime("%Y-%m-%d")
         plan_path = os.path.join(PLANS_DIR, f"plan_{today}.json")
         if not os.path.exists(plan_path):
             return False

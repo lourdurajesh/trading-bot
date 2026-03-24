@@ -28,6 +28,9 @@ import logging
 import threading
 from datetime import date, datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from config.settings import (
     DAILY_OPTIONS_LOSS_LIMIT_PCT,
@@ -60,7 +63,7 @@ class OptionsRiskGate:
     def __init__(self):
         self._lock                    = threading.Lock()
         self._daily_options_pnl       = 0.0
-        self._daily_reset_date        = date.today()
+        self._daily_reset_date        = datetime.now(tz=IST).date()
         self._options_kill_switch     = False
         self._options_kill_reason     = ""
 
@@ -210,7 +213,11 @@ class OptionsRiskGate:
         max_by_risk   = int(risk_budget / cost_per_lot)
         max_by_cap    = int(cap_budget  / cost_per_lot)
         lots          = min(max_by_risk, max_by_cap, MAX_OPTIONS_LOTS_PER_TRADE)
-        lots          = max(lots, 1)   # always at least 1 lot if we reach this point
+        # Do NOT force min=1 here — if budget says 0 lots, return 0 so caller rejects the trade.
+        # Forcing 1 lot when budget says 0 can deploy 100× intended capital.
+
+        if lots <= 0:
+            return 0, 0.0
 
         capital_used  = lots * cost_per_lot
         return lots, round(capital_used, 2)
@@ -279,7 +286,7 @@ class OptionsRiskGate:
         """Return True if the expiry date is today — no trading on expiry day."""
         try:
             expiry = date.fromisoformat(expiry_str)
-            return expiry == date.today()
+            return expiry == datetime.now(tz=IST).date()
         except Exception:
             return False
 
@@ -316,7 +323,7 @@ class OptionsRiskGate:
                     pass
 
     def _reset_daily_if_needed(self) -> None:
-        today = date.today()
+        today = datetime.now(tz=IST).date()
         if today != self._daily_reset_date:
             with self._lock:
                 if today != self._daily_reset_date:

@@ -22,6 +22,9 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from config.settings import DB_PATH, RISK_PER_TRADE_PCT, TOTAL_CAPITAL
 from data.data_store import store
@@ -293,7 +296,7 @@ class PaperTradingEngine:
                 signal.position_size,
                 signal.capital_at_risk,
                 "OPEN",
-                datetime.now(tz=timezone.utc).isoformat(),
+                datetime.now(tz=IST).isoformat(),
             ))
 
     def _record_exit(self, symbol: str, exit_price: float, reason: str) -> float:
@@ -327,7 +330,7 @@ class PaperTradingEngine:
                 WHERE symbol=? AND status='OPEN'
             """, (
                 exit_price, pnl, reason,
-                datetime.now(tz=timezone.utc).isoformat(),
+                datetime.now(tz=IST).isoformat(),
                 symbol,
             ))
             return pnl

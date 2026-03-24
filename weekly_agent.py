@@ -14,6 +14,9 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -35,12 +38,12 @@ def run_weekly_agent():
     """Full weekly deep analysis."""
     logger.info("=" * 60)
     logger.info("  Weekly Agent — Deep Analysis Starting")
-    logger.info(f"  {datetime.now(tz=timezone.utc).strftime('%Y-%m-%d')}")
+    logger.info(f"  {datetime.now(tz=IST).strftime('%Y-%m-%d')}")
     logger.info("=" * 60)
 
     report = {
-        "week_ending":      datetime.now(tz=timezone.utc).strftime("%Y-%m-%d"),
-        "generated_at":     datetime.now(tz=timezone.utc).isoformat(),
+        "week_ending":      datetime.now(tz=IST).strftime("%Y-%m-%d"),
+        "generated_at":     datetime.now(tz=IST).isoformat(),
         "strategy_grades":  {},
         "top_candidates":   [],
         "weekly_outlook":   "",
@@ -72,7 +75,7 @@ def run_weekly_agent():
     report["risk_parameters"] = _review_risk_params(strategy_grades)
 
     # ── 6. Save report ────────────────────────────────────────────
-    week_str     = datetime.now(tz=timezone.utc).strftime("%Y_W%W")
+    week_str     = datetime.now(tz=IST).strftime("%Y_W%W")
     report_path  = os.path.join(REPORTS_DIR, f"weekly_{week_str}.json")
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2, default=str)

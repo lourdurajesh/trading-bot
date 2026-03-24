@@ -19,6 +19,9 @@ import concurrent.futures
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from intelligence.news_scraper import get_news_for_symbol, NewsItem
 from intelligence.macro_data import macro_collector, MacroSnapshot
@@ -66,7 +69,7 @@ class IntelligenceEngine:
         Run all 4 intelligence layers and return combined verdict.
         Designed to complete in under 20 seconds.
         """
-        start = datetime.now(tz=timezone.utc)
+        start = datetime.now(tz=IST)
         logger.info(f"[Intelligence] Evaluating {signal.symbol}...")
 
         # ── Run layers 1-3 in parallel ────────────────────────────
@@ -106,7 +109,7 @@ class IntelligenceEngine:
 
         # ── Hard veto from fundamental guard ─────────────────────
         if fundamental.veto:
-            duration = int((datetime.now(tz=timezone.utc) - start).total_seconds() * 1000)
+            duration = int((datetime.now(tz=IST) - start).total_seconds() * 1000)
             result = IntelligenceResult(
                 symbol      = signal.symbol,
                 approved    = False,
@@ -125,7 +128,7 @@ class IntelligenceEngine:
         # ── Macro hard brake ─────────────────────────────────────
         # If macro is very bearish AND VIX is panicking, block ALL new trades
         if macro.macro_score < -6 and macro.vix_signal == "panic":
-            duration = int((datetime.now(tz=timezone.utc) - start).total_seconds() * 1000)
+            duration = int((datetime.now(tz=IST) - start).total_seconds() * 1000)
             result = IntelligenceResult(
                 symbol      = signal.symbol,
                 approved    = False,
@@ -145,7 +148,7 @@ class IntelligenceEngine:
         analyst_verdict = analyst_agent.analyse(signal, news_items, macro, fundamental)
 
         # ── Combine into final verdict ────────────────────────────
-        duration = int((datetime.now(tz=timezone.utc) - start).total_seconds() * 1000)
+        duration = int((datetime.now(tz=IST) - start).total_seconds() * 1000)
 
         approved    = analyst_verdict.verdict in ("APPROVE", "REDUCE_SIZE")
         size_factor = 1.0

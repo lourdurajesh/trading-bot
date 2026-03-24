@@ -205,9 +205,12 @@ class BacktestEngine:
                         # Position sizing
                         risk_amount   = capital * (RISK_PER_TRADE_PCT / 100)
                         risk_per_unit = abs(entry_price - signal.stop_loss)
-                        if risk_per_unit <= 0:
+                        min_risk      = entry_price * 0.001
+                        if risk_per_unit < min_risk:
                             continue
-                        size = max(1, int(risk_amount / risk_per_unit))
+                        size = int(risk_amount / risk_per_unit)
+                        if size <= 0:
+                            continue
 
                         open_trade = Trade(
                             symbol        = symbol,

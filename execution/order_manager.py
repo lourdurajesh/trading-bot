@@ -16,6 +16,9 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from config.settings import BOT_MODE, TOTAL_CAPITAL
 import os
@@ -83,7 +86,7 @@ class OrderManager:
             signal = self._pending_signals.pop(signal_id, None)
         if not signal:
             return False
-        if signal.expires_at and datetime.now(tz=timezone.utc) > signal.expires_at:
+        if signal.expires_at and datetime.now(tz=IST) > signal.expires_at:
             logger.warning(f"[OrderManager] Signal {signal_id} expired")
             return False
         self._execute(signal)
@@ -359,14 +362,14 @@ class OrderManager:
             pass
 
     def _queue_for_confirmation(self, signal_id: str, signal: Signal) -> None:
-        signal.expires_at = datetime.now(tz=timezone.utc) + timedelta(minutes=SIGNAL_EXPIRY_MINUTES)
+        signal.expires_at = datetime.now(tz=IST) + timedelta(minutes=SIGNAL_EXPIRY_MINUTES)
         with self._lock:
             self._pending_signals[signal_id] = signal
         logger.info(f"[OrderManager] QUEUED: {signal.symbol} (id: {signal_id})")
         self._send_alert(signal, signal_id, pending=True)
 
     def _purge_expired_signals(self) -> None:
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=IST)
         with self._lock:
             expired = [
                 sid for sid, sig in self._pending_signals.items()

@@ -16,6 +16,9 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import requests
 
@@ -112,13 +115,13 @@ class FundamentalGuard:
             resp = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
             data = resp.json()
 
-            now = datetime.now(tz=timezone.utc)
+            now = datetime.now(tz=IST)
             for event in data:
                 purpose = event.get("purpose", "").lower()
                 if "result" in purpose or "dividend" in purpose or "quarterly" in purpose:
                     date_str = event.get("date", "")
                     try:
-                        event_dt = datetime.strptime(date_str, "%d-%b-%Y").replace(tzinfo=timezone.utc)
+                        event_dt = datetime.strptime(date_str, "%d-%b-%Y").replace(tzinfo=IST)
                         days_away = (event_dt - now).days
                         if 0 <= days_away < risk.days_to_earnings:
                             risk.days_to_earnings = days_away
@@ -133,8 +136,8 @@ class FundamentalGuard:
         manual_date = self._earnings_calendar.get(ticker, "")
         if manual_date:
             try:
-                event_dt  = datetime.strptime(manual_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                days_away = (event_dt - datetime.now(tz=timezone.utc)).days
+                event_dt  = datetime.strptime(manual_date, "%Y-%m-%d").replace(tzinfo=IST)
+                days_away = (event_dt - datetime.now(tz=IST)).days
                 if 0 <= days_away < risk.days_to_earnings:
                     risk.days_to_earnings = days_away
                     risk.earnings_date    = manual_date
@@ -163,12 +166,12 @@ class FundamentalGuard:
             resp = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
             data = resp.json()
 
-            now = datetime.now(tz=timezone.utc)
+            now = datetime.now(tz=IST)
             for action in data[:5]:
                 ex_date_str = action.get("exDate", "")
                 purpose     = action.get("subject", "")
                 try:
-                    ex_dt     = datetime.strptime(ex_date_str, "%d-%b-%Y").replace(tzinfo=timezone.utc)
+                    ex_dt     = datetime.strptime(ex_date_str, "%d-%b-%Y").replace(tzinfo=IST)
                     days_away = (ex_dt - now).days
                     if 0 <= days_away <= 10:
                         risk.upcoming_actions.append(f"{purpose} in {days_away} days")

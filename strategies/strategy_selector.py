@@ -11,6 +11,9 @@ Called by main.py on every evaluation cycle.
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from analysis.regime_detector import Regime, regime_detector
 from config.settings import MIN_SIGNAL_CONFIDENCE, SYMBOL_COOLDOWN_MINUTES
@@ -121,7 +124,7 @@ class StrategySelector:
         Called by portfolio_tracker on loss close.
         """
         duration = minutes or SYMBOL_COOLDOWN_MINUTES
-        self._cooldowns[symbol] = datetime.now(tz=timezone.utc) + timedelta(minutes=duration)
+        self._cooldowns[symbol] = datetime.now(tz=IST) + timedelta(minutes=duration)
         logger.info(f"[StrategySelector] Cooldown applied to {symbol} for {duration} minutes.")
 
     def get_status(self) -> dict:
@@ -134,7 +137,7 @@ class StrategySelector:
             },
             "symbols_on_cooldown": len([
                 s for s, exp in self._cooldowns.items()
-                if exp > datetime.now(tz=timezone.utc)
+                if exp > datetime.now(tz=IST)
             ]),
         }
 
@@ -196,7 +199,7 @@ class StrategySelector:
     def _is_on_cooldown(self, symbol: str) -> bool:
         """Check if a symbol is currently in cooldown period."""
         expiry = self._cooldowns.get(symbol)
-        if expiry and datetime.now(tz=timezone.utc) < expiry:
+        if expiry and datetime.now(tz=IST) < expiry:
             return True
         # Clean up expired cooldowns
         if expiry:

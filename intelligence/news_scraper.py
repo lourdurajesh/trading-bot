@@ -18,6 +18,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 import re
 
 import requests
@@ -49,12 +52,12 @@ class NewsCache:
     def get(self, key: str) -> Optional[list[NewsItem]]:
         if key in self._cache:
             items, cached_at = self._cache[key]
-            if datetime.now(tz=timezone.utc) - cached_at < timedelta(minutes=CACHE_MINUTES):
+            if datetime.now(tz=IST) - cached_at < timedelta(minutes=CACHE_MINUTES):
                 return items
         return None
 
     def set(self, key: str, items: list[NewsItem]) -> None:
-        self._cache[key] = (items, datetime.now(tz=timezone.utc))
+        self._cache[key] = (items, datetime.now(tz=IST))
 
 
 _cache = NewsCache()
@@ -80,7 +83,7 @@ def get_news_for_symbol(symbol: str, max_items: int = 20) -> list[NewsItem]:
     company = _symbol_to_company(symbol)
     ticker  = _symbol_to_ticker(symbol)
 
-    cache_key = f"{ticker}_{datetime.now(tz=timezone.utc).strftime('%Y%m%d%H%M')[:11]}"
+    cache_key = f"{ticker}_{datetime.now(tz=IST).strftime('%Y%m%d%H%M')[:11]}"
     cached = _cache.get(cache_key)
     if cached:
         logger.debug(f"[NewsScr] Cache hit for {ticker}")
@@ -131,9 +134,9 @@ def _scrape_nse_announcements(ticker: str) -> list[NewsItem]:
         for ann in announcements:
             dt_str = ann.get("an_dt", "")
             try:
-                pub = datetime.strptime(dt_str, "%d-%b-%Y").replace(tzinfo=timezone.utc)
+                pub = datetime.strptime(dt_str, "%d-%b-%Y").replace(tzinfo=IST)
             except Exception:
-                pub = datetime.now(tz=timezone.utc)
+                pub = datetime.now(tz=IST)
             items.append(NewsItem(
                 source    = "NSE",
                 headline  = ann.get("subject", "")[:200],
@@ -168,9 +171,9 @@ def _scrape_et_rss(company: str) -> list[NewsItem]:
             try:
                 pub_dt = datetime.strptime(
                     pub.text.strip(), "%a, %d %b %Y %H:%M:%S %z"
-                ) if pub else datetime.now(tz=timezone.utc)
+                ) if pub else datetime.now(tz=IST)
             except Exception:
-                pub_dt = datetime.now(tz=timezone.utc)
+                pub_dt = datetime.now(tz=IST)
             items.append(NewsItem(
                 source    = "EconomicTimes",
                 headline  = headline,
@@ -203,9 +206,9 @@ def _scrape_moneycontrol_rss(company: str) -> list[NewsItem]:
             try:
                 pub_dt = datetime.strptime(
                     pub.text.strip(), "%a, %d %b %Y %H:%M:%S %z"
-                ) if pub else datetime.now(tz=timezone.utc)
+                ) if pub else datetime.now(tz=IST)
             except Exception:
-                pub_dt = datetime.now(tz=timezone.utc)
+                pub_dt = datetime.now(tz=IST)
             items.append(NewsItem(
                 source    = "Moneycontrol",
                 headline  = headline,
@@ -232,9 +235,9 @@ def _scrape_stocktwits(ticker: str) -> list[NewsItem]:
             sentiment = msg.get("entities", {}).get("sentiment", {})
             bull_bear = sentiment.get("basic", "neutral") if sentiment else "neutral"
             try:
-                pub_dt = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                pub_dt = datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=IST)
             except Exception:
-                pub_dt = datetime.now(tz=timezone.utc)
+                pub_dt = datetime.now(tz=IST)
             items.append(NewsItem(
                 source    = "StockTwits",
                 headline  = body[:100],
@@ -265,7 +268,7 @@ def _scrape_reddit(company: str) -> list[NewsItem]:
                 link   = f"https://reddit.com{p.get('permalink', '')}"
                 score  = p.get("score", 0)
                 created = p.get("created_utc", 0)
-                pub_dt = datetime.fromtimestamp(created, tz=timezone.utc) if created else datetime.now(tz=timezone.utc)
+                pub_dt = datetime.fromtimestamp(created, tz=IST) if created else datetime.now(tz=IST)
                 items.append(NewsItem(
                     source    = f"Reddit/{sub}",
                     headline  = title[:200],

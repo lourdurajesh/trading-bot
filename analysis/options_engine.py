@@ -10,6 +10,9 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import numpy as np
 from scipy.stats import norm
@@ -206,8 +209,8 @@ class OptionsEngine:
     def days_to_expiry(self, expiry_date: str) -> int:
         """Calculate calendar days to expiry from date string YYYY-MM-DD."""
         try:
-            expiry = datetime.strptime(expiry_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            now    = datetime.now(tz=timezone.utc)
+            expiry = datetime.strptime(expiry_date, "%Y-%m-%d").replace(tzinfo=IST)
+            now    = datetime.now(tz=IST)
             return max(0, (expiry - now).days)
         except Exception:
             return 0

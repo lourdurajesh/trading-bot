@@ -13,6 +13,9 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 from typing import Callable, Optional
 
 import pandas as pd
@@ -135,7 +138,7 @@ class FyersStream:
     def _on_close(self, code: int = 0) -> None:
         if self._running:
             logger.warning(f"Fyers WebSocket closed: [{code}] — will reconnect")
-            self._gap_start = datetime.now(tz=timezone.utc)
+            self._gap_start = datetime.now(tz=IST)
         else:
             logger.info("FyersStream: closed cleanly on shutdown.")
 
@@ -164,7 +167,7 @@ class FyersStream:
             tick = {
                 "timestamp": datetime.fromtimestamp(
                     message.get("last_traded_time", time.time()),
-                    tz=timezone.utc,
+                    tz=IST,
                 ),
                 "ltp":    float(message.get("ltp", 0)),
                 "volume": int(message.get("vol_traded_today", 0)),
@@ -183,7 +186,7 @@ class FyersStream:
         """Fetch REST candles to fill data gap after reconnect."""
         if not self._fyers_client:
             return
-        gap_minutes = (datetime.now(tz=timezone.utc) - gap_start).total_seconds() / 60
+        gap_minutes = (datetime.now(tz=IST) - gap_start).total_seconds() / 60
         if gap_minutes < 1:
             return
         logger.info(f"[FyersStream] Filling {gap_minutes:.0f}min data gap...")
@@ -240,7 +243,7 @@ class FyersStream:
         self, symbol: str, resolution: str, days_back: int
     ) -> Optional[pd.DataFrame]:
         """Fetch OHLCV history from Fyers REST API."""
-        end_date   = datetime.now()
+        end_date   = datetime.now(tz=IST)
         start_date = end_date - timedelta(days=days_back)
 
         data = {

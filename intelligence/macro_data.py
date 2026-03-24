@@ -18,6 +18,9 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import requests
 
@@ -81,7 +84,7 @@ class MacroDataCollector:
 
     def get_snapshot(self, force_refresh: bool = False) -> MacroSnapshot:
         """Returns current macro snapshot, using cache if fresh."""
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=IST)
         if (
             not force_refresh
             and self._cache is not None

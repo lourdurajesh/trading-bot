@@ -14,6 +14,9 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import pandas as pd
 import alpaca_trade_api as alpaca
@@ -123,7 +126,7 @@ class AlpacaStream:
         """
         try:
             tick = {
-                "timestamp": bar.timestamp.to_pydatetime().replace(tzinfo=timezone.utc),
+                "timestamp": bar.timestamp.to_pydatetime().replace(tzinfo=timezone.utc).astimezone(IST),
                 "ltp":       float(bar.close),
                 "volume":    int(bar.volume),
                 "open":      float(bar.open),
@@ -141,7 +144,7 @@ class AlpacaStream:
         """
         try:
             tick = {
-                "timestamp": trade.timestamp.to_pydatetime().replace(tzinfo=timezone.utc),
+                "timestamp": trade.timestamp.to_pydatetime().replace(tzinfo=timezone.utc).astimezone(IST),
                 "ltp":       float(trade.price),
                 "volume":    int(trade.size),
             }
@@ -184,7 +187,7 @@ class AlpacaStream:
         self, symbol: str, timeframe: str, days_back: int
     ) -> Optional[pd.DataFrame]:
         """Fetch OHLCV bars from Alpaca REST API."""
-        end   = datetime.now(tz=timezone.utc)
+        end   = datetime.now(tz=IST)
         start = end - timedelta(days=days_back)
 
         bars = self._rest_client.get_bars(

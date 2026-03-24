@@ -54,7 +54,10 @@ class DirectionalOptionsStrategy(BaseStrategy):
 
         # IV rank should be low — cheap options
         iv_rank = options_engine.get_iv_rank(symbol)
-        if 0 <= iv_rank > MAX_IV_RANK:
+        if iv_rank is None or iv_rank < 0:
+            self.log_skip(symbol, "IV rank unavailable (insufficient history) — skipping to avoid overpaying for options")
+            return None
+        if iv_rank >= MAX_IV_RANK:
             self.log_skip(symbol, f"IV rank {iv_rank:.0f} too high — options expensive")
             return None
 

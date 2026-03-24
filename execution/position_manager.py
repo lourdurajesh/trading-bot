@@ -19,8 +19,9 @@ Called by main.py fast loop every 5 seconds.
 
 import logging
 import threading
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from config.settings import OPTIONS_DTE_FORCE_EXIT
 from data.data_store import store
@@ -28,6 +29,8 @@ from risk.portfolio_tracker import portfolio_tracker, Position
 from notifications.alert_service import alert_service
 
 logger = logging.getLogger(__name__)
+
+IST = ZoneInfo("Asia/Kolkata")
 
 # Exit rules configuration
 EOD_EXIT_TIME      = time(15, 15)    # 3:15 PM IST — close intraday positions
@@ -64,7 +67,7 @@ class PositionManager:
         if not positions:
             return
 
-        now_ist = datetime.now()   # assumes server in IST
+        now_ist = datetime.now(tz=IST)   # always IST regardless of server timezone
 
         for pos_dict in positions:
             symbol = pos_dict.get("symbol", "")
@@ -83,7 +86,7 @@ class PositionManager:
         entry       = float(pos_dict.get("entry_price", 0))
         stop        = float(pos_dict.get("stop_loss", 0))
         target_1    = float(pos_dict.get("target_1", 0))
-        size        = int(pos_dict.get("position_size", 0))
+        target_2    = float(pos_dict.get("target_2", 0))
         entry_time  = pos_dict.get("entry_time", "")
         signal_type = pos_dict.get("signal_type", "EQUITY")
         options_meta = pos_dict.get("options_meta") or {}
@@ -92,7 +95,7 @@ class PositionManager:
         if signal_type == "OPTIONS":
             self._check_options_position(
                 symbol, direction, entry, stop, target_1,
-                size, options_meta, now,
+                0, options_meta, now,
             )
             return
 
@@ -100,24 +103,33 @@ class PositionManager:
         if not ltp or ltp <= 0:
             return
 
+        # Always use live position size from tracker (not stale pos_dict snapshot)
+        pos = portfolio_tracker.get_position(symbol)
+        if not pos or pos.position_size <= 0:
+            return
+        remaining_size = pos.position_size
+
+        with self._lock:
+            already_partial = symbol in self._partial_exited
+            already_be      = symbol in self._breakeven_applied
+
         # Use trailing stop if set, else original stop
         effective_stop = self._trailing_stops.get(symbol, stop)
 
-        # ── 1. EOD forced exit (3:15 PM) ─────────────────────────
+        # ── 1. EOD forced exit (3:15 PM IST) ─────────────────────
         if now.time() >= EOD_EXIT_TIME:
-            if symbol not in self._partial_exited or size > 0:
-                logger.info(f"[PositionManager] EOD exit: {symbol}")
-                self._exit_position(symbol, size, "EOD_FORCED", ltp)
-                return
+            logger.info(f"[PositionManager] EOD exit: {symbol} × {remaining_size}")
+            self._exit_position(symbol, remaining_size, "EOD_FORCED", ltp)
+            return
 
         # ── 2. Max holding period ─────────────────────────────────
         if entry_time:
             try:
-                entry_dt   = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
-                days_held  = (datetime.now(tz=timezone.utc) - entry_dt).days
+                entry_dt  = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
+                days_held = (datetime.now(tz=IST) - entry_dt).days
                 if days_held >= MAX_HOLDING_DAYS:
                     logger.info(f"[PositionManager] Max hold {days_held}d: {symbol}")
-                    self._exit_position(symbol, size, "MAX_HOLD", ltp)
+                    self._exit_position(symbol, remaining_size, "MAX_HOLD", ltp)
                     return
             except Exception:
                 pass
@@ -132,22 +144,30 @@ class PositionManager:
             if ltp <= effective_stop:
                 logger.info(f"[PositionManager] STOP HIT {symbol}: "
                             f"ltp={ltp:.2f} <= sl={effective_stop:.2f}")
-                self._exit_position(symbol, size, "STOP", ltp)
+                self._exit_position(symbol, remaining_size, "STOP", ltp)
+                return
+
+            # Target 2 hit — exit remaining position (only after T1 partial exit)
+            if target_2 > 0 and ltp >= target_2 and already_partial:
+                logger.info(f"[PositionManager] T2 HIT {symbol}: "
+                            f"ltp={ltp:.2f} >= t2={target_2:.2f} — "
+                            f"exiting remaining {remaining_size} shares")
+                self._exit_position(symbol, remaining_size, "TARGET2", ltp)
                 return
 
             # Target 1 hit — partial exit + move SL to breakeven
-            if ltp >= target_1 and symbol not in self._partial_exited:
-                partial_size = max(1, int(size * PARTIAL_EXIT_PCT))
+            if target_1 > 0 and ltp >= target_1 and not already_partial:
+                partial_size = max(1, int(remaining_size * PARTIAL_EXIT_PCT))
                 logger.info(f"[PositionManager] T1 HIT {symbol}: "
                             f"ltp={ltp:.2f} >= t1={target_1:.2f} — "
                             f"exiting {partial_size} shares")
                 self._partial_exit(symbol, partial_size, "TARGET1", ltp)
-                self._partial_exited.add(symbol)
-
-                # Move SL to breakeven
-                if symbol not in self._breakeven_applied:
+                with self._lock:
+                    self._partial_exited.add(symbol)
+                if not already_be:
                     self._move_stop_to_breakeven(symbol, entry)
-                    self._breakeven_applied.add(symbol)
+                    with self._lock:
+                        self._breakeven_applied.add(symbol)
                 return
 
             # Trailing stop — after 1.5R profit
@@ -155,10 +175,11 @@ class PositionManager:
             if profit_r >= TRAIL_TRIGGER:
                 self._update_trailing_stop(symbol, ltp, direction, risk)
 
-            # Breakeven move — after 1R profit
-            elif profit_r >= BREAKEVEN_TRIGGER and symbol not in self._breakeven_applied:
+            # Breakeven move — after 1R profit (if T1 not yet hit)
+            elif profit_r >= BREAKEVEN_TRIGGER and not already_be:
                 self._move_stop_to_breakeven(symbol, entry)
-                self._breakeven_applied.add(symbol)
+                with self._lock:
+                    self._breakeven_applied.add(symbol)
 
         # ── 4. SHORT position management ──────────────────────────
         elif direction == "SHORT":
@@ -170,18 +191,28 @@ class PositionManager:
             if ltp >= effective_stop:
                 logger.info(f"[PositionManager] STOP HIT SHORT {symbol}: "
                             f"ltp={ltp:.2f} >= sl={effective_stop:.2f}")
-                self._exit_position(symbol, size, "STOP", ltp)
+                self._exit_position(symbol, remaining_size, "STOP", ltp)
                 return
 
-            # Target 1 hit
-            if ltp <= target_1 and symbol not in self._partial_exited:
-                partial_size = max(1, int(size * PARTIAL_EXIT_PCT))
+            # Target 2 hit — exit remaining (only after T1 partial exit)
+            if target_2 > 0 and ltp <= target_2 and already_partial:
+                logger.info(f"[PositionManager] T2 HIT SHORT {symbol}: "
+                            f"ltp={ltp:.2f} <= t2={target_2:.2f} — "
+                            f"exiting remaining {remaining_size} shares")
+                self._exit_position(symbol, remaining_size, "TARGET2", ltp)
+                return
+
+            # Target 1 hit — partial exit + move SL to breakeven
+            if target_1 > 0 and ltp <= target_1 and not already_partial:
+                partial_size = max(1, int(remaining_size * PARTIAL_EXIT_PCT))
                 logger.info(f"[PositionManager] T1 HIT SHORT {symbol}")
                 self._partial_exit(symbol, partial_size, "TARGET1", ltp)
-                self._partial_exited.add(symbol)
-                if symbol not in self._breakeven_applied:
+                with self._lock:
+                    self._partial_exited.add(symbol)
+                if not already_be:
                     self._move_stop_to_breakeven(symbol, entry)
-                    self._breakeven_applied.add(symbol)
+                    with self._lock:
+                        self._breakeven_applied.add(symbol)
                 return
 
             # Trailing stop for short
@@ -231,9 +262,8 @@ class PositionManager:
 
         if expiry_str:
             try:
-                from datetime import date
                 expiry_dt = date.fromisoformat(expiry_str)
-                dte = (expiry_dt - date.today()).days
+                dte = (expiry_dt - datetime.now(tz=IST).date()).days
                 if dte <= OPTIONS_DTE_FORCE_EXIT:
                     logger.warning(
                         f"[PositionManager] OPTIONS DTE EXIT {symbol}: "
@@ -379,9 +409,10 @@ class PositionManager:
                 except Exception:
                     pass
                 alert_service.trade_closed(symbol, closed.realised_pnl, reason)
-            self._breakeven_applied.discard(symbol)
-            self._partial_exited.discard(symbol)
-            self._trailing_stops.pop(symbol, None)
+            with self._lock:
+                self._breakeven_applied.discard(symbol)
+                self._partial_exited.discard(symbol)
+                self._trailing_stops.pop(symbol, None)
         else:
             logger.error(
                 f"[PositionManager] OPTIONS EXIT ORDER FAILED for {symbol} — "
@@ -472,10 +503,11 @@ class PositionManager:
             if closed:
                 alert_service.trade_closed(symbol, closed.realised_pnl, reason)
 
-            # Clean up tracking sets
-            self._breakeven_applied.discard(symbol)
-            self._partial_exited.discard(symbol)
-            self._trailing_stops.pop(symbol, None)
+            # Clean up tracking sets (locked)
+            with self._lock:
+                self._breakeven_applied.discard(symbol)
+                self._partial_exited.discard(symbol)
+                self._trailing_stops.pop(symbol, None)
         else:
             logger.error(f"[PositionManager] EXIT ORDER FAILED for {symbol} — "
                          f"MANUAL INTERVENTION REQUIRED")
@@ -596,9 +628,10 @@ class PositionManager:
 
     def reset_symbol(self, symbol: str) -> None:
         """Clean up tracking state for a symbol after full exit."""
-        self._breakeven_applied.discard(symbol)
-        self._partial_exited.discard(symbol)
-        self._trailing_stops.pop(symbol, None)
+        with self._lock:
+            self._breakeven_applied.discard(symbol)
+            self._partial_exited.discard(symbol)
+            self._trailing_stops.pop(symbol, None)
 
 
 # ── Module-level singleton ────────────────────────────────────────

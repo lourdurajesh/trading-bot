@@ -18,6 +18,9 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 from typing import Optional
 
 import pandas as pd
@@ -130,6 +133,12 @@ class UniverseScanner:
             )
             filtered_df = universe_df[mask].copy()
             logger.info(f"[UniverseScanner] {len(filtered_df)} stocks in theme sectors")
+
+            # If sector filter yields nothing (e.g. EQUITY_L.csv has no industry column),
+            # fall back to full universe and rely on keyword matching in _score_candidate
+            if len(filtered_df) == 0 and themes:
+                logger.info("[UniverseScanner] Sector filter empty — falling back to keyword scan on full universe")
+                filtered_df = universe_df.copy()
         else:
             # No active themes — score top liquid stocks for momentum opportunities
             logger.info("[UniverseScanner] No active themes — scanning top liquid stocks")
@@ -191,7 +200,7 @@ class UniverseScanner:
         Fetch complete NSE equity list with sector/industry tags.
         Cached for 24 hours — refreshed once per day.
         """
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=IST)
         if (
             self._nse_universe is not None
             and self._universe_fetched_at is not None

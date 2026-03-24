@@ -13,6 +13,9 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 from typing import Optional
 
 import pandas as pd
@@ -126,7 +129,7 @@ def _fetch_fyers(symbol: str, timeframe: str, years_back: int) -> Optional[pd.Da
             "5m":  "5",
         }
         resolution = resolution_map.get(timeframe, "D")
-        end_date   = datetime.now()
+        end_date   = datetime.now(tz=IST)
         start_date = end_date - timedelta(days=years_back * 365)
 
         data = {
