@@ -66,7 +66,9 @@ MIN_OPTION_OI                = int(os.getenv("MIN_OPTION_OI", "500"))
 OPTIONS_DTE_FORCE_EXIT       = int(os.getenv("OPTIONS_DTE_FORCE_EXIT", "3"))
 
 # VIX ceiling for SHORT premium strategies (short strangle) — above this is too dangerous
-OPTIONS_VIX_LIMIT            = float(os.getenv("OPTIONS_VIX_LIMIT", "25.0"))
+# Set at 27 to give a small buffer above the EXTREME risk threshold (25)
+# Short strangles are still viable up to ~27 VIX; above that gamma risk is too high
+OPTIONS_VIX_LIMIT            = float(os.getenv("OPTIONS_VIX_LIMIT", "27.0"))
 
 # Separate daily loss cap for options only — stricter than equity daily limit
 DAILY_OPTIONS_LOSS_LIMIT_PCT = float(os.getenv("DAILY_OPTIONS_LOSS_LIMIT_PCT", "2.0"))

@@ -104,6 +104,8 @@ class UniverseScanner:
     ) -> list[StockCandidate]:
         """
         Scan NSE universe for stocks matching active themes.
+        When no themes are active, falls back to scoring top liquid stocks
+        from the NSE most-active list so the nightly agent always produces output.
         Returns top `max_stocks` candidates ranked by overall score.
         """
         logger.info(f"[UniverseScanner] Scanning for {len(themes)} themes...")
@@ -121,7 +123,7 @@ class UniverseScanner:
                 industries = SECTOR_INDUSTRY_MAP.get(sector, [])
                 target_sectors.update(industries)
 
-        # Filter to relevant sectors
+        # Filter to relevant sectors — if no themes, use most-active stocks
         if target_sectors:
             mask = universe_df["industry"].str.upper().apply(
                 lambda x: any(s in str(x).upper() for s in target_sectors)
@@ -129,6 +131,8 @@ class UniverseScanner:
             filtered_df = universe_df[mask].copy()
             logger.info(f"[UniverseScanner] {len(filtered_df)} stocks in theme sectors")
         else:
+            # No active themes — score top liquid stocks for momentum opportunities
+            logger.info("[UniverseScanner] No active themes — scanning top liquid stocks")
             filtered_df = universe_df.copy()
 
         # Apply liquidity filter
@@ -136,9 +140,10 @@ class UniverseScanner:
             filtered_df = filtered_df[filtered_df["turnover"] >= MIN_DAILY_TURNOVER_CR]
 
         # Score and rank candidates
+        no_theme_mode = len(themes) == 0
         candidates = []
         for _, row in filtered_df.iterrows():
-            candidate = self._score_candidate(row, themes)
+            candidate = self._score_candidate(row, themes, no_theme_mode=no_theme_mode)
             if candidate:
                 candidates.append(candidate)
 
@@ -280,7 +285,7 @@ class UniverseScanner:
     # SCORING
     # ─────────────────────────────────────────────────────────────
 
-    def _score_candidate(self, row: pd.Series, themes: list[Theme]) -> Optional[StockCandidate]:
+    def _score_candidate(self, row: pd.Series, themes: list[Theme], no_theme_mode: bool = False) -> Optional[StockCandidate]:
         """Score a stock against active themes."""
         symbol       = str(row.get("fyers_symbol", ""))
         company_name = str(row.get("company_name", ""))
@@ -310,15 +315,28 @@ class UniverseScanner:
                 matching_themes.append(theme.name)
                 theme_conviction = max(theme_conviction, theme.conviction)
 
-        if not matching_themes:
+        if not matching_themes and not no_theme_mode:
+            return None
+
+        # Skip very low-liquidity stocks when in no-theme mode
+        if no_theme_mode and turnover < MIN_DAILY_TURNOVER_CR * 2:
             return None
 
         # Overall score
         score = 0.0
-        score += theme_conviction * 5.0                          # theme match (0-5)
+        if matching_themes:
+            score += theme_conviction * 5.0                      # theme match (0-5)
+            score += 1.0 if len(matching_themes) > 1 else 0.0   # multi-theme bonus
+        else:
+            score += 1.0                                         # no-theme base score
+
         score += min(turnover / 50, 2.0)                         # liquidity (0-2)
-        score += 1.0 if len(matching_themes) > 1 else 0.0        # multi-theme bonus
         score += 2.0                                             # base for passing filter
+
+        reason = (
+            f"Themes: {', '.join(matching_themes)}" if matching_themes
+            else f"High-liquidity stock (no active theme) — turnover: Rs.{turnover:.0f}Cr"
+        )
 
         return StockCandidate(
             symbol           = symbol,
@@ -330,7 +348,7 @@ class UniverseScanner:
             theme_match      = matching_themes,
             theme_conviction = theme_conviction,
             overall_score    = round(score, 2),
-            reason           = f"Themes: {', '.join(matching_themes)}",
+            reason           = reason,
         )
 
     def _fallback_candidates(self, themes: list[Theme]) -> list[StockCandidate]:

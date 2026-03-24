@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL     = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL   = "claude-sonnet-4-20250514"
+ANTHROPIC_MODEL   = "claude-sonnet-4-6"
 
 
 @dataclass
@@ -254,6 +254,50 @@ consumer_durables, agrochemicals, oil_gas, telecom, infra, nbfc, textiles."""
             ("china_plus_one",   ["china+1", "china plus one", "supply chain shift", "manufacturing india"],
              "Global supply chain diversification benefits Indian manufacturers",
              "BULLISH", "LONG", ["electronics_mfg", "chemicals", "textiles"]),
+
+            ("tariff_fears",     ["tariff", "trade war", "import duty", "protectionism", "reciprocal tax"],
+             "Global tariff escalation hurts export-oriented sectors",
+             "BEARISH", "MEDIUM", ["it", "pharma", "textiles", "auto"]),
+
+            ("global_risk_off",  ["global selloff", "risk off", "market rout", "global sell-off",
+                                  "dow falls", "nasdaq falls", "fear index", "flight to safety"],
+             "Global risk-off benefits defensives, hurts cyclicals",
+             "BEARISH", "SHORT", ["fmcg", "pharma", "it"]),
+
+            ("fii_selling",      ["fii selling", "foreign outflow", "fii exits", "foreign selling",
+                                  "capital flight", "fpi selling", "fpi outflow"],
+             "FII/FPI selling pressure weighing on large-caps",
+             "BEARISH", "SHORT", ["large_cap", "banking", "it"]),
+
+            ("rupee_fall",       ["rupee falls", "rupee weakens", "dollar strengthens", "inr drops",
+                                  "currency pressure", "rupee at"],
+             "Rupee weakness benefits IT exporters and pharma exporters",
+             "BULLISH", "SHORT", ["it", "pharma_exports", "textiles"]),
+
+            ("crude_rise",       ["crude rises", "crude oil up", "oil prices rise", "brent rises",
+                                  "crude higher", "oil surges", "opec", "crude at $"],
+             "Rising crude hurts India as major oil importer",
+             "BEARISH", "SHORT", ["airlines", "paints", "tyres"]),
+
+            ("crude_fall",       ["crude falls", "crude oil down", "oil prices drop", "brent falls",
+                                  "crude lower", "oil tumbles"],
+             "Falling crude positive for India",
+             "BULLISH", "SHORT", ["airlines", "oil_marketing", "paints"]),
+
+            ("banking_stress",   ["bank crisis", "npa rise", "credit risk", "banking sector stress",
+                                  "loan default", "financial stress"],
+             "Banking stress weighs on financials",
+             "BEARISH", "MEDIUM", ["banking", "nbfc"]),
+
+            ("it_weakness",      ["it sector", "tech layoffs", "us slowdown", "visa restrictions",
+                                  "software demand", "tech spending cuts"],
+             "IT sector under pressure from US slowdown or visa issues",
+             "BEARISH", "MEDIUM", ["it"]),
+
+            ("pharma_opportunity", ["usfda approval", "drug approval", "generic launch", "pharma export",
+                                    "health policy", "drug pricing"],
+             "Pharma sector catalyst from regulatory or policy development",
+             "BULLISH", "MEDIUM", ["pharma", "hospitals"]),
         ]
 
         for name, keywords, desc, direction, duration, sectors in rules:
