@@ -26,7 +26,8 @@ import threading
 from datetime import datetime, timezone
 
 from config.settings import (
-    API_HOST, API_PORT, BOT_MODE, LOG_DIR, LOG_LEVEL, NSE_OPEN, NSE_CLOSE
+    API_HOST, API_PORT, BOT_MODE, LOG_DIR, LOG_LEVEL, NSE_OPEN, NSE_CLOSE,
+    validate_env,
 )
 
 # ── Logging setup (before any imports that log) ───────────────────
@@ -77,6 +78,20 @@ class TradingBot:
         logger.info(f"  Time: {datetime.now(tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
         logger.info("=" * 60)
 
+        # Validate environment on every startup — catches misconfigurations early
+        validate_env()
+
+        # Audit trail — log bot start
+        try:
+            from audit_log import audit_log
+            import os
+            audit_log.bot_event("BOT_START", {
+                "mode":           BOT_MODE,
+                "paper_trading":  os.getenv("PAPER_TRADING", "false"),
+            })
+        except Exception:
+            pass
+
         self._running = True
 
         # Register shutdown handler
@@ -87,6 +102,11 @@ class TradingBot:
         logger.info("Connecting to brokers...")
         fyers_broker.initialise()
         alpaca_broker.initialise()
+
+        # Init options engine (connects Fyers client for chain fetching)
+        from analysis.options_engine import options_engine
+        options_engine.initialise()
+
 
         # Step 2: Start data streams
         logger.info("Starting data streams...")
@@ -110,6 +130,11 @@ class TradingBot:
     def _shutdown(self, *args) -> None:
         logger.info("Shutdown signal received. Stopping bot...")
         self._running = False
+        try:
+            from audit_log import audit_log
+            audit_log.bot_event("BOT_STOP")
+        except Exception:
+            pass
         # Stop streams with timeout
         try:
             self._fyers_stream.stop()

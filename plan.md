@@ -267,6 +267,25 @@ trading-bot/
 
 ---
 
+## Phase 7C+ — Production Hardening ✅ COMPLETE (2026-03-24)
+- [x] analyst_agent.py: API failure → REJECT (was APPROVE — safety critical bug)
+- [x] analyst_agent.py: parse failure → REJECT (was APPROVE)
+- [x] analyst_agent.py: updated to claude-sonnet-4-6 model
+- [x] data_store.py: IST-aligned daily candle boundaries (was UTC — splits NSE sessions)
+- [x] data_store.py: get_ltp() thread-safe under lock
+- [x] watchdog.py: exponential backoff on restarts (10s→20s→40s…→5min, was fixed 10s)
+- [x] watchdog.py: consecutive crash tracking + uptime detection for reset
+- [x] config/settings.py: validate_env() startup check for missing creds + risk limits
+- [x] main.py: validate_env() called on startup; duplicate load_dotenv() removed
+- [x] performance.py: avg_loser default 0 not 1; profit_factor cap 99 not 999
+- [x] position_manager.py: paper trading exits route to paper_trading_engine (was calling real broker)
+- [x] strategy_selector.py: is_valid() gate before intelligence engine
+- [x] strategy_selector.py: 5-min cooldown after order_manager rejection
+- [x] directional_options.py: stop_loss = debit × 0.5 (was = entry → RR=0)
+- [x] base_strategy.py: is_valid() handles OPTIONS debit spread stop-loss convention
+
+---
+
 ## Phase 7D — Paper Trading Engine ✅ COMPLETE
 
 - [x] paper_trading.py
@@ -289,24 +308,70 @@ trading-bot/
 
 ---
 
-## Phase 7E — Options Execution 🔴 NOT STARTED
-- [ ] execution/options_executor.py
-  - Fetch live NFO options chain from Fyers
-  - Select liquid strike nearest to target delta
-  - Construct full NSE symbol: NSE:NIFTY2522324500CE
-  - Place order with correct lot size (Nifty=50, BankNifty=15)
-  - Greeks-based exit (close when theta > 50% of premium received)
-  - Roll position when <7 DTE
+## Phase 7E — Options Execution ✅ COMPLETE (2026-03-24)
+- [x] execution/options_executor.py
+  - Fetches live NFO options chain from Fyers (60s cache)
+  - Selects expiry nearest to DTE range (weekly/monthly detection)
+  - Selects strike by TARGET DELTA (not hardcoded math) from live chain
+  - Constructs correct Fyers NFO symbol: NSE:NIFTY25JAN24500CE (monthly) or NSE:NIFTY2501234500CE (weekly)
+  - Returns actual lot sizes: NIFTY=75, BANKNIFTY=35, FINNIFTY=65
+  - Computes PCR (put-call ratio) from chain OI data
+  - Falls back to Black-Scholes simulation when chain unavailable
+  - update_iv_history() feeds options_engine for IV rank calculation
+- [x] directional_options.py — uses live ATM LTP for debit cost (not formula estimate)
+- [x] options_income.py — uses live call+put LTP for strangle credit
+- [x] API: GET /options/chain/{symbol} — live chain summary on dashboard
 
----
+## Phase 7F — Audit Trail ✅ COMPLETE (2026-03-24)
+- [x] audit_log.py — append-only SQLite DB (db/audit.db, never UPDATE/DELETE)
+  - Events: SIGNAL_GENERATED, SIGNAL_REJECTED, ORDER_PLACED, ORDER_FILLED,
+    ORDER_FAILED, POSITION_OPENED, POSITION_CLOSED, STOP_HIT, TARGET_HIT,
+    TRAILING_STOP, MODE_CHANGE, KILL_SWITCH, PAPER_TRADE, BOT_START, BOT_STOP,
+    TOKEN_REFRESH, INTELLIGENCE_VETO
+  - CSV export: POST /audit/export
+  - Dashboard view: GET /audit/recent?limit=100&event_type=KILL_SWITCH
+- [x] Integrated into: order_manager, portfolio_tracker, risk_manager, strategy_selector, main.py
 
-## Phase 7F — Audit Trail 🔴 NOT STARTED
-- [ ] audit_log.py
-  - Append-only SQLite table (never UPDATE/DELETE)
-  - Log every: signal generated, order placed, fill received,
-    rejection, manual override, mode change, kill switch
-  - CSV export for review
-  - Required for SEBI compliance when managing others' money
+## Phase 7G — Options Safety Hardening ✅ COMPLETE (2026-03-24)
+
+**Goal**: Hard safety nets for fully autonomous options trading. Options can lose 100%
+of premium in minutes, so tighter controls than equity are mandatory.
+
+### New: `risk/options_risk.py` — OptionsRiskGate
+- [x] **Expiry day protection** — blocks ALL options entries on expiry day (gamma too high)
+- [x] **VIX gate** — blocks short premium strategies when India VIX > 25 (configurable)
+- [x] **Min premium LTP** — skips options priced < ₹5 (near-zero options = 100%+ noise moves)
+- [x] **Lot-size-aware position sizing** — `lots = min(risk_budget/cost_per_lot, cap_budget/cost_per_lot, MAX_LOTS)`
+- [x] **Max lots per trade** — hard cap of 2 lots per trade (env: `MAX_OPTIONS_LOTS_PER_TRADE`)
+- [x] **Max capital per trade** — max 5% of total capital in a single options trade
+- [x] **Separate daily options loss limit** — 2% of capital (env: `DAILY_OPTIONS_LOSS_LIMIT_PCT`)
+- [x] **Options kill switch** — halts options trading independently of equity kill switch
+- [x] NFO symbol expiry parsing (monthly `25JAN` format + weekly `250123` format)
+
+### Updated: `risk/risk_manager.py`
+- [x] OPTIONS signals routed through `options_risk_gate.check()` before approval
+- [x] `_calculate_size()` uses lot-based math for OPTIONS (not equity shares formula)
+- [x] `update_daily_pnl()` forwards options P&L to options-specific kill switch
+- [x] `status()` includes `options` sub-dict for dashboard visibility
+
+### Updated: `execution/position_manager.py`
+- [x] OPTIONS positions detected via `signal_type == "OPTIONS"` — separate exit path
+- [x] **DTE-based forced exit** — close when expiry is ≤ 3 DTE (env: `OPTIONS_DTE_FORCE_EXIT`)
+- [x] **Debit spread exit**: close when option premium drops to 50% of entry (configurable)
+- [x] **Short strangle exit**: close when total position value rises to 2× original credit
+- [x] **Profit target**: exit debit spread when premium hits `target_1`; strangle at 50% decay
+- [x] **EOD exit** applies to options (3:15 PM IST) — no overnight gamma risk
+- [x] No trailing stops for options (theta decay changes the math completely)
+- [x] Live option LTP monitoring via NFO symbol in data store (not underlying index)
+
+### Updated: `config/settings.py`
+- [x] `MAX_OPTIONS_LOTS_PER_TRADE=2` — hard lot cap per trade
+- [x] `MIN_OPTION_LTP=5.0` — minimum option premium (INR)
+- [x] `MIN_OPTION_OI=500` — minimum open interest for strike selection
+- [x] `OPTIONS_DTE_FORCE_EXIT=3` — days before expiry to force-close
+- [x] `OPTIONS_VIX_LIMIT=25.0` — max VIX for short premium strategies
+- [x] `DAILY_OPTIONS_LOSS_LIMIT_PCT=2.0` — separate options daily loss cap
+- [x] `MAX_OPTIONS_TRADE_PCT=5.0` — max % of capital per single options trade
 
 ---
 

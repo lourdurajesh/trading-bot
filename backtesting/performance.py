@@ -42,12 +42,12 @@ def compute_metrics(result: BacktestResult) -> BacktestResult:
 
     # Average winner / loser
     result.avg_winner = sum(t.pnl for t in winners) / len(winners) if winners else 0
-    result.avg_loser  = abs(sum(t.pnl for t in losers) / len(losers)) if losers else 1
+    result.avg_loser  = abs(sum(t.pnl for t in losers) / len(losers)) if losers else 0
 
-    # Profit factor
+    # Profit factor (cap at 99 — "∞" misleads; 99 still shows clearly dominant edge)
     gross_profit = sum(t.pnl for t in winners)
     gross_loss   = abs(sum(t.pnl for t in losers))
-    result.profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 999.0
+    result.profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 99.0
 
     # Expectancy (avg P&L per trade)
     result.expectancy = round(sum(t.pnl for t in trades) / len(trades), 2)

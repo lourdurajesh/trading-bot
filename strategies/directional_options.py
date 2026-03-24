@@ -43,7 +43,7 @@ class DirectionalOptionsStrategy(BaseStrategy):
         if not self.enabled:
             return None
 
-        if symbol not in ("NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"):
+        if symbol not in ("NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:FINNIFTY-INDEX"):
             return None
 
         # Need TRENDING or BREAKOUT regime
@@ -82,16 +82,44 @@ class DirectionalOptionsStrategy(BaseStrategy):
             self.log_skip(symbol, "No clear directional bias")
             return None
 
-        iv = 0.15
-        atm_strike  = round(spot / 50) * 50
-        otm_strike  = options_engine.get_otm_strike(spot, option_type, 0.5, iv, 14)
+        # ── Fetch live option from chain ──────────────────────────
+        # Target delta: ~0.40 for ATM-ish debit spread leg
+        from execution.options_executor import options_executor
+        opt = options_executor.get_best_option(
+            underlying   = symbol,
+            option_type  = option_type,
+            target_delta = 0.40,
+            min_dte      = MIN_DTE,
+            max_dte      = MAX_DTE,
+        )
 
-        # Debit spread cost estimate
-        # entry  = net debit paid for the spread
-        # stop   = exit if spread loses 50% of premium (risk = 0.5× debit)
-        # target = max spread width (when both legs expire ITM)
-        debit_cost  = spot * iv * 0.015
-        max_profit  = spot * iv * 0.025
+        if opt:
+            # Live data available — use real premium and IV
+            iv         = opt.iv if opt.iv > 0 else 0.15
+            atm_strike = opt.strike
+            # OTM leg for the spread (0.5 delta difference)
+            otm_strike = options_engine.get_otm_strike(spot, option_type, 0.5, iv, opt.dte)
+            # ATM leg LTP is the debit; OTM leg credit reduces it ~30-40%
+            # Net debit ≈ 65% of ATM premium (spread structure)
+            debit_cost = round(opt.ltp * 0.65, 2)
+            max_profit = round(abs(atm_strike - otm_strike) * 0.35, 2)
+            lot_size   = opt.lot_size
+            nfo_symbol = opt.symbol
+        else:
+            # Simulation fallback
+            iv         = 0.15
+            atm_strike = round(spot / 50) * 50
+            otm_strike = options_engine.get_otm_strike(spot, option_type, 0.5, iv, 14)
+            debit_cost = spot * iv * 0.015
+            max_profit = spot * iv * 0.025
+            lot_size   = options_executor.get_lot_size(symbol)
+            nfo_symbol = None
+
+        # Guard: debit must be positive
+        if debit_cost <= 0:
+            self.log_skip(symbol, "Debit cost calculated as zero — skipping")
+            return None
+
         confidence  = min(regime.confidence * 0.9, 0.85)
 
         if confidence < MIN_SIGNAL_CONFIDENCE:
@@ -115,6 +143,9 @@ class DirectionalOptionsStrategy(BaseStrategy):
                 "atm_strike":  atm_strike,
                 "otm_strike":  otm_strike,
                 "iv_rank":     iv_rank,
+                "iv":          round(iv, 4),
+                "lot_size":    lot_size,
+                "nfo_symbol":  nfo_symbol,   # actual tradeable symbol if live
             }
         )
         signal.calculate_rr()

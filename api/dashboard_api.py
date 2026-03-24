@@ -49,6 +49,47 @@ _ws_clients: list[WebSocket] = []
 # REST ENDPOINTS
 # ─────────────────────────────────────────────────────────────────
 
+@app.get("/audit/recent")
+def get_audit_log(limit: int = 100, event_type: str = None):
+    """Return recent audit log entries."""
+    try:
+        from audit_log import audit_log
+        return {"entries": audit_log.get_recent(limit=limit, event_type=event_type or None)}
+    except Exception as e:
+        return {"entries": [], "error": str(e)}
+
+
+@app.post("/audit/export")
+def export_audit():
+    """Export full audit log to CSV."""
+    try:
+        from audit_log import audit_log
+        path = audit_log.export_csv()
+        return {"ok": True, "path": path}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/options/chain/{symbol:path}")
+def get_options_chain(symbol: str):
+    """Return live options chain for a symbol."""
+    try:
+        from execution.options_executor import options_executor
+        chain = options_executor._get_chain(symbol)
+        if not chain:
+            return {"available": False, "message": "Chain unavailable (Fyers not connected or symbol not supported)"}
+        expiries = chain.get("expiryData", [])
+        return {
+            "available":        True,
+            "underlying_value": chain.get("underlyingValue"),
+            "expiry_count":     len(expiries),
+            "nearest_expiry":   expiries[0].get("expiry") if expiries else None,
+            "strikes_count":    len(expiries[0].get("optionsChain", [])) if expiries else 0,
+        }
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+
 @app.get("/paper/stats")
 def get_paper_stats():
     try:

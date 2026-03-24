@@ -38,7 +38,7 @@ from config.settings import TOTAL_CAPITAL
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL   = "claude-sonnet-4-20250514"
+ANTHROPIC_MODEL   = "claude-sonnet-4-6"          # latest as of 2026-03
 ANTHROPIC_URL     = "https://api.anthropic.com/v1/messages"
 MAX_TOKENS        = 1000
 
@@ -116,11 +116,12 @@ class AnalystAgent:
             return verdict
 
         except Exception as e:
-            logger.error(f"[Analyst] API call failed: {e} — defaulting to APPROVE")
+            # SAFETY: never approve on API failure — prefer missing a trade over a bad one
+            logger.error(f"[Analyst] API call failed: {e} — defaulting to REJECT (safe fallback)")
             return AnalystVerdict(
-                conviction    = 5.0,
-                verdict       = "APPROVE",
-                analyst_notes = f"API error — technical signal used without analyst confirmation: {e}",
+                conviction    = 0.0,
+                verdict       = "REJECT",
+                analyst_notes = f"API unavailable — trade blocked until analyst can confirm: {e}",
             )
 
     # ─────────────────────────────────────────────────────────────
@@ -230,10 +231,11 @@ Respond ONLY with the JSON verdict."""
             )
         except Exception as e:
             logger.error(f"[Analyst] Failed to parse response: {e}\nContent: {content[:200]}")
+            # SAFETY: reject on parse failure — malformed response is not a buy signal
             return AnalystVerdict(
-                conviction    = 5.0,
-                verdict       = "APPROVE",
-                analyst_notes = "Parse error — defaulting to approve",
+                conviction    = 0.0,
+                verdict       = "REJECT",
+                analyst_notes = "Response parse error — trade blocked",
             )
 
     # ─────────────────────────────────────────────────────────────

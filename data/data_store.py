@@ -35,6 +35,11 @@ TF_SECONDS = {
     "1D":  86400,
 }
 
+# IST offset in seconds (UTC+5:30). Used to align daily candle boundaries to
+# midnight IST instead of midnight UTC (which would split NSE sessions across
+# two candles).
+_IST_OFFSET_SEC = 5 * 3600 + 30 * 60   # 19800 seconds
+
 
 class DataStore:
     """
@@ -136,7 +141,9 @@ class DataStore:
 
     def get_ltp(self, symbol: str) -> Optional[float]:
         """Returns the last traded price for a symbol."""
-        return self._ltp.get(symbol)
+        # dict.get() is atomic in CPython (GIL), but use lock for consistency
+        with self._lock:
+            return self._ltp.get(symbol)
 
     def get_latest_tick(self, symbol: str) -> Optional[dict]:
         """Returns the most recent raw tick for a symbol."""
@@ -170,9 +177,16 @@ class DataStore:
         Update or close the forming candle for a given timeframe.
         Called inside the write lock — do not acquire lock again here.
         """
-        # Bucket this tick into the correct candle slot
+        # Bucket this tick into the correct candle slot.
+        # For daily (86400s) candles we align to midnight IST rather than
+        # midnight UTC so that a full NSE trading session (9:15–15:30 IST)
+        # always falls inside a single candle.
         epoch = ts.timestamp()
-        candle_start_epoch = (epoch // tf_seconds) * tf_seconds
+        if tf_seconds >= 86400:
+            # Shift epoch to IST, floor to candle boundary, shift back
+            candle_start_epoch = ((epoch + _IST_OFFSET_SEC) // tf_seconds) * tf_seconds - _IST_OFFSET_SEC
+        else:
+            candle_start_epoch = (epoch // tf_seconds) * tf_seconds
         candle_start = datetime.fromtimestamp(candle_start_epoch, tz=timezone.utc)
 
         open_candle = self._open_candle[symbol][tf]

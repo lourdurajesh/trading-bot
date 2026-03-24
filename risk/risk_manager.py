@@ -27,6 +27,7 @@ from config.settings import (
     RISK_PER_TRADE_PCT,
     TOTAL_CAPITAL,
 )
+from risk.options_risk import options_risk_gate
 from strategies.base_strategy import Direction, Signal, SignalType
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,13 @@ class RiskManager:
                     f"Options allocation {options_pct:.1f}% at max ({MAX_OPTIONS_ALLOCATION_PCT}%)"
                 )
 
+            # ── 8b. Options-specific safety gate ─────────────────
+            opt_approved, opt_reason, approved_lots = options_risk_gate.check(signal, capital)
+            if not opt_approved:
+                return RiskDecision(False, f"[OptionsGate] {opt_reason}")
+            # Store approved lots back on signal so position sizing uses it
+            signal._approved_lots = approved_lots
+
         # ── 9. Position sizing ────────────────────────────────────
         position_size, capital_at_risk = self._calculate_size(signal, capital)
 
@@ -145,13 +153,21 @@ class RiskManager:
             capital_at_risk = capital_at_risk,
         )
 
-    def update_daily_pnl(self, pnl_change: float) -> None:
+    def update_daily_pnl(self, pnl_change: float, signal_type: str = "EQUITY") -> None:
         """
         Called by portfolio_tracker whenever a trade closes.
         Accumulates daily realised P&L and checks kill switch threshold.
+        Also forwards options P&L to options_risk_gate for its separate kill switch.
         """
         self._check_daily_reset()
         self._daily_realised_pnl += pnl_change
+
+        # Forward options P&L to options-specific gate
+        if signal_type == "OPTIONS":
+            try:
+                options_risk_gate.update_daily_pnl(pnl_change, TOTAL_CAPITAL)
+            except Exception:
+                pass
 
         loss_pct = abs(self._daily_realised_pnl / TOTAL_CAPITAL) * 100
         if self._daily_realised_pnl < 0 and loss_pct >= DAILY_LOSS_LIMIT_PCT:
@@ -176,7 +192,7 @@ class RiskManager:
 
     def status(self) -> dict:
         """Returns current risk state for dashboard."""
-        return {
+        d = {
             "kill_switch_active":  self._kill_switch_active,
             "kill_switch_reason":  self._kill_switch_reason,
             "daily_realised_pnl":  round(self._daily_realised_pnl, 2),
@@ -184,6 +200,11 @@ class RiskManager:
             "max_portfolio_heat":  MAX_PORTFOLIO_HEAT,
             "risk_per_trade_pct":  RISK_PER_TRADE_PCT,
         }
+        try:
+            d["options"] = options_risk_gate.status()
+        except Exception:
+            pass
+        return d
 
     # ─────────────────────────────────────────────────────────────
     # INTERNAL
@@ -191,26 +212,51 @@ class RiskManager:
 
     def _calculate_size(self, signal: Signal, capital: float) -> tuple[int, float]:
         """
-        Fixed fractional position sizing.
-        Risk amount = capital × RISK_PER_TRADE_PCT / 100
-        Position size = risk amount / (entry - stop_loss)
+        Position sizing — equity vs options routed separately.
+
+        Equity: shares = risk_budget / risk_per_share
+        Options: lots already computed by options_risk_gate.check() and stored
+                 on signal._approved_lots; position_size = lots × lot_size
         """
-        risk_amount = capital * (RISK_PER_TRADE_PCT / 100)
+        if signal.signal_type == SignalType.OPTIONS:
+            return self._calculate_options_size(signal)
+
+        # ── Equity / futures sizing ───────────────────────────────
+        risk_amount    = capital * (RISK_PER_TRADE_PCT / 100)
         risk_per_share = abs(signal.entry - signal.stop_loss)
 
         if risk_per_share <= 0:
             return 0, 0.0
 
-        shares = int(risk_amount / risk_per_share)
+        shares      = int(risk_amount / risk_per_share)
         actual_risk = shares * risk_per_share
-
         return shares, round(actual_risk, 2)
+
+    def _calculate_options_size(self, signal: Signal) -> tuple[int, float]:
+        """
+        Options position sizing.
+        Units = lots × lot_size (e.g., 2 lots × 75 = 150 units for NIFTY).
+        capital_at_risk = premium × units  (entire premium is at risk for debit spreads)
+        """
+        lots     = getattr(signal, "_approved_lots", 1)
+        lot_size = int((signal.options_meta or {}).get("lot_size", 1))
+        if lot_size <= 0:
+            lot_size = 1
+
+        units           = lots * lot_size
+        capital_at_risk = round(signal.entry * units, 2)
+        return units, capital_at_risk
 
     def _trigger_kill_switch(self, reason: str) -> None:
         if not self._kill_switch_active:
             self._kill_switch_active = True
             self._kill_switch_reason = reason
             logger.critical(f"[RiskManager] KILL SWITCH TRIGGERED: {reason}")
+            try:
+                from audit_log import audit_log
+                audit_log.kill_switch(activated=True, reason=reason)
+            except Exception:
+                pass
 
     def _check_daily_reset(self) -> None:
         """Reset daily P&L counter at the start of each new trading day."""

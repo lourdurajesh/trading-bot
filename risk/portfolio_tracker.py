@@ -74,7 +74,8 @@ class PortfolioTracker:
     # PUBLIC — position lifecycle
     # ─────────────────────────────────────────────────────────────
 
-    def open_position(self, signal: Signal, fill_price: float) -> Position:
+    def open_position(self, signal: Signal, fill_price: float,
+                      paper: bool = False) -> Position:
         """Record a newly filled trade entry."""
         self._trade_counter += 1
         trade_id = f"T{datetime.now(tz=timezone.utc).strftime('%Y%m%d%H%M%S')}-{self._trade_counter:04d}"
@@ -104,6 +105,20 @@ class PortfolioTracker:
             f"SL: {position.stop_loss:.2f} | T1: {position.target_1:.2f} | "
             f"ID: {trade_id}"
         )
+
+        try:
+            from audit_log import audit_log
+            audit_log.position_opened(
+                symbol      = signal.symbol,
+                direction   = signal.direction.value,
+                qty         = signal.position_size,
+                fill_price  = fill_price,
+                strategy    = signal.strategy,
+                paper       = paper,
+            )
+        except Exception:
+            pass
+
         return position
 
     def close_position(
@@ -141,6 +156,18 @@ class PortfolioTracker:
             f"P&L: ₹{position.realised_pnl:+,.0f} | "
             f"Exit: {fill_price:.2f} | Reason: {reason}"
         )
+
+        try:
+            from audit_log import audit_log
+            audit_log.position_closed(
+                symbol     = position.symbol,
+                exit_price = fill_price,
+                pnl        = position.realised_pnl,
+                reason     = reason,
+            )
+        except Exception:
+            pass
+
         return position
 
     # ─────────────────────────────────────────────────────────────

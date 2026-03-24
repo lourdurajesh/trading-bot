@@ -40,12 +40,14 @@ NSE_MIDCAP = [
 NSE_INDICES = [
     "NSE:NIFTY50-INDEX",
     "NSE:NIFTYBANK-INDEX",
+    "NSE:FINNIFTY-INDEX",
 ]
 
 # ── Options universe ──────────────────────────────────────────────
 NSE_OPTIONS_UNIVERSE = [
     "NSE:NIFTY50-INDEX",
     "NSE:NIFTYBANK-INDEX",
+    "NSE:FINNIFTY-INDEX",
     "NSE:RELIANCE-EQ",
     "NSE:TCS-EQ",
     "NSE:HDFCBANK-EQ",

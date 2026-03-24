@@ -51,6 +51,11 @@ class OrderManager:
 
         if not decision.approved:
             logger.info(f"[OrderManager] REJECTED {signal.symbol}: {decision.reason}")
+            try:
+                from audit_log import audit_log
+                audit_log.rejection(signal, reason=decision.reason, layer="risk")
+            except Exception:
+                pass
             return None
 
         # Minimum net profit check
@@ -100,8 +105,14 @@ class OrderManager:
 
     def set_mode(self, mode: str) -> None:
         if mode.upper() in ("AUTO", "MANUAL"):
+            old = self._mode
             self._mode = mode.upper()
             logger.info(f"[OrderManager] Mode → {self._mode}")
+            try:
+                from audit_log import audit_log
+                audit_log.mode_change(old, self._mode)
+            except Exception:
+                pass
 
     @property
     def mode(self) -> str:

@@ -1,4 +1,6 @@
+import logging
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -45,6 +47,32 @@ DAILY_LOSS_LIMIT_PCT  = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "3.0"))
 
 # Maximum allocation to options strategies (% of total capital)
 MAX_OPTIONS_ALLOCATION_PCT = float(os.getenv("MAX_OPTIONS_ALLOCATION_PCT", "30.0"))
+
+# ─────────────────────────────────────────
+# OPTIONS-SPECIFIC RISK PARAMETERS
+# These are separate, tighter limits because options can lose 100% very fast
+# ─────────────────────────────────────────
+
+# Hard cap on number of lots per single options trade
+MAX_OPTIONS_LOTS_PER_TRADE   = int(os.getenv("MAX_OPTIONS_LOTS_PER_TRADE", "2"))
+
+# Minimum option LTP — avoid near-zero options that move 100% on noise
+MIN_OPTION_LTP               = float(os.getenv("MIN_OPTION_LTP", "5.0"))
+
+# Minimum open interest — avoid illiquid strikes (low OI = wide spread = slippage)
+MIN_OPTION_OI                = int(os.getenv("MIN_OPTION_OI", "500"))
+
+# Force-close options positions when DTE drops below this (expiry risk)
+OPTIONS_DTE_FORCE_EXIT       = int(os.getenv("OPTIONS_DTE_FORCE_EXIT", "3"))
+
+# VIX ceiling for SHORT premium strategies (short strangle) — above this is too dangerous
+OPTIONS_VIX_LIMIT            = float(os.getenv("OPTIONS_VIX_LIMIT", "25.0"))
+
+# Separate daily loss cap for options only — stricter than equity daily limit
+DAILY_OPTIONS_LOSS_LIMIT_PCT = float(os.getenv("DAILY_OPTIONS_LOSS_LIMIT_PCT", "2.0"))
+
+# Max capital deployed in a single options trade (% of total capital)
+MAX_OPTIONS_TRADE_PCT        = float(os.getenv("MAX_OPTIONS_TRADE_PCT", "5.0"))
 
 # ─────────────────────────────────────────
 # STRATEGY SETTINGS
@@ -107,3 +135,50 @@ NSE_CLOSE = "15:30"
 # US market in IST (EST + 5:30)
 NYSE_OPEN_IST  = "19:00"
 NYSE_CLOSE_IST = "01:30"  # next day
+
+
+# ─────────────────────────────────────────
+# STARTUP VALIDATION
+# ─────────────────────────────────────────
+
+def validate_env() -> None:
+    """
+    Called once on startup from main.py / watchdog.py.
+    Logs warnings for missing credentials and errors for truly fatal gaps.
+    Does NOT crash the bot — allows paper trading without live broker creds.
+    """
+    _log = logging.getLogger("config.settings")
+    warnings = []
+    errors   = []
+
+    # Fyers required for live NSE trading
+    if not os.getenv("FYERS_APP_ID"):
+        warnings.append("FYERS_APP_ID not set — live NSE trading disabled")
+    if not os.getenv("FYERS_ACCESS_TOKEN"):
+        warnings.append("FYERS_ACCESS_TOKEN not set — live NSE trading disabled")
+
+    # Anthropic required for intelligence layer
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        warnings.append("ANTHROPIC_API_KEY not set — analyst agent will run in simulation mode")
+
+    # Telegram optional but useful
+    if not os.getenv("TELEGRAM_BOT_TOKEN"):
+        warnings.append("TELEGRAM_BOT_TOKEN not set — no trade alerts will be sent")
+
+    # Capital sanity check
+    cap = float(os.getenv("TOTAL_CAPITAL", "500000"))
+    if cap < 10000:
+        errors.append(f"TOTAL_CAPITAL={cap} is dangerously low (< ₹10,000) — check .env")
+
+    risk_pct = float(os.getenv("RISK_PER_TRADE_PCT", "1.5"))
+    if risk_pct > 3.0:
+        errors.append(f"RISK_PER_TRADE_PCT={risk_pct}% exceeds 3% hard limit — check .env")
+
+    for w in warnings:
+        _log.warning(f"[Config] {w}")
+    for e in errors:
+        _log.error(f"[Config] FATAL: {e}")
+
+    if errors:
+        _log.error("[Config] Fatal configuration errors detected — review .env before trading")
+        # Don't sys.exit() — let paper trading work without live creds

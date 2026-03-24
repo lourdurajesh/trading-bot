@@ -80,6 +80,11 @@ class StrategySelector:
                 intel = intelligence_engine.evaluate(signal)
                 if not intel.approved:
                     logger.info(f"[StrategySelector] {symbol} blocked by intelligence: {intel.summary[:100]}")
+                    try:
+                        from audit_log import audit_log
+                        audit_log.rejection(signal, reason=intel.summary[:300], layer="intelligence")
+                    except Exception:
+                        pass
                     # Apply cooldown so we don't re-evaluate every 60 seconds
                     self.apply_cooldown(symbol, minutes=60)
                     continue

@@ -36,7 +36,7 @@ class OptionsIncomeStrategy(BaseStrategy):
             return None
 
         # Only trade Nifty and BankNifty for now
-        if symbol not in ("NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"):
+        if symbol not in ("NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:FINNIFTY-INDEX"):
             return None
 
         # Regime must be RANGING
@@ -60,15 +60,48 @@ class OptionsIncomeStrategy(BaseStrategy):
             return None
 
         atr_val = atr(df).iloc[-1]
-        iv      = 0.15   # default IV estimate — replace with live chain data in production
 
-        # Calculate strangle strikes (1 SD OTM each side)
-        call_strike = options_engine.get_otm_strike(spot, 'call', SD_WINGS, iv, 30)
-        put_strike  = options_engine.get_otm_strike(spot, 'put',  SD_WINGS, iv, 30)
+        # ── Fetch live options chain for real premiums ─────────────
+        from execution.options_executor import options_executor
 
-        # Estimate credit (simplified — use actual chain prices in production)
-        estimated_credit = spot * iv * 0.02   # rough estimate
-        stop_loss_credit = estimated_credit * 2   # stop at 2× credit received
+        # Select 1-SD OTM call and put using live delta targeting
+        # 1 SD OTM ≈ delta 0.16 (one standard deviation from ATM)
+        opt_call = options_executor.get_best_option(
+            underlying   = symbol,
+            option_type  = "call",
+            target_delta = 0.16,
+            min_dte      = MIN_DTE,
+            max_dte      = MAX_DTE,
+        )
+        opt_put = options_executor.get_best_option(
+            underlying   = symbol,
+            option_type  = "put",
+            target_delta = 0.16,
+            min_dte      = MIN_DTE,
+            max_dte      = MAX_DTE,
+        )
+
+        if opt_call and opt_put:
+            iv              = (opt_call.iv + opt_put.iv) / 2 if opt_call.iv and opt_put.iv else 0.15
+            call_strike     = opt_call.strike
+            put_strike      = opt_put.strike
+            # Total credit = call LTP + put LTP
+            estimated_credit = round(opt_call.ltp + opt_put.ltp, 2)
+            lot_size         = opt_call.lot_size
+        else:
+            # Simulation fallback
+            iv               = 0.15
+            call_strike      = options_engine.get_otm_strike(spot, 'call', SD_WINGS, iv, 30)
+            put_strike       = options_engine.get_otm_strike(spot, 'put',  SD_WINGS, iv, 30)
+            estimated_credit = spot * iv * 0.02
+            lot_size         = options_executor.get_lot_size(symbol)
+
+        if estimated_credit <= 0:
+            self.log_skip(symbol, "Credit estimated as zero — skipping")
+            return None
+
+        # For short strangle: stop at 2× credit (premium doubles = max pain trigger)
+        stop_loss_credit = estimated_credit * 2
 
         confidence = min(0.5 + (iv_rank - MIN_IV_RANK) / 100, 0.85)
         if confidence < MIN_SIGNAL_CONFIDENCE:
@@ -92,11 +125,15 @@ class OptionsIncomeStrategy(BaseStrategy):
             regime      = regime.regime.value,
             reason      = reason,
             options_meta = {
-                "strategy":     "short_strangle",
-                "call_strike":  call_strike,
-                "put_strike":   put_strike,
-                "iv_rank":      iv_rank,
+                "strategy":          "short_strangle",
+                "call_strike":       call_strike,
+                "put_strike":        put_strike,
+                "iv_rank":           iv_rank,
+                "iv":                round(iv, 4),
+                "lot_size":          lot_size,
                 "profit_target_pct": PROFIT_TARGET,
+                "nfo_call":          opt_call.symbol if opt_call else None,
+                "nfo_put":           opt_put.symbol if opt_put else None,
             }
         )
         signal.calculate_rr()

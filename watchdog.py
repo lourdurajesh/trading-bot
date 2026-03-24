@@ -33,8 +33,9 @@ logger = logging.getLogger("watchdog")
 PYTHON          = sys.executable
 BOT_SCRIPT      = os.path.join(os.path.dirname(__file__), "main.py")
 TOKEN_SCRIPT    = os.path.join(os.path.dirname(__file__), "generate_token.py")
-RESTART_DELAY   = 10     # seconds before restarting after crash
-MAX_RESTARTS    = 10     # max restarts before giving up
+RESTART_DELAY_BASE = 10  # base delay in seconds (doubles each crash: 10, 20, 40, 80…)
+RESTART_DELAY_MAX  = 300 # cap at 5 minutes
+MAX_RESTARTS       = 20  # increased — exponential backoff makes this safer
 TOKEN_REFRESH_HOUR   = 23    # 11 PM IST
 TOKEN_REFRESH_MINUTE = 45    # 11:45 PM IST
 HEALTH_CHECK_INTERVAL = 5    # seconds between health checks
@@ -46,6 +47,8 @@ class Watchdog:
     def __init__(self):
         self._process       = None
         self._restart_count = 0
+        self._consecutive_crashes = 0   # resets on a clean run of >60s
+        self._last_start_time = 0.0
         self._token_refreshed_today = False
         self._last_token_refresh_date = None
         self._running       = True
@@ -85,16 +88,28 @@ class Watchdog:
             exit_code = poll
             self._restart_count += 1
 
+            # If bot ran for > 60 seconds before exiting, treat as clean run and
+            # reset the consecutive crash counter (transient issue, not boot loop).
+            uptime = time.time() - self._last_start_time
+            if uptime > 60:
+                self._consecutive_crashes = 0
+
             if exit_code == 0:
-                logger.info(f"Bot exited cleanly (code 0). "
-                            f"Restart #{self._restart_count}")
+                logger.info(f"Bot exited cleanly (code 0). Restart #{self._restart_count}")
+                self._consecutive_crashes = 0
             else:
-                logger.error(f"Bot CRASHED with code {exit_code}. "
-                             f"Restart #{self._restart_count}")
+                self._consecutive_crashes += 1
+                # Exponential backoff: 10s, 20s, 40s, 80s … capped at 5 min
+                delay = min(RESTART_DELAY_BASE * (2 ** (self._consecutive_crashes - 1)), RESTART_DELAY_MAX)
+                logger.error(
+                    f"Bot CRASHED (exit {exit_code}) — #{self._restart_count}, "
+                    f"consecutive: {self._consecutive_crashes}. "
+                    f"Waiting {delay}s before restart."
+                )
                 self._send_alert(
                     f"🔴 Bot crashed (exit code {exit_code})\n"
-                    f"Restarting in {RESTART_DELAY}s... "
-                    f"(restart #{self._restart_count})"
+                    f"Consecutive crashes: {self._consecutive_crashes}\n"
+                    f"Restarting in {delay}s... (restart #{self._restart_count})"
                 )
 
             if self._restart_count > MAX_RESTARTS:
@@ -112,11 +127,13 @@ class Watchdog:
             # Reconcile positions before restart
             self._reconcile_positions()
 
-            time.sleep(RESTART_DELAY)
+            delay = min(RESTART_DELAY_BASE * (2 ** max(0, self._consecutive_crashes - 1)), RESTART_DELAY_MAX)
+            time.sleep(delay)
             self._start_bot()
 
     def _start_bot(self) -> None:
         """Start main.py as a subprocess."""
+        self._last_start_time = time.time()
         try:
             self._process = subprocess.Popen(
                 [PYTHON, BOT_SCRIPT],
