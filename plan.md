@@ -267,17 +267,25 @@ trading-bot/
 
 ---
 
-## Phase 7D — Paper Trading Engine 🔴 NOT STARTED
-**Build this before switching to AUTO mode with real money**
+## Phase 7D — Paper Trading Engine ✅ COMPLETE
 
-- [ ] paper_trading.py
-  - Receives real signals from strategy_selector
-  - Simulates fills at next-bar open + slippage
-  - Tracks simulated P&L completely separately from live
-  - Generates same Telegram alerts labeled [PAPER]
-  - Runs in parallel with live MANUAL mode
-  - Dashboard shows paper P&L separately
-  - Validate: 2 weeks paper trading before going live AUTO
+- [x] paper_trading.py
+  - Simulates fills at current LTP ± slippage (0.05%)
+  - Records to paper_trades table in SQLite (separate from live trades)
+  - Tracks paper P&L: win rate, profit factor, avg winner/loser
+  - Sends [PAPER]-tagged Telegram alerts on open/close
+  - Enabled via PAPER_TRADING=true in .env
+  - Dashboard: GET /paper/stats and GET /paper/positions endpoints
+- [x] position_manager — paper mode exit routing
+  - SL hits / target hits / EOD exits route to paper_trading_engine.close_order()
+  - Broker SL updates skipped in paper mode
+- [x] Signal quality fixes (2026-03-24)
+  - directional_options.py: stop_loss = debit_cost × 0.5 (was = entry, giving RR=0)
+  - base_strategy.is_valid(): OPTIONS debit spreads use stop < entry, not SHORT equity logic
+  - strategy_selector: is_valid() gate before intelligence engine (no wasted Claude API calls)
+  - strategy_selector: 5-min cooldown after order_manager rejection
+
+**Validate:** Monitor paper trading for 2 weeks. Target: win_rate > 50%, profit_factor > 1.3
 
 ---
 

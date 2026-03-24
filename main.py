@@ -17,9 +17,6 @@ Shutdown: Ctrl+C → graceful stop (cancel pending orders, save state)
 from dotenv import load_dotenv
 load_dotenv(override=True)   # MUST be first — loads fresh token before any other import
 
-from dotenv import load_dotenv
-load_dotenv(override=True)   # reload fresh token written by generate_token.py
-
 import logging
 import os
 import signal

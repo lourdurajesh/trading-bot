@@ -180,28 +180,37 @@ class PositionManager:
 
     def _exit_position(self, symbol: str, size: int, reason: str, price: float) -> None:
         """Full exit of a position."""
-        from execution.order_manager import order_manager
-        from execution.fyers_broker import fyers_broker
-        from execution.alpaca_broker import alpaca_broker
+        import os
+        PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 
         pos = portfolio_tracker.get_position(symbol)
         if not pos:
             logger.warning(f"[PositionManager] Exit called but no position found: {symbol}")
             return
 
-        # Determine exit direction
-        exit_direction = "SHORT" if pos.direction == "LONG" else "LONG"
-        broker = fyers_broker if symbol.startswith("NSE:") else alpaca_broker
-
         logger.info(f"[PositionManager] EXITING {symbol} × {size} @ {price:.2f} — {reason}")
 
-        # Place market exit order
-        order_id = broker.place_order(
-            symbol     = symbol,
-            direction  = exit_direction,
-            qty        = size,
-            order_type = "MARKET",
-        )
+        if PAPER_TRADING:
+            # Paper mode — simulate exit via paper trading engine
+            from paper_trading import paper_trading_engine
+            paper_trading_engine.close_order(
+                symbol    = symbol,
+                qty       = size,
+                direction = pos.direction,
+                reason    = reason,
+            )
+            order_id = f"PAPER-EXIT"
+        else:
+            from execution.fyers_broker import fyers_broker
+            from execution.alpaca_broker import alpaca_broker
+            exit_direction = "SHORT" if pos.direction == "LONG" else "LONG"
+            broker = fyers_broker if symbol.startswith("NSE:") else alpaca_broker
+            order_id = broker.place_order(
+                symbol     = symbol,
+                direction  = exit_direction,
+                qty        = size,
+                order_type = "MARKET",
+            )
 
         if order_id:
             # Close in portfolio tracker
@@ -224,24 +233,34 @@ class PositionManager:
 
     def _partial_exit(self, symbol: str, size: int, reason: str, price: float) -> None:
         """Exit part of a position."""
-        from execution.fyers_broker import fyers_broker
-        from execution.alpaca_broker import alpaca_broker
+        import os
+        PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 
         pos = portfolio_tracker.get_position(symbol)
         if not pos:
             return
 
-        exit_direction = "SHORT" if pos.direction == "LONG" else "LONG"
-        broker = fyers_broker if symbol.startswith("NSE:") else alpaca_broker
-
         logger.info(f"[PositionManager] PARTIAL EXIT {symbol} × {size} @ {price:.2f}")
 
-        order_id = broker.place_order(
-            symbol     = symbol,
-            direction  = exit_direction,
-            qty        = size,
-            order_type = "MARKET",
-        )
+        if PAPER_TRADING:
+            from paper_trading import paper_trading_engine
+            order_id = paper_trading_engine.close_order(
+                symbol    = symbol,
+                qty       = size,
+                direction = pos.direction,
+                reason    = f"PARTIAL_{reason}",
+            )
+        else:
+            from execution.fyers_broker import fyers_broker
+            from execution.alpaca_broker import alpaca_broker
+            exit_direction = "SHORT" if pos.direction == "LONG" else "LONG"
+            broker = fyers_broker if symbol.startswith("NSE:") else alpaca_broker
+            order_id = broker.place_order(
+                symbol     = symbol,
+                direction  = exit_direction,
+                qty        = size,
+                order_type = "MARKET",
+            )
 
         if order_id:
             # Update position size in tracker
@@ -297,7 +316,11 @@ class PositionManager:
         Update stop loss order on broker.
         Cancels existing SL order and places new one.
         This is best-effort — failure is logged but doesn't block.
+        Skipped in paper trading mode (no real broker orders).
         """
+        import os
+        if os.getenv("PAPER_TRADING", "false").lower() == "true":
+            return   # paper mode — no broker SL to update
         try:
             from execution.fyers_broker import fyers_broker
             pos = portfolio_tracker.get_position(symbol)
