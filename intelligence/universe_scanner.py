@@ -38,6 +38,56 @@ HEADERS = {
 MIN_DAILY_TURNOVER_CR = 5.0    # ₹5 Crore minimum avg daily volume
 
 # Sector → NSE industry classification mapping
+# Company-name substring keywords per theme.
+# Used when EQUITY_L.csv has no INDUSTRY column (sector_match always fails).
+# These words appear in actual NSE company names, unlike headline-trigger words.
+THEME_COMPANY_KEYWORDS: dict[str, list[str]] = {
+    "infra_push":          ["infra", "construction", "cement", "steel", "rail", "road",
+                            "highway", "bridge", "tunnel", "nbcc", "ircon", "rvnl",
+                            "pnc", "knr", "dilip", "ashoka", "hg infra", "megastar",
+                            "ultratech", "acc", "ambuja", "shree cement", "jsw",
+                            "tata steel", "sail", "jindal", "concrete"],
+    "infra_spending":      ["infra", "construction", "cement", "steel", "rail", "road"],
+    "defence_spending":    ["defence", "aerospace", "bharat electronics", "bel", "hal",
+                            "bharat forge", "mtar", "paras", "astra", "bharat dynamic",
+                            "garden reach", "cochin shipyard", "mazagon"],
+    "ev_push":             ["electric", "battery", "tata motors", "mahindra electric",
+                            "exide", "amara raja", "greaves", "ampere", "olectra",
+                            "tata power", "charge"],
+    "pharma_opportunity":  ["pharma", "lab", "biotech", "drug", "health", "hospital",
+                            "diagnostic", "cipla", "sun pharma", "dr reddy",
+                            "lupin", "aurobindo", "divi", "alkem"],
+    "healthcare_push":     ["pharma", "hospital", "health", "diagnostic", "medical",
+                            "apollo", "fortis", "max health", "narayana"],
+    "banking_stress":      ["bank", "finance", "capital", "credit", "nbfc"],
+    "rate_cut":            ["bank", "finance", "housing", "realty", "estate",
+                            "hdfc", "lichfl", "can fin", "pnb housing"],
+    "it_weakness":         ["tech", "infotech", "software", "digital", "data",
+                            "systems", "infosys", "wipro", "hcl", "tcs", "mphasis"],
+    "digital_push":        ["tech", "digital", "fintech", "payment", "data", "cloud",
+                            "software", "telecom", "broadband"],
+    "china_plus_one":      ["electronic", "chemical", "textile", "manufacturing",
+                            "export", "plastic", "polymer"],
+    "crude_rise":          ["airline", "airway", "aviation", "tyre", "paint", "rubber",
+                            "indigo", "spicejet", "berger", "asian paints", "apollo tyre"],
+    "crude_fall":          ["airline", "airway", "aviation", "tyre", "paint",
+                            "oil marketing", "bpcl", "iocl", "hpcl"],
+    "rupee_fall":          ["tech", "infotech", "software", "pharma", "export",
+                            "textile", "garment"],
+    "fii_selling":         ["bank", "tech", "infotech", "hdfc", "reliance", "tcs"],
+    "tariff_fears":        ["tech", "pharma", "textile", "auto", "motor", "export"],
+    "global_risk_off":     ["fmcg", "pharma", "consumer", "hul", "itc", "nestle",
+                            "britannia", "dabur"],
+    "monsoon_failure":     ["agro", "pesticide", "fertilizer", "chemical", "seed",
+                            "ubi", "iffco", "gsfc", "coromandel", "rallis"],
+    "monsoon_good":        ["fertilizer", "tractor", "agri", "seed", "fmcg",
+                            "mahindra", "escorts", "vstagro", "kaveri"],
+    "lpg_shortage":        ["appliance", "electric", "kitchen", "prestige", "hawkins",
+                            "ttk", "butterfly", "elgi"],
+    "fii_buying":          ["bank", "it", "large cap", "hdfc", "reliance", "tcs",
+                            "infosys", "icici", "kotak"],
+}
+
 SECTOR_INDUSTRY_MAP = {
     "consumer_durables":   ["CONSUMER DURABLES"],
     "electric_appliances": ["CONSUMER DURABLES", "CAPITAL GOODS"],
@@ -318,7 +368,14 @@ class UniverseScanner:
                 theme_industries.extend(SECTOR_INDUSTRY_MAP.get(sector, []))
 
             sector_match  = any(ind.upper() in industry for ind in theme_industries)
-            keyword_match = any(kw.lower() in company_lower for kw in theme.keywords)
+            # Use headline-trigger keywords AND company-name-specific keywords.
+            # EQUITY_L.csv has no industry column so sector_match is always False;
+            # company keywords ensure meaningful candidates are still returned.
+            company_keywords = THEME_COMPANY_KEYWORDS.get(theme.name, [])
+            keyword_match = (
+                any(kw.lower() in company_lower for kw in theme.keywords) or
+                any(kw.lower() in company_lower for kw in company_keywords)
+            )
 
             if sector_match or keyword_match:
                 matching_themes.append(theme.name)

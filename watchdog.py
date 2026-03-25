@@ -23,13 +23,11 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-logging.basicConfig(
-    level  = logging.INFO,
-    format = "%(asctime)s [%(levelname)s] watchdog: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("logs/watchdog.log", encoding="utf-8"),
-    ]
+from config.logging_ist import setup_logging
+setup_logging(
+    level    = logging.INFO,
+    fmt      = "%(asctime)s [%(levelname)s] watchdog: %(message)s",
+    log_file = "logs/watchdog.log",
 )
 logger = logging.getLogger("watchdog")
 

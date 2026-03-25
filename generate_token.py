@@ -27,10 +27,10 @@ from fyers_apiv3 import fyersModel
 
 load_dotenv(override=True)
 
-logging.basicConfig(
-    level  = logging.INFO,
-    format = "%(asctime)s [%(levelname)s] %(message)s",
-)
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config.logging_ist import setup_logging
+setup_logging(level=logging.INFO, fmt="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("generate_token")
 
 APP_ID       = os.getenv("FYERS_APP_ID", "")

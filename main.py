@@ -36,13 +36,11 @@ from config.settings import (
 # ── Logging setup (before any imports that log) ───────────────────
 os.makedirs(LOG_DIR, exist_ok=True)
 
-logging.basicConfig(
+from config.logging_ist import setup_logging
+setup_logging(
     level    = getattr(logging, LOG_LEVEL, logging.INFO),
-    format   = "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers = [
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(f"{LOG_DIR}/bot.log", encoding="utf-8"),
-    ]
+    fmt      = "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    log_file = f"{LOG_DIR}/bot.log",
 )
 logger = logging.getLogger("main")
 

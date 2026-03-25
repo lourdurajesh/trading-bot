@@ -36,10 +36,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
-logging.basicConfig(
-    level  = logging.INFO,
-    format = "%(asctime)s [%(levelname)s] %(message)s",
-)
+from config.logging_ist import setup_logging
+setup_logging(level=logging.INFO, fmt="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("daily_plan")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
