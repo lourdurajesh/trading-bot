@@ -308,6 +308,86 @@ async def websocket_logs(ws: WebSocket):
         pass
 
 
+@app.get("/review/daily")
+def get_daily_review(date_str: str = None, capital: float = None):
+    """
+    Today's performance review — open positions, closed trades, audit trail.
+    Query params:
+      date    — YYYY-MM-DD (default: today IST)
+      capital — portfolio size for % P&L (default: TOTAL_CAPITAL from .env)
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from daily_review import (
+            fetch_open_positions, fetch_closed_today,
+            fetch_paper_closed_today, fetch_audit_today,
+        )
+        from config.settings import TOTAL_CAPITAL
+        from datetime import date as _date
+
+        day = (
+            _date.fromisoformat(date_str)
+            if date_str else
+            datetime.now(tz=IST).date()
+        )
+        cap = capital or TOTAL_CAPITAL
+
+        open_pos   = fetch_open_positions(day)
+        closed     = fetch_closed_today(day)
+        paper      = fetch_paper_closed_today(day)
+        audit      = fetch_audit_today(day)
+
+        pnls       = [t["pnl"] for t in closed]
+        total_pnl  = sum(pnls)
+        winners    = [p for p in pnls if p > 0]
+        losers     = [p for p in pnls if p <= 0]
+        win_rate   = round(len(winners) / len(pnls) * 100, 1) if pnls else 0.0
+
+        type_counts: dict = {}
+        for e in audit:
+            et = e["event_type"]
+            type_counts[et] = type_counts.get(et, 0) + 1
+
+        rejected = [e for e in audit if e["event_type"] in ("SIGNAL_REJECTED", "INTELLIGENCE_VETO")]
+        reason_counts: dict = {}
+        for e in rejected:
+            r = (e.get("reason") or "unknown")[:80]
+            reason_counts[r] = reason_counts.get(r, 0) + 1
+
+        return {
+            "date":    day.isoformat(),
+            "capital": cap,
+            "live": {
+                "closed_trades":   len(closed),
+                "open_positions":  len(open_pos),
+                "realised_pnl":    round(total_pnl, 2),
+                "pnl_pct":         round(total_pnl / cap * 100, 3) if cap else 0,
+                "win_rate_pct":    win_rate,
+                "winners":         len(winners),
+                "losers":          len(losers),
+                "open":            open_pos,
+                "trades":          closed,
+            },
+            "paper": {
+                "closed_trades": len(paper),
+                "realised_pnl":  round(sum(t["pnl"] for t in paper), 2),
+                "trades":        paper,
+            },
+            "audit": {
+                "total_events":      len(audit),
+                "event_counts":      type_counts,
+                "rejected_signals":  len(rejected),
+                "rejection_reasons": reason_counts,
+                "kill_switch_fired": type_counts.get("KILL_SWITCH", 0) > 0,
+                "timeline":          audit,
+            },
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.now(tz=IST).isoformat()}
