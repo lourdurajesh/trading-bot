@@ -60,7 +60,8 @@ def fetch_historical(
         age_days = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_path))).days
         if age_days < CACHE_DAYS:
             try:
-                df = pd.read_csv(cache_path, parse_dates=["timestamp"])
+                df = pd.read_csv(cache_path)
+                df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("Asia/Kolkata")
                 if len(df) > 10:
                     logger.debug(f"[DataFetcher] Cache hit: {symbol} [{timeframe}] — {len(df)} rows")
                     return df
@@ -152,7 +153,7 @@ def _fetch_fyers(symbol: str, timeframe: str, years_back: int) -> Optional[pd.Da
             candles,
             columns=["timestamp", "open", "high", "low", "close", "volume"]
         )
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert("Asia/Kolkata")
         return df
 
     except Exception as e:
@@ -186,7 +187,7 @@ def _fetch_yahoo(yahoo_symbol: str, timeframe: str, years_back: int) -> Optional
         ohlcv      = result["indicators"]["quote"][0]
 
         df = pd.DataFrame({
-            "timestamp": pd.to_datetime(timestamps, unit="s", utc=True),
+            "timestamp": pd.to_datetime(timestamps, unit="s", utc=True).tz_convert("Asia/Kolkata"),
             "open":      ohlcv["open"],
             "high":      ohlcv["high"],
             "low":       ohlcv["low"],
@@ -208,7 +209,7 @@ def _fetch_yahoo(yahoo_symbol: str, timeframe: str, years_back: int) -> Optional
 def _standardise(df: pd.DataFrame) -> pd.DataFrame:
     """Ensure consistent column types and sort by timestamp."""
     df = df.copy()
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("Asia/Kolkata")
     df = df.sort_values("timestamp").reset_index(drop=True)
     for col in ["open", "high", "low", "close"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")

@@ -9,6 +9,7 @@ Called by main.py on every evaluation cycle.
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -25,6 +26,7 @@ from strategies.trend_follow import TrendFollowStrategy
 from strategies.mean_reversion import MeanReversionStrategy
 from strategies.options_income import OptionsIncomeStrategy
 from strategies.directional_options import DirectionalOptionsStrategy
+from strategies.iron_condor import IronCondorStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +42,19 @@ class StrategySelector:
 
     def __init__(self):
         # Instantiate all strategy modules
-        self._trend      = TrendFollowStrategy()
-        self._reversion  = MeanReversionStrategy()
-        self._opt_income = OptionsIncomeStrategy()
-        self._opt_direct = DirectionalOptionsStrategy()
+        self._trend        = TrendFollowStrategy()
+        self._reversion    = MeanReversionStrategy()
+        self._opt_income   = OptionsIncomeStrategy()
+        self._opt_direct   = DirectionalOptionsStrategy()
+        self._iron_condor  = IronCondorStrategy()
+
+        # Thread pool for parallel options strategy evaluation.
+        # Options strategies block on Fyers chain API calls — running them
+        # concurrently cuts wall-clock time from N×latency to ~1×latency
+        # because OptionsExecutor's chain cache is shared across threads.
+        self._executor = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="options_eval"
+        )
 
         # Cooldown tracker: symbol → datetime when cooldown expires
         self._cooldowns: dict[str, datetime] = {}
@@ -163,8 +174,11 @@ class StrategySelector:
         return {
             "cycle_count":        self._cycle_count,
             "strategies_enabled": {
-                "trend_follow":    self._trend.enabled,
-                "mean_reversion":  self._reversion.enabled,
+                "trend_follow":        self._trend.enabled,
+                "mean_reversion":      self._reversion.enabled,
+                "options_income":      self._opt_income.enabled,
+                "directional_options": self._opt_direct.enabled,
+                "iron_condor":         self._iron_condor.enabled,
             },
             "symbols_on_cooldown": len([
                 s for s, exp in self._cooldowns.items()
@@ -172,13 +186,55 @@ class StrategySelector:
             ]),
         }
 
+    def __del__(self):
+        try:
+            self._executor.shutdown(wait=False)
+        except Exception:
+            pass
+
     # ─────────────────────────────────────────────────────────────
     # INTERNAL
     # ─────────────────────────────────────────────────────────────
 
+    def _evaluate_options_parallel(
+        self,
+        symbol:     str,
+        strategies: list,
+    ) -> Optional[Signal]:
+        """
+        Evaluate multiple options strategies for a symbol concurrently.
+
+        Each strategy's evaluate() may block on a Fyers API chain fetch.
+        Running them in parallel reduces wall-clock time from N×latency
+        to ~1×latency because OptionsExecutor's chain cache is shared.
+
+        Returns the highest-confidence signal found, or None.
+        Times out after 10 seconds to avoid blocking the main loop.
+        """
+        futures = {
+            self._executor.submit(self._try_strategy, strat, symbol): strat
+            for strat in strategies
+        }
+
+        best: Optional[Signal] = None
+        for future in as_completed(futures, timeout=10):
+            try:
+                sig = future.result()
+                if sig is not None:
+                    if best is None or sig.confidence > best.confidence:
+                        best = sig
+            except Exception as e:
+                strat = futures[future]
+                logger.error(
+                    f"[StrategySelector] Parallel eval error "
+                    f"({strat.name}/{symbol}): {e}"
+                )
+        return best
+
     def _evaluate_symbol(self, symbol: str) -> Optional[Signal]:
         """
         Run the appropriate strategy for a single symbol.
+        Options strategies are evaluated in parallel to reduce chain-fetch latency.
         Returns Signal if a valid setup is found, else None.
         """
         # Skip if on cooldown
@@ -198,22 +254,25 @@ class StrategySelector:
 
         # Route to strategy based on regime
         if regime in (Regime.TRENDING, Regime.BREAKOUT):
-            # Try equity trend first, then directional options
-            return (
-                self._try_strategy(self._trend, symbol)
-                or self._try_strategy(self._opt_direct, symbol)
-            )
+            # Equity trend first (no network call — fast path)
+            signal = self._try_strategy(self._trend, symbol)
+            if signal:
+                return signal
+            # Directional options in parallel (single strategy, wrapped for consistency)
+            return self._evaluate_options_parallel(symbol, [self._opt_direct])
 
         if regime == Regime.RANGING:
-            # Try mean reversion first, then options income
-            return (
-                self._try_strategy(self._reversion, symbol)
-                or self._try_strategy(self._opt_income, symbol)
+            # Mean reversion first (no network call — fast path)
+            signal = self._try_strategy(self._reversion, symbol)
+            if signal:
+                return signal
+            # Premium-selling strategies in parallel — both hit the chain, benefit from concurrency
+            return self._evaluate_options_parallel(
+                symbol, [self._opt_income, self._iron_condor]
             )
 
         if regime == Regime.VOLATILE:
-            # Only directional options in volatile market
-            return self._try_strategy(self._opt_direct, symbol)
+            return self._evaluate_options_parallel(symbol, [self._opt_direct])
 
         return None
 

@@ -71,6 +71,61 @@ INDEX_SHORT: dict[str, str] = {
     "NSE:FINNIFTY-INDEX":  "FINNIFTY",
 }
 
+# Map equity symbols → short name used in NFO symbol construction
+# TODO: verify lot sizes on each quarterly NSE rollover (typically Mar/Jun/Sep/Dec)
+EQUITY_SHORT: dict[str, str] = {
+    "NSE:RELIANCE-EQ":    "RELIANCE",
+    "NSE:TCS-EQ":         "TCS",
+    "NSE:HDFCBANK-EQ":    "HDFCBANK",
+    "NSE:INFY-EQ":        "INFY",
+    "NSE:ICICIBANK-EQ":   "ICICIBANK",
+    "NSE:SBIN-EQ":        "SBIN",
+    "NSE:AXISBANK-EQ":    "AXISBANK",
+    "NSE:KOTAKBANK-EQ":   "KOTAKBANK",
+    "NSE:BHARTIARTL-EQ":  "BHARTIARTL",
+    "NSE:LT-EQ":          "LT",
+    "NSE:WIPRO-EQ":       "WIPRO",
+    "NSE:HCLTECH-EQ":     "HCLTECH",
+    "NSE:BAJFINANCE-EQ":  "BAJFINANCE",
+    "NSE:MARUTI-EQ":      "MARUTI",
+}
+
+# Equity options lot sizes (NSE NFO as of 2025)
+EQUITY_LOT_SIZES: dict[str, int] = {
+    "RELIANCE":    250,
+    "TCS":         150,
+    "HDFCBANK":    550,
+    "INFY":        300,
+    "ICICIBANK":   700,
+    "SBIN":       1500,
+    "AXISBANK":    625,
+    "KOTAKBANK":   400,
+    "BHARTIARTL":  950,
+    "LT":          175,
+    "WIPRO":       800,
+    "HCLTECH":     350,
+    "BAJFINANCE":  125,
+    "MARUTI":       75,
+}
+
+# Strike step per equity (₹ increments)
+EQUITY_STRIKE_STEPS: dict[str, int] = {
+    "RELIANCE":   20,
+    "TCS":        50,
+    "HDFCBANK":   20,
+    "INFY":       20,
+    "ICICIBANK":  10,
+    "SBIN":        5,
+    "AXISBANK":   10,
+    "KOTAKBANK":  20,
+    "BHARTIARTL": 10,
+    "LT":         20,
+    "WIPRO":       5,
+    "HCLTECH":    20,
+    "BAJFINANCE": 50,
+    "MARUTI":    100,
+}
+
 
 @dataclass
 class OptionResult:
@@ -105,6 +160,28 @@ class OptionsExecutor:
     # PUBLIC
     # ─────────────────────────────────────────────────────────────
 
+    def _resolve_underlying(self, underlying: str) -> tuple[Optional[str], int, int]:
+        """
+        Resolve any underlying symbol to (short_name, lot_size, strike_step).
+
+        Supports NSE indices and NSE equity options.
+        Returns (None, 0, 0) for unsupported symbols.
+
+        Examples:
+            "NSE:NIFTY50-INDEX"  → ("NIFTY",     75,   50)
+            "NSE:RELIANCE-EQ"    → ("RELIANCE",  250,   20)
+            "NSE:UNKNOWN-EQ"     → (None,          0,    0)
+        """
+        short = INDEX_SHORT.get(underlying)
+        if short:
+            return short, LOT_SIZES.get(short, 1), STRIKE_STEPS.get(short, 50)
+
+        short = EQUITY_SHORT.get(underlying)
+        if short:
+            return short, EQUITY_LOT_SIZES.get(short, 1), EQUITY_STRIKE_STEPS.get(short, 10)
+
+        return None, 0, 0
+
     def get_best_option(
         self,
         underlying:   str,
@@ -116,8 +193,9 @@ class OptionsExecutor:
         """
         Fetch live chain, select expiry + strike, return ready-to-trade OptionResult.
         Falls back to Black-Scholes simulation if chain unavailable.
+        Supports both NSE indices and NSE equity underlyings.
         """
-        short_name = INDEX_SHORT.get(underlying)
+        short_name, lot_size, strike_step = self._resolve_underlying(underlying)
         if not short_name:
             logger.warning(f"[OptionsExecutor] Unsupported underlying: {underlying}")
             return None
@@ -125,19 +203,24 @@ class OptionsExecutor:
         chain_data = self._get_chain(underlying)
 
         if chain_data:
-            return self._select_from_chain(chain_data, underlying, short_name,
-                                           option_type, target_delta, min_dte, max_dte)
+            return self._select_from_chain(
+                chain_data, underlying, short_name, lot_size,
+                option_type, target_delta, min_dte, max_dte,
+            )
         else:
             logger.info(f"[OptionsExecutor] Chain unavailable for {underlying} — using BS estimate")
-            return self._simulate_option(underlying, short_name, option_type, target_delta, min_dte)
+            return self._simulate_option(
+                underlying, short_name, lot_size, strike_step,
+                option_type, target_delta, min_dte,
+            )
 
     def get_lot_size(self, underlying: str) -> int:
-        short = INDEX_SHORT.get(underlying, "")
-        return LOT_SIZES.get(short, 1)
+        _, lot_size, _ = self._resolve_underlying(underlying)
+        return lot_size or 1
 
     def get_strike_step(self, underlying: str) -> int:
-        short = INDEX_SHORT.get(underlying, "")
-        return STRIKE_STEPS.get(short, 50)
+        _, _, step = self._resolve_underlying(underlying)
+        return step or 10
 
     def update_iv_history(self, underlying: str) -> None:
         """
@@ -211,6 +294,7 @@ class OptionsExecutor:
         chain_data:   dict,
         underlying:   str,
         short_name:   str,
+        lot_size:     int,
         option_type:  str,
         target_delta: float,
         min_dte:      int,
@@ -220,7 +304,6 @@ class OptionsExecutor:
         try:
             spot      = float(chain_data.get("underlyingValue", 0))
             expiries  = chain_data.get("expiryData", [])
-            lot_size  = LOT_SIZES.get(short_name, 1)
 
             if not spot or not expiries:
                 return None
@@ -315,6 +398,8 @@ class OptionsExecutor:
         self,
         underlying:   str,
         short_name:   str,
+        lot_size:     int,
+        strike_step:  int,
         option_type:  str,
         target_delta: float,
         min_dte:      int,
@@ -328,14 +413,13 @@ class OptionsExecutor:
             from analysis.options_engine import options_engine
 
             spot = store.get_ltp(underlying)
-            if not spot or spot < 1000:
+            if not spot or spot <= 0:
                 return None
 
-            iv       = 0.15    # conservative default — real IV typically 12-25%
-            dte      = min_dte + 7
-            T        = dte / 365
-            lot_size = LOT_SIZES.get(short_name, 1)
-            step     = STRIKE_STEPS.get(short_name, 50)
+            iv   = 0.15    # conservative default — real IV typically 12-25%
+            dte  = min_dte + 7
+            T    = dte / 365
+            step = strike_step
 
             # Estimate strike from target delta using approximate inverse N(d1)
             import math

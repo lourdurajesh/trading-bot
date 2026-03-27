@@ -210,5 +210,5 @@ class AlpacaStream:
             "close":     "close",
             "volume":    "volume",
         })
-        bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
+        bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True).dt.tz_convert("Asia/Kolkata")
         return bars[["timestamp", "open", "high", "low", "close", "volume"]]

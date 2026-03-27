@@ -138,7 +138,7 @@ class DataStore:
                 logger.debug(f"Insufficient candles for {symbol} [{timeframe}]: {len(candles)}")
                 return None
             df = pd.DataFrame(candles[-n:])
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("Asia/Kolkata")
             df = df.sort_values("timestamp").reset_index(drop=True)
             return df
 

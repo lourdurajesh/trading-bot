@@ -772,7 +772,7 @@ ACTIONS: ["action 1", "action 2", "action 3"]"""
             times  = result["timestamp"]
             series = pd.Series(
                 closes,
-                index=pd.to_datetime(times, unit="s"),
+                index=pd.to_datetime(times, unit="s", utc=True).tz_convert("Asia/Kolkata"),
                 name=symbol
             ).dropna()
             self._price_cache[symbol] = series

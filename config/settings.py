@@ -77,6 +77,54 @@ DAILY_OPTIONS_LOSS_LIMIT_PCT = float(os.getenv("DAILY_OPTIONS_LOSS_LIMIT_PCT", "
 MAX_OPTIONS_TRADE_PCT        = float(os.getenv("MAX_OPTIONS_TRADE_PCT", "5.0"))
 
 # ─────────────────────────────────────────
+# PER-STRATEGY OPTIONS CONFIGURATION
+# Override any value via .env without touching code.
+# ─────────────────────────────────────────
+
+OPTIONS_STRATEGY_CONFIG: dict = {
+
+    # Short Strangle — sell OTM call + put, collect premium
+    "short_strangle": {
+        "enabled":        os.getenv("OPTIONS_STRANGLE_ENABLED", "true").lower() == "true",
+        "min_dte":        int(os.getenv("STRANGLE_MIN_DTE",       "20")),
+        "max_dte":        int(os.getenv("STRANGLE_MAX_DTE",       "45")),
+        "call_delta":     float(os.getenv("STRANGLE_CALL_DELTA",  "0.16")),
+        "put_delta":      float(os.getenv("STRANGLE_PUT_DELTA",   "0.16")),
+        "min_iv_rank":    float(os.getenv("STRANGLE_MIN_IV_RANK", "50.0")),
+        "max_iv_rank":    float(os.getenv("STRANGLE_MAX_IV_RANK", "90.0")),
+        "profit_target":  float(os.getenv("STRANGLE_PROFIT_TARGET", "0.50")),
+        "stop_mult":      float(os.getenv("STRANGLE_STOP_MULT",     "2.0")),
+    },
+
+    # Debit Spread — buy ATM call/put spread on directional move
+    "debit_spread": {
+        "enabled":          os.getenv("OPTIONS_SPREAD_ENABLED", "true").lower() == "true",
+        "min_dte":          int(os.getenv("SPREAD_MIN_DTE",       "7")),
+        "max_dte":          int(os.getenv("SPREAD_MAX_DTE",       "21")),
+        "atm_delta":        float(os.getenv("SPREAD_ATM_DELTA",   "0.40")),
+        "max_iv_rank":      float(os.getenv("SPREAD_MAX_IV_RANK", "40.0")),
+        "stop_pct":         float(os.getenv("SPREAD_STOP_PCT",    "0.50")),
+        "net_debit_ratio":  float(os.getenv("SPREAD_NET_DEBIT_RATIO", "0.65")),
+    },
+
+    # Iron Condor — defined-risk strangle (4 legs), best in moderate-IV ranging markets
+    "iron_condor": {
+        "enabled":            os.getenv("OPTIONS_IC_ENABLED", "true").lower() == "true",
+        "min_dte":            int(os.getenv("IC_MIN_DTE",             "21")),
+        "max_dte":            int(os.getenv("IC_MAX_DTE",             "45")),
+        "short_call_delta":   float(os.getenv("IC_SHORT_CALL_DELTA",  "0.20")),
+        "short_put_delta":    float(os.getenv("IC_SHORT_PUT_DELTA",   "0.20")),
+        "wing_width_pct":     float(os.getenv("IC_WING_WIDTH_PCT",    "0.02")),   # 2% of spot
+        "min_iv_rank":        float(os.getenv("IC_MIN_IV_RANK",       "40.0")),
+        "max_iv_rank":        float(os.getenv("IC_MAX_IV_RANK",       "80.0")),
+        "profit_target":      float(os.getenv("IC_PROFIT_TARGET",     "0.50")),
+        "stop_mult":          float(os.getenv("IC_STOP_MULT",         "2.0")),
+        "allow_equities":     os.getenv("IC_ALLOW_EQUITIES", "true").lower() == "true",
+        "min_stock_price":    float(os.getenv("IC_MIN_STOCK_PRICE",   "500.0")),
+    },
+}
+
+# ─────────────────────────────────────────
 # STRATEGY SETTINGS
 # ─────────────────────────────────────────
 
