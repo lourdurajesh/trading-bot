@@ -17,7 +17,6 @@ IST = ZoneInfo("Asia/Kolkata")
 
 from analysis.regime_detector import Regime, regime_detector
 from config.settings import MIN_SIGNAL_CONFIDENCE, SYMBOL_COOLDOWN_MINUTES
-from config.watchlist import ALL_NSE_SYMBOLS, ALL_US_SYMBOLS, PRIORITY_SYMBOLS
 from execution.order_manager import order_manager
 from intelligence.intelligence_engine import intelligence_engine
 from risk.portfolio_tracker import portfolio_tracker
@@ -64,46 +63,75 @@ class StrategySelector:
         self._cycle_count += 1
         signals_submitted = []
 
+        # Diagnostic counters — logged at INFO so dry runs are visible
+        skipped_cooldown  = 0
+        skipped_position  = 0
+        skipped_no_data   = 0
+        skipped_regime    = 0
+        skipped_no_signal = 0
+        skipped_invalid   = 0
+
         # Prioritise high-liquidity symbols first
         symbols = self._get_ordered_symbols()
 
         for symbol in symbols:
-            signal = self._evaluate_symbol(symbol)
-            if signal:
-                # Gate: reject structurally invalid signals before the expensive
-                # intelligence layer (news scraper, macro, Claude analyst).
-                if not signal.is_valid():
-                    logger.warning(
-                        f"[StrategySelector] {symbol} signal invalid before intelligence "
-                        f"(entry={signal.entry}, sl={signal.stop_loss}, t1={signal.target_1}) — skipping"
-                    )
-                    continue
+            if self._is_on_cooldown(symbol):
+                skipped_cooldown += 1
+                continue
+            if portfolio_tracker.has_open_position(symbol):
+                skipped_position += 1
+                continue
 
-                # Run intelligence layer before submission
-                intel = intelligence_engine.evaluate(signal)
-                if not intel.approved:
-                    logger.info(f"[StrategySelector] {symbol} blocked by intelligence: {intel.summary[:100]}")
-                    try:
-                        from audit_log import audit_log
-                        audit_log.rejection(signal, reason=intel.summary[:300], layer="intelligence")
-                    except Exception:
-                        pass
-                    # Apply cooldown so we don't re-evaluate every 60 seconds
-                    self.apply_cooldown(symbol, minutes=60)
-                    continue
-                # Adjust position size if analyst says reduce
-                if intel.size_factor < 1.0:
-                    signal.position_size = int(signal.position_size * intel.size_factor)
-                    logger.info(f"[StrategySelector] {symbol} size reduced to {intel.size_factor:.0%} by analyst")
-                # Attach intelligence summary to signal reason
-                signal.reason = f"{signal.reason} | AI: {intel.verdict} ({intel.conviction:.1f}/10)"
-                signal_id = order_manager.submit(signal)
-                if signal_id:
-                    signals_submitted.append(signal)
+            signal = self._evaluate_symbol(symbol)
+            if signal is None:
+                # Distinguish no-data from no-setup by checking data availability
+                from data.data_store import store
+                if not store.is_ready(symbol, "1H", min_candles=50):
+                    skipped_no_data += 1
                 else:
-                    # Order rejected post-intelligence (risk/margin/profit check failed).
-                    # Apply a short cooldown to avoid hammering the same symbol next cycle.
-                    self.apply_cooldown(symbol, minutes=5)
+                    regime_result = regime_detector.get_regime(symbol, "1H")
+                    from analysis.regime_detector import Regime
+                    if regime_result.regime == Regime.UNKNOWN:
+                        skipped_regime += 1
+                    else:
+                        skipped_no_signal += 1
+                continue
+
+            # Gate: reject structurally invalid signals before the expensive
+            # intelligence layer (news scraper, macro, Claude analyst).
+            if not signal.is_valid():
+                logger.warning(
+                    f"[StrategySelector] {symbol} signal invalid before intelligence "
+                    f"(entry={signal.entry}, sl={signal.stop_loss}, t1={signal.target_1}) — skipping"
+                )
+                skipped_invalid += 1
+                continue
+
+            # Run intelligence layer before submission
+            intel = intelligence_engine.evaluate(signal)
+            if not intel.approved:
+                logger.info(f"[StrategySelector] {symbol} blocked by intelligence: {intel.summary[:100]}")
+                try:
+                    from audit_log import audit_log
+                    audit_log.rejection(signal, reason=intel.summary[:300], layer="intelligence")
+                except Exception:
+                    pass
+                # Apply cooldown so we don't re-evaluate every 60 seconds
+                self.apply_cooldown(symbol, minutes=60)
+                continue
+            # Adjust position size if analyst says reduce
+            if intel.size_factor < 1.0:
+                signal.position_size = int(signal.position_size * intel.size_factor)
+                logger.info(f"[StrategySelector] {symbol} size reduced to {intel.size_factor:.0%} by analyst")
+            # Attach intelligence summary to signal reason
+            signal.reason = f"{signal.reason} | AI: {intel.verdict} ({intel.conviction:.1f}/10)"
+            signal_id = order_manager.submit(signal)
+            if signal_id:
+                signals_submitted.append(signal)
+            else:
+                # Order rejected post-intelligence (risk/margin/profit check failed).
+                # Apply a short cooldown to avoid hammering the same symbol next cycle.
+                self.apply_cooldown(symbol, minutes=5)
 
         if signals_submitted:
             logger.info(
@@ -111,9 +139,12 @@ class StrategySelector:
                 f"{len(signals_submitted)} signal(s) submitted from {len(symbols)} symbols."
             )
         else:
-            logger.debug(
-                f"[StrategySelector] Cycle {self._cycle_count}: "
-                f"No signals from {len(symbols)} symbols."
+            logger.info(
+                f"[StrategySelector] Cycle {self._cycle_count} — no signals | "
+                f"{len(symbols)} symbols: "
+                f"no_data={skipped_no_data} regime_unknown={skipped_regime} "
+                f"no_setup={skipped_no_signal} cooldown={skipped_cooldown} "
+                f"open_pos={skipped_position} invalid={skipped_invalid}"
             )
 
         return signals_submitted
@@ -210,10 +241,12 @@ class StrategySelector:
         """
         Returns full symbol list ordered by priority.
         Priority symbols are evaluated first each cycle.
+        Reads ALL_NSE_SYMBOLS dynamically so dynamic watchlist updates are reflected.
         """
-        priority = [s for s in PRIORITY_SYMBOLS]
+        import config.watchlist as _wl
+        priority = list(_wl.PRIORITY_SYMBOLS)
         rest = [
-            s for s in (ALL_NSE_SYMBOLS + ALL_US_SYMBOLS)
+            s for s in (_wl.ALL_NSE_SYMBOLS + _wl.ALL_US_SYMBOLS)
             if s not in priority
         ]
         return priority + rest

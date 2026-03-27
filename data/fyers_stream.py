@@ -23,7 +23,7 @@ from fyers_apiv3 import fyersModel
 from fyers_apiv3.FyersWebsocket import data_ws
 
 from config import settings
-from config.watchlist import ALL_NSE_SYMBOLS, NSE_INDICES
+from config.watchlist import NSE_INDICES
 from data.data_store import store
 
 logger = logging.getLogger(__name__)
@@ -201,7 +201,8 @@ class FyersStream:
 
     def _subscribe(self) -> None:
         """Subscribe to all symbols in watchlist."""
-        symbols = list(set(ALL_NSE_SYMBOLS))   # deduplicate
+        import config.watchlist as _wl
+        symbols = list(set(_wl.ALL_NSE_SYMBOLS))   # deduplicate — reads current value after dynamic watchlist load
         # Fyers WebSocket subscribe takes a list of symbol strings
         self._ws_client.subscribe(symbols=symbols, data_type="SymbolUpdate")
         logger.info(f"Subscribed to {len(symbols)} NSE symbols.")
@@ -214,14 +215,14 @@ class FyersStream:
         """
         Fetch historical OHLCV from Fyers REST API on startup.
         Seeds DataStore so strategies have data immediately on first tick.
-        Runs for priority symbols only — others fill up from live ticks.
+        Runs for all NSE symbols so every symbol is tradeable from the first cycle.
         """
         if not self._fyers_client:
             logger.info("Skipping historical seeding (no REST client).")
             return
 
-        from config.watchlist import PRIORITY_SYMBOLS
-        nse_priority = [s for s in PRIORITY_SYMBOLS if s.startswith("NSE:")]
+        import config.watchlist as _wl
+        nse_priority = [s for s in _wl.ALL_NSE_SYMBOLS if s.startswith("NSE:")]
 
         timeframes_to_seed = {
             "15m": {"resolution": "15", "days_back": 30},
