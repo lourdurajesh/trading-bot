@@ -7,7 +7,9 @@ Strategy: Short Strangle (sell OTM call + OTM put).
 """
 
 import logging
+from datetime import datetime, time as dtime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from analysis.indicators import atr
 from analysis.options_engine import options_engine
@@ -16,6 +18,10 @@ from config.settings import MIN_SIGNAL_CONFIDENCE
 from strategies.base_strategy import BaseStrategy, Direction, Signal, SignalType
 
 logger = logging.getLogger(__name__)
+
+_IST          = ZoneInfo("Asia/Kolkata")
+_MARKET_OPEN  = dtime(9, 15)
+_MARKET_CLOSE = dtime(15, 30)
 
 MIN_IV_RANK   = 50     # minimum IV rank to sell premium
 MIN_DTE       = 20     # minimum days to expiry
@@ -32,6 +38,10 @@ class OptionsIncomeStrategy(BaseStrategy):
         self.timeframe = "1D"
 
     def evaluate(self, symbol: str) -> Optional[Signal]:
+        now = datetime.now(tz=_IST).time()
+        if not (_MARKET_OPEN <= now <= _MARKET_CLOSE):
+            return None
+
         if not self.enabled:
             return None
 

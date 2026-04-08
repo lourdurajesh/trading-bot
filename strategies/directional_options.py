@@ -7,7 +7,9 @@ Strategy: ATM debit call/put spread.
 """
 
 import logging
+from datetime import datetime, time as dtime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from analysis.indicators import ema_alignment, rsi
 from analysis.options_engine import options_engine
@@ -16,6 +18,10 @@ from config.settings import MIN_SIGNAL_CONFIDENCE
 from strategies.base_strategy import BaseStrategy, Direction, Signal, SignalType
 
 logger = logging.getLogger(__name__)
+
+_IST          = ZoneInfo("Asia/Kolkata")
+_MARKET_OPEN  = dtime(9, 15)
+_MARKET_CLOSE = dtime(15, 30)
 
 MAX_IV_RANK = 40    # buy options when IV is cheap
 MIN_DTE     = 7
@@ -30,6 +36,10 @@ class DirectionalOptionsStrategy(BaseStrategy):
         self.timeframe = "1H"
 
     def evaluate(self, symbol: str) -> Optional[Signal]:
+        now = datetime.now(tz=_IST).time()
+        if not (_MARKET_OPEN <= now <= _MARKET_CLOSE):
+            return None
+
         # Only trade indices, not equity symbols
         if "-EQ" in symbol:
             return None
@@ -118,9 +128,9 @@ class DirectionalOptionsStrategy(BaseStrategy):
             lot_size   = options_executor.get_lot_size(symbol)
             nfo_symbol = None
 
-        # Guard: debit must be positive
-        if debit_cost <= 0:
-            self.log_skip(symbol, "Debit cost calculated as zero — skipping")
+        logger.debug(f"[DirectionalOptions] spot={spot}, iv={iv:.2f}, debit={debit_cost:.2f}")
+        if debit_cost <= 0 or debit_cost > spot * 0.05:
+            self.log_skip(symbol, f"Debit cost {debit_cost:.2f} invalid for spot {spot:.2f}")
             return None
 
         confidence  = min(regime.confidence * 0.9, 0.85)

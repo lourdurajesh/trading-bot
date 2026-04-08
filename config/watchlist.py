@@ -34,7 +34,8 @@ NSE_EQUITIES = [
     "NSE:NTPC-EQ",          # power utility, range-bound behaviour
     "NSE:ADANIPORTS-EQ",    # infra/logistics, high volume
     # Auto
-    "NSE:TATAMOTORS-EQ",    # EV + exports, volatile and liquid
+    "NSE:TMCV-EQ",    # EV + exports, volatile and liquid
+    "NSE:TMPV-EQ",    
     # Metals
     "NSE:TATASTEEL-EQ",     # cyclical, strong mean reversion patterns
     # Pharma

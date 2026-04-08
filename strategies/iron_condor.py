@@ -30,7 +30,9 @@ Exit (managed by position_manager):
 """
 
 import logging
+from datetime import datetime, time as dtime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from analysis.options_engine import options_engine
 from analysis.regime_detector import Regime, regime_detector
@@ -39,6 +41,10 @@ from strategies.base_strategy import BaseStrategy, Direction, Signal, SignalType
 from strategies.options_strategy_config import get_options_config
 
 logger = logging.getLogger(__name__)
+
+_IST          = ZoneInfo("Asia/Kolkata")
+_MARKET_OPEN  = dtime(9, 15)
+_MARKET_CLOSE = dtime(15, 30)
 
 # Supported underlyings — indices always included; equities added when IC_ALLOW_EQUITIES=true
 _IC_INDEX_UNDERLYINGS = {
@@ -64,6 +70,10 @@ class IronCondorStrategy(BaseStrategy):
         self.timeframe = "1D"
 
     def evaluate(self, symbol: str) -> Optional[Signal]:
+        now = datetime.now(tz=_IST).time()
+        if not (_MARKET_OPEN <= now <= _MARKET_CLOSE):
+            return None
+
         cfg = get_options_config("iron_condor")
 
         if not cfg["enabled"]:

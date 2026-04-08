@@ -22,7 +22,9 @@
       "Bash(ls d:/Tech/trading-bot/*.py)",
       "Bash(python run_backtest.py --strategy mean_reversion)",
       "Bash(python -c ':*)",
-      "Bash(python -c \"from config.settings import TOTAL_CAPITAL, RISK_PER_TRADE_PCT; print\\('TOTAL_CAPITAL:', TOTAL_CAPITAL\\); print\\('RISK_PCT:', RISK_PER_TRADE_PCT\\)\")"
+      "Bash(python -c \"from config.settings import TOTAL_CAPITAL, RISK_PER_TRADE_PCT; print\\('TOTAL_CAPITAL:', TOTAL_CAPITAL\\); print\\('RISK_PCT:', RISK_PER_TRADE_PCT\\)\")",
+      "Bash(xargs grep:*)",
+      "Bash(grep -v \"^$\")"
     ]
   }
 }
