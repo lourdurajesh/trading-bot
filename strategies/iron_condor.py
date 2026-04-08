@@ -169,6 +169,15 @@ class IronCondorStrategy(BaseStrategy):
             nfo_short_call    = short_call.symbol
             nfo_short_put     = short_put.symbol
 
+            # Build NFO symbols for the long (protective) legs
+            short_name, _, _ = options_executor._resolve_underlying(symbol)
+            nfo_long_call = options_executor._build_nfo_symbol(
+                short_name, expiry, long_call_strike, "call"
+            ) if short_name else None
+            nfo_long_put = options_executor._build_nfo_symbol(
+                short_name, expiry, long_put_strike, "put"
+            ) if short_name else None
+
         else:
             # Simulation fallback — no live chain available
             logger.info(f"[IronCondor] Live chain unavailable for {symbol} — using simulation")
@@ -192,6 +201,8 @@ class IronCondorStrategy(BaseStrategy):
             expiry     = "sim"
             nfo_short_call = None
             nfo_short_put  = None
+            nfo_long_call  = None
+            nfo_long_put   = None
 
         if net_credit <= 0:
             self.log_skip(symbol, f"Net credit ₹{net_credit:.2f} ≤ 0 — condor not viable")
@@ -243,7 +254,9 @@ class IronCondorStrategy(BaseStrategy):
                 "dte":               dte,
                 "expiry":            expiry,
                 "nfo_short_call":    nfo_short_call,
+                "nfo_long_call":     nfo_long_call,
                 "nfo_short_put":     nfo_short_put,
+                "nfo_long_put":      nfo_long_put,
                 "profit_target_pct": cfg["profit_target"],
             }
         )

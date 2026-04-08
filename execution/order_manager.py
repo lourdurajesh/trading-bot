@@ -25,7 +25,7 @@ import os
 PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 from risk.portfolio_tracker import portfolio_tracker
 from risk.risk_manager import risk_manager
-from strategies.base_strategy import Direction, Signal
+from strategies.base_strategy import Direction, Signal, SignalType
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,11 @@ class OrderManager:
         """
         Verify sufficient margin before placing order.
         Uses broker's available funds.
+
+        Options margin:
+          Debit spread  — full premium upfront: entry × position_size
+          Short strangle / Iron condor — SPAN margin ≈ 6% of notional per lot
+        Equity margin — 25% of notional (intraday bracket).
         """
         try:
             broker = self._get_broker(signal.symbol)
@@ -156,21 +161,43 @@ class OrderManager:
                 logger.warning("[OrderManager] Could not fetch funds — proceeding anyway")
                 return True
 
-            # Available cash / margin
             available = float(
                 funds.get("availableBalance", 0)
                 or funds.get("cash", 0)
                 or funds.get("equity", 0)
                 or TOTAL_CAPITAL
             )
-            required = signal.entry * size * 0.25   # 25% margin estimate for equities
+
+            if signal.signal_type == SignalType.OPTIONS:
+                meta          = signal.options_meta or {}
+                strategy_type = meta.get("strategy", "")
+                lot_size      = int(meta.get("lot_size", 1)) or 1
+                lots          = max(1, size // lot_size)
+
+                if strategy_type == "debit_spread":
+                    # Full premium paid upfront — entry × total units
+                    required = signal.entry * size
+                else:
+                    # Credit strategies: SPAN margin ≈ 6% of underlying notional per lot
+                    # NSE SPAN for index options is typically 5–8%
+                    from data.data_store import store
+                    spot     = store.get_ltp(signal.symbol) or 0
+                    if spot <= 0:
+                        return True   # can't compute — let it through
+                    SPAN_PCT = 0.06
+                    required = lots * lot_size * spot * SPAN_PCT
+            else:
+                required = signal.entry * size * 0.25   # 25% intraday equity margin
 
             if available < required:
                 logger.warning(
                     f"[OrderManager] INSUFFICIENT MARGIN for {signal.symbol}: "
                     f"available ₹{available:,.0f} < required ₹{required:,.0f}"
                 )
-                # Try reducing size to fit available margin
+                if signal.signal_type == SignalType.OPTIONS:
+                    # Options are lot-based — cannot reduce below 1 lot
+                    return False
+                # Equity: try reducing size to fit available margin
                 reduced_size = int(available * 0.9 / (signal.entry * 0.25))
                 if reduced_size >= 1:
                     logger.info(f"[OrderManager] Reducing size {size} → {reduced_size}")
@@ -191,6 +218,7 @@ class OrderManager:
     def _execute(self, signal: Signal) -> None:
         """
         Atomic execution — routes to paper trading or live broker.
+        Options signals are routed to _execute_options() for multi-leg placement.
         """
         # Block new entries for NSE symbols outside trading hours (09:15–15:15 IST).
         # Prevents the open→EOD-forced-close→re-signal infinite loop.
@@ -205,6 +233,11 @@ class OrderManager:
                     f"{signal.symbol} at {now_ist.strftime('%H:%M:%S')} IST"
                 )
                 return
+
+        # Options: multi-leg execution via dedicated path
+        if signal.signal_type == SignalType.OPTIONS:
+            self._execute_options(signal)
+            return
 
         # Paper trading mode — simulate execution
         if PAPER_TRADING:
@@ -290,6 +323,121 @@ class OrderManager:
 
         # ── Step 5: Send success alert ────────────────────────────
         self._send_alert(signal, sl_order_id, pending=False)
+
+    def _execute_options(self, signal: Signal) -> None:
+        """
+        Place all legs for an options signal.
+
+        Debit spread  — buy 1 ATM leg (NFO symbol from options_meta["nfo_symbol"])
+        Short strangle — sell call + sell put
+        Iron condor   — sell short call, buy long call, sell short put, buy long put
+
+        No SL order is placed at the broker — position_manager monitors premium
+        price and sends a market-close order when the SL level is breached.
+        """
+        meta          = signal.options_meta or {}
+        strategy_type = meta.get("strategy", "")
+        lot_size      = int(meta.get("lot_size", 1)) or 1
+        lots          = max(1, signal.position_size // lot_size)
+        qty           = lots * lot_size
+
+        # Paper trading — record position, skip real order placement
+        if PAPER_TRADING:
+            try:
+                from paper_trading import paper_trading_engine
+                order_id = paper_trading_engine.place_order(signal)
+                if order_id:
+                    portfolio_tracker.open_position(signal, fill_price=signal.entry)
+                    logger.info(
+                        f"[OrderManager] [PAPER/OPTIONS] {strategy_type} "
+                        f"{signal.symbol} × {lots} lot(s)"
+                    )
+            except Exception as e:
+                logger.debug(f"[OrderManager] Paper options record failed: {e}")
+            return
+
+        legs = self._build_option_legs(strategy_type, meta, qty)
+        if not legs:
+            logger.warning(
+                f"[OrderManager] OPTIONS: no NFO symbols in options_meta for "
+                f"{signal.symbol} ({strategy_type}) — cannot execute. "
+                f"Run during market hours with live Fyers chain to get NFO symbols."
+            )
+            return
+
+        broker      = self._get_broker(signal.symbol)
+        placed_ids  = []
+
+        for nfo_symbol, direction in legs:
+            oid = broker.place_order(
+                symbol     = nfo_symbol,
+                direction  = direction,
+                qty        = qty,
+                order_type = "MARKET",
+                product    = "INTRADAY",
+            )
+            if oid:
+                placed_ids.append(oid)
+                logger.info(
+                    f"[OrderManager] OPTIONS leg placed: "
+                    f"{direction} {qty} × {nfo_symbol} → {oid}"
+                )
+            else:
+                logger.error(
+                    f"[OrderManager] OPTIONS leg FAILED: "
+                    f"{direction} {qty} × {nfo_symbol}"
+                )
+                if placed_ids:
+                    logger.critical(
+                        f"[OrderManager] PARTIAL OPTIONS FILL on {signal.symbol}. "
+                        f"Legs placed: {placed_ids}. "
+                        f"MANUAL CLOSE of partial position required immediately."
+                    )
+                    self._send_alert(signal, "OPTIONS_PARTIAL_FILL", pending=False)
+                return
+
+        portfolio_tracker.open_position(signal, fill_price=signal.entry)
+        self._send_alert(signal, ",".join(placed_ids), pending=False)
+
+    @staticmethod
+    def _build_option_legs(
+        strategy_type: str,
+        meta: dict,
+        qty: int,
+    ) -> list[tuple[str, str]]:
+        """
+        Build the list of (nfo_symbol, direction) tuples for each leg.
+        direction "LONG" = buy, "SHORT" = sell.
+        Returns empty list if required NFO symbols are missing.
+        """
+        if strategy_type == "debit_spread":
+            nfo = meta.get("nfo_symbol")
+            if not nfo:
+                return []
+            return [(nfo, "LONG")]
+
+        if strategy_type == "short_strangle":
+            legs = []
+            if meta.get("nfo_call"):
+                legs.append((meta["nfo_call"], "SHORT"))
+            if meta.get("nfo_put"):
+                legs.append((meta["nfo_put"], "SHORT"))
+            return legs
+
+        if strategy_type == "iron_condor":
+            legs = []
+            # Sell short legs (income), buy long legs (risk cap)
+            if meta.get("nfo_short_call"):
+                legs.append((meta["nfo_short_call"], "SHORT"))
+            if meta.get("nfo_long_call"):
+                legs.append((meta["nfo_long_call"],  "LONG"))
+            if meta.get("nfo_short_put"):
+                legs.append((meta["nfo_short_put"],  "SHORT"))
+            if meta.get("nfo_long_put"):
+                legs.append((meta["nfo_long_put"],   "LONG"))
+            return legs
+
+        return []
 
     def _confirm_fill(
         self, broker, order_id: str, signal: Signal
