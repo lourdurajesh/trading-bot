@@ -100,6 +100,21 @@ def run_nightly_agent():
         playbook["risk_level"] = "LOW"
     logger.info(f"  Macro score: {macro.macro_score:+.1f} | Risk: {playbook['risk_level']}")
 
+    # ── Step 3b: Update options IV history ───────────────────────
+    logger.info("Step 3b: Updating options IV history...")
+    try:
+        from execution.options_executor import options_executor
+        _OPTIONS_UNDERLYINGS = (
+            "NSE:NIFTY50-INDEX",
+            "NSE:NIFTYBANK-INDEX",
+            "NSE:FINNIFTY-INDEX",
+        )
+        for _sym in _OPTIONS_UNDERLYINGS:
+            options_executor.update_iv_history(_sym)
+        logger.info(f"  IV history updated for {len(_OPTIONS_UNDERLYINGS)} underlyings")
+    except Exception as _e:
+        logger.warning(f"  IV history update failed: {_e}")
+
     # ── Step 4: Scan universe for candidates ──────────────────────
     logger.info("Step 4: Scanning NSE universe...")
     from intelligence.universe_scanner import universe_scanner

@@ -5,8 +5,10 @@ Options chain analysis, Greeks calculation, IV rank.
 Used by options_income.py and directional_options.py.
 """
 
+import json
 import logging
 import math
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -18,6 +20,8 @@ import numpy as np
 from scipy.stats import norm
 
 logger = logging.getLogger(__name__)
+
+_HISTORY_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "iv_history.json")
 
 
 @dataclass
@@ -58,6 +62,7 @@ class OptionsEngine:
     def __init__(self):
         self._iv_history: dict[str, list[float]] = {}   # symbol → list of daily IVs
         self._fyers_client = None
+        self._load_history()
 
     def initialise(self) -> None:
         """Connect Fyers REST for options chain fetching."""
@@ -156,11 +161,26 @@ class OptionsEngine:
         """
         IV Rank = (current IV - 52w low IV) / (52w high IV - 52w low IV) × 100
         Returns 0-100. > 50 = elevated IV (good for selling premium).
-        Returns -1 if insufficient history.
+        Falls back to India VIX proxy when < 30 days of history available.
         """
         history = self._iv_history.get(symbol, [])
         if len(history) < 30:
-            return -1.0
+            # Use India VIX as proxy: maps VIX 10→rank 0, VIX 30→rank 100
+            # VIX ~15 (calm) = rank ~25 → buy options (directional)
+            # VIX ~20 (normal) = rank ~50 → iron condor range
+            # VIX ~22+ (elevated) = rank ~60+ → sell premium (income/condor)
+            vix_rank = self._vix_rank_proxy(symbol)
+            if vix_rank >= 0:
+                logger.info(
+                    f"[OptionsEngine] IV rank {symbol}: {vix_rank:.0f} "
+                    f"(VIX proxy, only {len(history)} days history)"
+                )
+                return vix_rank
+            logger.warning(
+                f"[OptionsEngine] IV rank unavailable for {symbol} "
+                f"(only {len(history)} days of history), using 50"
+            )
+            return 50.0
 
         current_iv = history[-1]
         iv_low     = min(history)
@@ -179,6 +199,43 @@ class OptionsEngine:
         # Keep 252 trading days (1 year)
         if len(self._iv_history[symbol]) > 252:
             self._iv_history[symbol] = self._iv_history[symbol][-252:]
+        self._save_history()
+
+    def _vix_rank_proxy(self, symbol: str) -> float:
+        """
+        Estimate IV rank from India VIX when real history is insufficient.
+        Linear map: VIX 10 → rank 0, VIX 30 → rank 100.
+        Returns -1 if VIX unavailable.
+        """
+        try:
+            from intelligence.macro_data import macro_collector
+            macro = macro_collector.get_snapshot()
+            if macro.nifty_vix > 0:
+                rank = (macro.nifty_vix - 10.0) / 20.0 * 100.0
+                return round(max(0.0, min(100.0, rank)), 1)
+        except Exception:
+            pass
+        return -1.0
+
+    def _load_history(self) -> None:
+        """Load persisted IV history from disk."""
+        try:
+            if os.path.exists(_HISTORY_PATH):
+                with open(_HISTORY_PATH) as f:
+                    self._iv_history = json.load(f)
+                total = sum(len(v) for v in self._iv_history.values())
+                logger.info(f"[OptionsEngine] Loaded IV history: {len(self._iv_history)} symbols, {total} data points")
+        except Exception as e:
+            logger.warning(f"[OptionsEngine] Could not load IV history: {e}")
+
+    def _save_history(self) -> None:
+        """Persist IV history to disk so it survives restarts."""
+        try:
+            os.makedirs(os.path.dirname(_HISTORY_PATH), exist_ok=True)
+            with open(_HISTORY_PATH, "w") as f:
+                json.dump(self._iv_history, f)
+        except Exception as e:
+            logger.warning(f"[OptionsEngine] Could not save IV history: {e}")
 
     # ─────────────────────────────────────────────────────────────
     # STRIKE SELECTION

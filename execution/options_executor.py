@@ -226,27 +226,38 @@ class OptionsExecutor:
         """
         Call once daily (nightly agent) to update the IV rank history
         in options_engine with today's ATM IV from the live chain.
+        Falls back to India VIX as an IV proxy when chain is unavailable.
         """
+        from analysis.options_engine import options_engine
+
         chain_data = self._get_chain(underlying, force=True)
-        if not chain_data:
-            return
+        if chain_data:
+            try:
+                expiries = chain_data.get("expiryData", [])
+                if expiries:
+                    row_list = expiries[0].get("optionsChain", [])
+                    spot     = float(chain_data.get("underlyingValue", 0))
+                    atm_iv   = self._get_atm_iv(row_list, spot)
+                    if atm_iv and atm_iv > 0:
+                        options_engine.update_iv_history(underlying, atm_iv)
+                        logger.info(f"[OptionsExecutor] IV history updated: {underlying} ATM IV={atm_iv:.1%}")
+                        return
+            except Exception as e:
+                logger.warning(f"[OptionsExecutor] IV history update failed: {e}")
 
+        # Chain unavailable — use India VIX as IV proxy
         try:
-            expiries = chain_data.get("expiryData", [])
-            if not expiries:
-                return
-
-            # Use nearest expiry ATM IV
-            row_list = expiries[0].get("optionsChain", [])
-            spot     = float(chain_data.get("underlyingValue", 0))
-            atm_iv   = self._get_atm_iv(row_list, spot)
-
-            if atm_iv and atm_iv > 0:
-                from analysis.options_engine import options_engine
-                options_engine.update_iv_history(underlying, atm_iv)
-                logger.info(f"[OptionsExecutor] IV history updated: {underlying} ATM IV={atm_iv:.1%}")
+            from intelligence.macro_data import macro_collector
+            macro = macro_collector.get_snapshot()
+            if macro.nifty_vix > 0:
+                vix_iv = macro.nifty_vix / 100.0   # VIX 15.0 → IV 0.15
+                options_engine.update_iv_history(underlying, vix_iv)
+                logger.info(
+                    f"[OptionsExecutor] IV history updated (VIX proxy): "
+                    f"{underlying} VIX={macro.nifty_vix:.1f} → IV={vix_iv:.1%}"
+                )
         except Exception as e:
-            logger.warning(f"[OptionsExecutor] IV history update failed: {e}")
+            logger.debug(f"[OptionsExecutor] VIX proxy fallback failed: {e}")
 
     # ─────────────────────────────────────────────────────────────
     # CHAIN FETCHING
