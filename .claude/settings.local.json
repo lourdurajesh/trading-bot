@@ -11,7 +11,18 @@
       "Bash(grep -n \"TODO\\\\|FIXME\\\\|BUG\\\\|XXX\\\\|HACK\" /d/Tech/trading-bot/**/*.py)",
       "Bash(python daily_review.py --date 2026-03-24 --capital 500000)",
       "Bash(ls d:/Tech/trading-bot/*.py d:/Tech/trading-bot/strategies/*.py)",
-      "Bash(ls d:/Tech/trading-bot/*.md)"
+      "Bash(ls d:/Tech/trading-bot/*.md)",
+      "Bash(head -10 ls d:/Tech/trading-bot/db/*.csv)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d, indent=2\\)\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(''''VIX:'''', d.get\\(''''vix''''\\)\\); print\\(''''Risk:'''', d.get\\(''''risk_level''''\\)\\); print\\(''''Regime:'''', d.get\\(''''market_regime''''\\)\\); print\\(''''Keys:'''', list\\(d.keys\\(\\)\\)\\)\")",
+      "Bash(ls -la d:/Tech/trading-bot/*.log)",
+      "Bash(wc -l d:/Tech/trading-bot/db/historical/*.csv)",
+      "Bash(python backtest_analysis.py)",
+      "Bash(python backtest_new.py)",
+      "Bash(ls d:/Tech/trading-bot/*.py)",
+      "Bash(python run_backtest.py --strategy mean_reversion)",
+      "Bash(python -c ':*)",
+      "Bash(python -c \"from config.settings import TOTAL_CAPITAL, RISK_PER_TRADE_PCT; print\\('TOTAL_CAPITAL:', TOTAL_CAPITAL\\); print\\('RISK_PCT:', RISK_PER_TRADE_PCT\\)\")"
     ]
   }
 }

@@ -2,38 +2,54 @@
 # WATCHLIST — verified valid Fyers symbols
 # Format: NSE:SYMBOLNAME-EQ for equities
 #         NSE:SYMBOLNAME-INDEX for indices
+#
+# 2026-04-08 revision:
+#   Removed chronic backtest losers: WIPRO, LT, HCLTECH, ITC, ASIANPAINT, COFORGE
+#   Added (better sector diversification): TATAMOTORS, SUNPHARMA, TATASTEEL,
+#     ONGC, NTPC, BAJAJFINSV, ADANIPORTS, DRREDDY, DIVISLAB, MPHASIS
 # ─────────────────────────────────────────────────────────────────
 
 # ── NSE Large Cap (Nifty 50 — verified symbols) ───────────────────
 NSE_EQUITIES = [
-    "NSE:RELIANCE-EQ",
-    "NSE:TCS-EQ",
+    # Banking & Finance
     "NSE:HDFCBANK-EQ",
-    "NSE:INFY-EQ",
     "NSE:ICICIBANK-EQ",
-    "NSE:HINDUNILVR-EQ",
-    "NSE:ITC-EQ",
-    "NSE:SBIN-EQ",
-    "NSE:BHARTIARTL-EQ",
     "NSE:KOTAKBANK-EQ",
-    "NSE:LT-EQ",
     "NSE:AXISBANK-EQ",
-    "NSE:WIPRO-EQ",
-    "NSE:HCLTECH-EQ",
-    "NSE:ASIANPAINT-EQ",
-    "NSE:MARUTI-EQ",
+    "NSE:SBIN-EQ",
     "NSE:BAJFINANCE-EQ",
-    "NSE:TITAN-EQ",
-    "NSE:ULTRACEMCO-EQ",
+    "NSE:BAJAJFINSV-EQ",    # insurance + lending, less correlated to pure banking
+    # IT
+    "NSE:TCS-EQ",
+    "NSE:INFY-EQ",
+    # Telecom & Consumer
+    "NSE:BHARTIARTL-EQ",
+    "NSE:HINDUNILVR-EQ",
     "NSE:NESTLEIND-EQ",
+    "NSE:TITAN-EQ",
+    "NSE:MARUTI-EQ",
+    # Energy & Industrial
+    "NSE:RELIANCE-EQ",
+    "NSE:ONGC-EQ",          # oil & gas, cyclical — strong mean reversion patterns
+    "NSE:NTPC-EQ",          # power utility, range-bound behaviour
+    "NSE:ADANIPORTS-EQ",    # infra/logistics, high volume
+    # Auto
+    "NSE:TATAMOTORS-EQ",    # EV + exports, volatile and liquid
+    # Metals
+    "NSE:TATASTEEL-EQ",     # cyclical, strong mean reversion patterns
+    # Pharma
+    "NSE:SUNPHARMA-EQ",     # largest pharma, less index-correlated
+    "NSE:DRREDDY-EQ",       # exports + domestic pharma
+    # Cement
+    "NSE:ULTRACEMCO-EQ",
 ]
 
 # ── NSE Mid Cap ───────────────────────────────────────────────────
 NSE_MIDCAP = [
     "NSE:PERSISTENT-EQ",
-    "NSE:COFORGE-EQ",
-    # "NSE:LTIMINDTEC-EQ",  # removed — verify symbol on Fyers
     "NSE:POLICYBZR-EQ",
+    "NSE:DIVISLAB-EQ",      # pharma mid-cap, range-bound, low market correlation
+    "NSE:MPHASIS-EQ",       # IT mid-cap, US-focused revenue, more volatile
 ]
 
 # ── NSE Indices ───────────────────────────────────────────────────
@@ -69,4 +85,6 @@ PRIORITY_SYMBOLS = [
     "NSE:TCS-EQ",
     "NSE:SBIN-EQ",
     "NSE:INFY-EQ",
+    "NSE:TATAMOTORS-EQ",    # high volume, frequently at extremes
+    "NSE:BHARTIARTL-EQ",
 ]
