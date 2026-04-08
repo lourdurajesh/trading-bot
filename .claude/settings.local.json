@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \":*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(python -m tests.test_pipeline)",
+      "Bash(python -c \"from analysis.regime_detector import RegimeResult, Regime; r = RegimeResult\\(regime=Regime.TRENDING, confidence=0.8, adx=30.0, bb_width=0.03, slope=0.01\\); print\\(r\\)\")",
+      "Bash(python -c \"import inspect; from analysis.regime_detector import RegimeResult; print\\(inspect.signature\\(RegimeResult.__init__\\)\\)\")",
+      "Bash(grep -n \"TODO\\\\|FIXME\\\\|BUG\\\\|XXX\\\\|HACK\" /d/Tech/trading-bot/**/*.py)",
+      "Bash(python daily_review.py --date 2026-03-24 --capital 500000)",
+      "Bash(ls d:/Tech/trading-bot/*.py d:/Tech/trading-bot/strategies/*.py)",
+      "Bash(ls d:/Tech/trading-bot/*.md)"
+    ]
+  }
+}

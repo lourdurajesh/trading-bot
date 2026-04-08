@@ -503,6 +503,15 @@ class PositionManager:
             if closed:
                 alert_service.trade_closed(symbol, closed.realised_pnl, reason)
 
+                # Apply cooldown after stop or EOD exit so the same signal
+                # cannot re-fire next cycle before the position is confirmed closed.
+                if reason in ("STOP", "EOD_FORCED", "MAX_HOLD"):
+                    try:
+                        from strategies.strategy_selector import strategy_selector
+                        strategy_selector.apply_cooldown(symbol)
+                    except Exception:
+                        pass
+
             # Clean up tracking sets (locked)
             with self._lock:
                 self._breakeven_applied.discard(symbol)

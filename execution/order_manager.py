@@ -192,6 +192,20 @@ class OrderManager:
         """
         Atomic execution — routes to paper trading or live broker.
         """
+        # Block new entries for NSE symbols outside trading hours (09:15–15:15 IST).
+        # Prevents the open→EOD-forced-close→re-signal infinite loop.
+        if signal.symbol.startswith("NSE:"):
+            from datetime import time as dtime
+            now_ist = datetime.now(tz=IST)
+            nse_open     = dtime(9, 15)
+            eod_cutoff   = dtime(15, 15)   # match position_manager EOD_EXIT_TIME
+            if not (nse_open <= now_ist.time() <= eod_cutoff):
+                logger.warning(
+                    f"[OrderManager] Blocked entry outside NSE hours: "
+                    f"{signal.symbol} at {now_ist.strftime('%H:%M:%S')} IST"
+                )
+                return
+
         # Paper trading mode — simulate execution
         if PAPER_TRADING:
             from paper_trading import paper_trading_engine

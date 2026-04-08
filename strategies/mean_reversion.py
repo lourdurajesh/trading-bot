@@ -14,7 +14,11 @@ Logic:
 """
 
 import logging
+from datetime import time as dtime
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 from analysis.indicators import (
     atr, bollinger_bands, ema, relative_volume, rsi, swing_highs, swing_lows,
@@ -32,6 +36,11 @@ BB_PROXIMITY_PCT    = 0.005    # price within 0.5% of band = "near band"
 MIN_RVOL            = 1.0      # lower than trend — reversals can be quiet
 ATR_STOP_BUFFER     = 0.5      # extra ATR buffer below swing low
 
+# Opening candle blackout: skip the first 30 minutes of NSE session.
+# Gap opens produce extreme RSI/BB readings that look like reversals but
+# are actually gap-continuation moves. Let price establish a real range first.
+OPENING_BLACKOUT_END = dtime(9, 45)
+
 
 class MeanReversionStrategy(BaseStrategy):
 
@@ -46,6 +55,15 @@ class MeanReversionStrategy(BaseStrategy):
         Returns LONG or SHORT signal if mean reversion conditions are met.
         """
         if not self.enabled:
+            return None
+
+        # ── 0. Opening blackout (09:15 – 09:44 IST) ──────────────
+        # Gap opens push RSI/BB into extreme readings that mimic reversion
+        # setups but are actually gap-continuation moves. Wait for the
+        # first 30 minutes to pass before trusting mean reversion signals.
+        from datetime import datetime
+        if datetime.now(tz=IST).time() < OPENING_BLACKOUT_END:
+            self.log_skip(symbol, "Opening blackout — waiting for 09:45 to avoid gap-open noise")
             return None
 
         # ── 1. Regime check ───────────────────────────────────────

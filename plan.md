@@ -375,6 +375,196 @@ of premium in minutes, so tighter controls than equity are mandatory.
 
 ---
 
+## Phase 7H — Paper Trading Bug Fixes ✅ COMPLETE (2026-04-08)
+
+### Background
+Paper trading showed a massive loss of ₹10,95,538 after running on 2026-04-01 and
+2026-04-02. Log analysis revealed three distinct bugs compounding each other. The real
+underlying loss from legitimate trades was only ₹-84,677 across 13 unique trades.
+
+---
+
+### Bug 1 — `_is_market_hours()` ran NSE strategies during US market hours
+
+**File:** `main.py` → `_is_market_hours()`
+
+**Root cause:**
+The function returned `True` from 19:00–23:59 IST and 00:00–01:30 IST due to a US
+market hours block added for a future multi-market feature. The bot only trades NSE
+stocks — there are no US symbols in the watchlist. This caused the evaluation loop to
+run `strategy_selector.run_cycle()` for NSE stocks 7+ hours after market close.
+
+```python
+# BEFORE (broken) — True at 23:45 IST for NSE stocks
+if current_time >= us_open or current_time <= dtime(1, 30):
+    return True
+
+# AFTER (fixed) — NSE only
+# US market hours block removed entirely
+```
+
+**Impact:** Strategy evaluation ran from 19:00–01:30 IST, generating MeanReversion
+SHORT signals on NESTLEIND and HINDUNILVR after market close.
+
+---
+
+### Bug 2 — EOD forced-close immediately killed every after-hours position, enabling infinite re-entry
+
+**File:** `execution/position_manager.py` → `_exit_position()`
+
+**Root cause:**
+`EOD_EXIT_TIME = 15:15 IST`. Any position opened after 15:15 (including the after-hours
+ones from Bug 1) was immediately force-closed within 5 seconds by the position manager's
+fast loop. After each forced close, `portfolio_tracker._open_positions` was emptied,
+so `has_open_position(symbol)` returned False on the next cycle, and the signal fired
+again.
+
+**The loop:**
+1. `_is_market_hours()` returns True (US hours) → strategy fires on NESTLEIND
+2. Paper trade OPENED → `_open_positions["NESTLEIND"] = position`
+3. Position manager (5s later): `23:45 >= 15:15 (EOD)` → force-closes
+4. `_open_positions.pop("NESTLEIND")` — position gone
+5. Next cycle (60s): `has_open_position` = False → same signal fires → repeat
+
+**Damage:** NESTLEIND entered 120 times (₹-954,740), HINDUNILVR 14 times (₹-69,006).
+All phantom — the real trade would have been just 1 entry each.
+
+**Fix:** Added NSE-hours entry guard in `order_manager.py` → `_execute()`:
+
+```python
+# Block new entries for NSE symbols outside 09:15–15:15 IST
+if signal.symbol.startswith("NSE:"):
+    if not (nse_open <= now_ist.time() <= eod_cutoff):
+        logger.warning(f"[OrderManager] Blocked entry outside NSE hours: ...")
+        return
+```
+
+This breaks the loop at entry — no position opened after 15:15, even if the evaluation
+loop somehow runs.
+
+---
+
+### Bug 3 — Cooldown never applied after a real trade closed (stop hit)
+
+**File:** `execution/position_manager.py` → `_exit_position()`
+
+**Root cause:**
+`strategy_selector.apply_cooldown()` was documented as "called after a losing trade"
+but was **never wired** to the actual trade close event. The only callers were:
+- Intelligence layer rejection → 60-min cooldown
+- Risk/margin rejection → 5-min cooldown
+
+After a STOP, EOD_FORCED, or MAX_HOLD exit, no cooldown was set. So on the next
+60-second cycle, `_is_on_cooldown(symbol)` returned False and the strategy re-evaluated
+the same symbol immediately.
+
+**Observed impact:** TCS SHORT fired 6 times in 7 minutes (09:15–09:22 on 2026-04-01).
+Each position hit its stop and closed within the same minute — but without a cooldown,
+the next cycle opened another SHORT immediately.
+
+**Fix:** Cooldown is now applied inside `_exit_position()` after every STOP / EOD_FORCED
+/ MAX_HOLD close:
+
+```python
+if reason in ("STOP", "EOD_FORCED", "MAX_HOLD"):
+    from strategies.strategy_selector import strategy_selector
+    strategy_selector.apply_cooldown(symbol)   # uses SYMBOL_COOLDOWN_MINUTES (60 min)
+```
+
+TARGET1 / TARGET2 exits do NOT apply cooldown (trade worked — symbol can be re-evaluated).
+
+---
+
+### Bug 4 — MeanReversion fired on opening candle gap noise
+
+**File:** `strategies/mean_reversion.py`
+
+**Root cause:**
+The first 15m candle at 09:15 includes the overnight gap. A stock that gaps up 1%
+will naturally show RSI > 65 and price at the upper Bollinger Band — both conditions
+for a SHORT signal. But this is not a mean-reversion setup; it is a gap that may
+continue. The regime detector classified the symbol as RANGING based on the previous
+day's 1H data, which was stale the moment the gap occurred.
+
+**Observed impact:** All 6 TCS SHORT entries (09:15–09:22) had the same stop at
+₹2429.03 (the pre-open swing high). TCS was slowly grinding upward from the gap open,
+testing that stop level repeatedly. A mean-reversion short into a gap-up continuation
+day is structurally wrong.
+
+**Fix:** Opening blackout window added as step 0 in `evaluate()`:
+
+```python
+OPENING_BLACKOUT_END = dtime(9, 45)   # skip 09:15–09:44
+
+if datetime.now(tz=IST).time() < OPENING_BLACKOUT_END:
+    self.log_skip(symbol, "Opening blackout — waiting for 09:45 to avoid gap-open noise")
+    return None
+```
+
+From 09:45 onwards, at least 2 completed 15m candles exist, RSI is computed on real
+intraday price action (not gap artefacts), and the BB has a meaningful intraday range.
+
+**Why 09:45 and not 09:30?**
+NSE pre-open session ends at 09:15 and the first live candle completes at 09:30. The
+09:30 candle is still heavily influenced by the opening auction print. The second
+completed candle (09:30–09:45) provides enough evidence to distinguish a genuine
+overbought reversal setup from a gap continuation.
+
+---
+
+### Corrected P&L (after removing phantom duplicates)
+
+| Metric | Raw DB | Corrected |
+|--------|--------|-----------|
+| Total trades | 145 | 13 |
+| Total P&L | ₹-10,95,538 | ₹-84,677 |
+| Win rate | — | 7.7% (1W / 12L) |
+| Avg winner | — | ₹+11,842 |
+| Avg loser | — | ₹-8,043 |
+
+All 13 legitimate trades were on 2026-04-01. No valid signals on 2026-04-02
+(bot ran outside market hours all day due to Bug 1+2 cycle).
+
+---
+
+### MeanReversion Strategy — Signal Logic Reference
+
+**Condition for SHORT signal (all must pass):**
+1. Regime on 1H = RANGING
+2. RSI(14) on 15m > 65 (overbought)
+3. LTP ≥ upper Bollinger Band × (1 − 0.005) — price within 0.5% of upper band
+4. EMA(50) on 1H is "down" or "neutral" (not in strong uptrend)
+5. Current time ≥ 09:45 IST (opening blackout, added 2026-04-08)
+
+**Stop:** recent 15m swing high + 0.5 × ATR  
+**Target 1:** middle Bollinger Band (EMA21 on 15m) — the mean  
+**Target 2:** entry − 2 × risk (2R extension)
+
+**Condition for LONG signal (mirror):**
+1. Regime = RANGING
+2. RSI < 35 (oversold)
+3. LTP ≤ lower BB × (1 + 0.005)
+4. EMA(50) on 1H is "up" or "neutral"
+5. Current time ≥ 09:45 IST
+
+**Stop/loss logic reminder:**
+For SHORT trades: `stop_loss > entry_price` is correct — stop is placed above entry.
+For LONG trades: `stop_loss < entry_price` is correct — stop is placed below entry.
+This is the opposite of what looks intuitive when scanning the DB.
+
+---
+
+### Files Changed in This Phase
+
+| File | Change |
+|------|--------|
+| `main.py` | Removed US market hours block from `_is_market_hours()` — NSE-only now |
+| `execution/order_manager.py` | Added NSE entry guard in `_execute()` — blocks new entries after 15:15 IST |
+| `execution/position_manager.py` | Wired `apply_cooldown()` after STOP / EOD_FORCED / MAX_HOLD exits |
+| `strategies/mean_reversion.py` | Added 09:45 opening blackout in `evaluate()` |
+
+---
+
 ## Phase 8 — Multi-User Platform 🔴 NOT STARTED
 **Only start after single-user version profitable for 4+ consecutive weeks**
 

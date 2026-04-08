@@ -226,7 +226,7 @@ class TradingBot:
 
     def _is_market_hours(self) -> bool:
         """
-        Returns True if either NSE or US markets are open.
+        Returns True only during NSE trading hours (09:15 – 15:30 IST).
         Simple time-based check — extend with holiday calendar if needed.
         """
         from datetime import time as dtime
@@ -241,12 +241,6 @@ class TradingBot:
         nse_open  = dtime(9, 15)
         nse_close = dtime(15, 30)
         if nse_open <= current_time <= nse_close:
-            return True
-
-        # US market hours in IST: ~19:00 – 01:30 (next day)
-        us_open  = dtime(19, 0)
-        us_close = dtime(23, 59)    # simplified — handles up to midnight
-        if current_time >= us_open or current_time <= dtime(1, 30):
             return True
 
         return False
