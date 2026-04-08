@@ -140,10 +140,11 @@ class BaseStrategy(ABC):
     """
 
     def __init__(self):
-        self.name:      str = "BaseStrategy"
-        self.timeframe: str = "1H"        # primary signal timeframe
-        self.confirm_tf: str = "1D"       # confirmation timeframe
-        self.enabled:   bool = True
+        self.name:          str  = "BaseStrategy"
+        self.timeframe:     str  = "1H"        # primary signal timeframe
+        self.confirm_tf:    str  = "1D"       # confirmation timeframe
+        self.enabled:       bool = True
+        self.backtest_mode: bool = False       # set True by BacktestEngine to skip live-only guards
 
     # ─────────────────────────────────────────────────────────────
     # ABSTRACT — subclasses must implement

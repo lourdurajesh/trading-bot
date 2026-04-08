@@ -166,7 +166,7 @@ def _sharpe(daily_returns: list[float]) -> float:
     arr  = np.array(daily_returns)
     mean = arr.mean()
     std  = arr.std()
-    if std == 0:
+    if std < 1e-10:
         return 0.0
     daily_rf = RISK_FREE_RATE / TRADING_DAYS
     return float((mean - daily_rf) / std * math.sqrt(TRADING_DAYS))

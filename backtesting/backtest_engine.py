@@ -39,12 +39,15 @@ class Trade:
     exit_price:    float              = 0.0
     stop_loss:     float              = 0.0
     target_1:      float              = 0.0
+    target_2:      float              = 0.0
     position_size: int                = 0
     pnl:           float              = 0.0
     pnl_pct:       float              = 0.0
-    exit_reason:   str                = ""   # TARGET1 | TARGET2 | STOP | TIMEOUT
+    exit_reason:   str                = ""   # TARGET1 | TARGET2 | BREAKEVEN | STOP | TIMEOUT
     holding_days:  int                = 0
     regime:        str                = ""
+    # Partial-fill state — set internally after T1 is hit
+    _t1_hit:       bool               = False
 
 
 @dataclass
@@ -132,10 +135,24 @@ class BacktestEngine:
         # Create isolated DataStore for backtesting
         bt_store = DataStore()
 
+        # Determine which extra timeframes the strategy needs so the regime
+        # detector and confirmation filters don't abort due to missing data.
+        extra_tfs = set()
+        if hasattr(strategy, "timeframe"):
+            extra_tfs.add(strategy.timeframe)
+        if hasattr(strategy, "confirm_tf"):
+            extra_tfs.add(strategy.confirm_tf)
+        extra_tfs.discard(timeframe)   # already populated below
+
         for i in range(warmup_bars, len(df)):
             # Feed history up to bar i into isolated store (no lookahead)
             window = df.iloc[:i+1].copy()
-            bt_store._candles[symbol][timeframe] = window.to_dict("records")
+            records = window.to_dict("records")
+            bt_store._candles[symbol][timeframe] = records
+            # Also populate any extra timeframes the strategy requests so
+            # regime_detector / get_ohlcv don't abort with missing data.
+            for tf in extra_tfs:
+                bt_store._candles[symbol][tf] = records
             bt_store._ltp[symbol] = float(window["close"].iloc[-1])
 
             bar        = df.iloc[i]
@@ -145,55 +162,140 @@ class BacktestEngine:
             bar_date   = bar["timestamp"]
 
             # ── Manage open trade ─────────────────────────────────
+            # Two-phase partial exit:
+            #   Phase 1 (full size): stop → STOP, T1 → exit half, trail stop to breakeven
+            #   Phase 2 (half size): breakeven stop → BREAKEVEN, T2 → TARGET2
             if open_trade:
-                # Check stop loss hit
-                if open_trade.direction == "LONG" and bar_low <= open_trade.stop_loss:
-                    exit_price = open_trade.stop_loss * (1 - SLIPPAGE_PCT / 100)
-                    open_trade = self._close_trade(open_trade, exit_price, bar_date, "STOP", trades)
-                    capital   += open_trade.pnl
-                    open_trade = None
+                bars_held = i - self._find_entry_bar(df, open_trade.entry_date)
 
-                # Check target hit
-                elif open_trade.direction == "LONG" and bar_high >= open_trade.target_1:
-                    exit_price = open_trade.target_1 * (1 - SLIPPAGE_PCT / 100)
-                    open_trade = self._close_trade(open_trade, exit_price, bar_date, "TARGET1", trades)
-                    capital   += open_trade.pnl
-                    open_trade = None
+                if not open_trade._t1_hit:
+                    # ── Phase 1: full position ────────────────────────
+                    if open_trade.direction == "LONG" and bar_low <= open_trade.stop_loss:
+                        exit_price = open_trade.stop_loss * (1 - SLIPPAGE_PCT / 100)
+                        open_trade = self._close_trade(open_trade, exit_price, bar_date, "STOP", trades)
+                        capital   += open_trade.pnl
+                        open_trade = None
 
-                # Check SHORT stop
-                elif open_trade.direction == "SHORT" and bar_high >= open_trade.stop_loss:
-                    exit_price = open_trade.stop_loss * (1 + SLIPPAGE_PCT / 100)
-                    open_trade = self._close_trade(open_trade, exit_price, bar_date, "STOP", trades)
-                    capital   += open_trade.pnl
-                    open_trade = None
+                    elif open_trade.direction == "LONG" and bar_high >= open_trade.target_1:
+                        # Exit half at T1, keep half riding to T2
+                        half    = open_trade.position_size // 2 if open_trade.position_size >= 2 else 0
+                        t1_exit = open_trade.target_1 * (1 - SLIPPAGE_PCT / 100)
+                        if half == 0:
+                            # Size-1 trade: exit full position at T1, no T2 leg
+                            open_trade = self._close_trade(open_trade, t1_exit, bar_date, "TARGET1", trades)
+                            capital   += open_trade.pnl
+                            open_trade = None
+                        else:
+                            t1_trade = Trade(
+                                symbol        = open_trade.symbol,
+                                direction     = open_trade.direction,
+                                entry_date    = open_trade.entry_date,
+                                entry_price   = open_trade.entry_price,
+                                stop_loss     = open_trade.stop_loss,
+                                target_1      = open_trade.target_1,
+                                target_2      = open_trade.target_2,
+                                position_size = half,
+                            )
+                            t1_trade = self._close_trade(t1_trade, t1_exit, bar_date, "TARGET1", trades)
+                            capital += t1_trade.pnl
+                            # Remaining half: trail stop to entry (breakeven)
+                            open_trade.position_size = open_trade.position_size - half
+                            open_trade.stop_loss     = open_trade.entry_price
+                            open_trade._t1_hit       = True
 
-                # Check SHORT target
-                elif open_trade.direction == "SHORT" and bar_low <= open_trade.target_1:
-                    exit_price = open_trade.target_1 * (1 + SLIPPAGE_PCT / 100)
-                    open_trade = self._close_trade(open_trade, exit_price, bar_date, "TARGET1", trades)
-                    capital   += open_trade.pnl
-                    open_trade = None
+                    elif open_trade.direction == "SHORT" and bar_high >= open_trade.stop_loss:
+                        exit_price = open_trade.stop_loss * (1 + SLIPPAGE_PCT / 100)
+                        open_trade = self._close_trade(open_trade, exit_price, bar_date, "STOP", trades)
+                        capital   += open_trade.pnl
+                        open_trade = None
 
-                # Timeout: max 20 bars in trade
-                elif (i - self._find_entry_bar(df, open_trade.entry_date)) > 20:
-                    exit_price = bar_close
-                    open_trade = self._close_trade(open_trade, exit_price, bar_date, "TIMEOUT", trades)
-                    capital   += open_trade.pnl
-                    open_trade = None
+                    elif open_trade.direction == "SHORT" and bar_low <= open_trade.target_1:
+                        half    = open_trade.position_size // 2 if open_trade.position_size >= 2 else 0
+                        t1_exit = open_trade.target_1 * (1 + SLIPPAGE_PCT / 100)
+                        if half == 0:
+                            open_trade = self._close_trade(open_trade, t1_exit, bar_date, "TARGET1", trades)
+                            capital   += open_trade.pnl
+                            open_trade = None
+                        else:
+                            t1_trade = Trade(
+                                symbol        = open_trade.symbol,
+                                direction     = open_trade.direction,
+                                entry_date    = open_trade.entry_date,
+                                entry_price   = open_trade.entry_price,
+                                stop_loss     = open_trade.stop_loss,
+                                target_1      = open_trade.target_1,
+                                target_2      = open_trade.target_2,
+                                position_size = half,
+                            )
+                            t1_trade = self._close_trade(t1_trade, t1_exit, bar_date, "TARGET1", trades)
+                            capital += t1_trade.pnl
+                            open_trade.position_size = open_trade.position_size - half
+                            open_trade.stop_loss     = open_trade.entry_price
+                            open_trade._t1_hit       = True
+
+                    elif bars_held > 20:
+                        open_trade = self._close_trade(open_trade, bar_close, bar_date, "TIMEOUT", trades)
+                        capital   += open_trade.pnl
+                        open_trade = None
+
+                else:
+                    # ── Phase 2: half position, stop at breakeven ─────
+                    if open_trade.direction == "LONG" and bar_low <= open_trade.stop_loss:
+                        # Stop trailed to entry — exits at breakeven
+                        be_exit = open_trade.stop_loss * (1 - SLIPPAGE_PCT / 100)
+                        open_trade = self._close_trade(open_trade, be_exit, bar_date, "BREAKEVEN", trades)
+                        capital   += open_trade.pnl
+                        open_trade = None
+
+                    elif open_trade.direction == "LONG" and bar_high >= open_trade.target_2:
+                        t2_exit = open_trade.target_2 * (1 - SLIPPAGE_PCT / 100)
+                        open_trade = self._close_trade(open_trade, t2_exit, bar_date, "TARGET2", trades)
+                        capital   += open_trade.pnl
+                        open_trade = None
+
+                    elif open_trade.direction == "SHORT" and bar_high >= open_trade.stop_loss:
+                        be_exit = open_trade.stop_loss * (1 + SLIPPAGE_PCT / 100)
+                        open_trade = self._close_trade(open_trade, be_exit, bar_date, "BREAKEVEN", trades)
+                        capital   += open_trade.pnl
+                        open_trade = None
+
+                    elif open_trade.direction == "SHORT" and bar_low <= open_trade.target_2:
+                        t2_exit = open_trade.target_2 * (1 + SLIPPAGE_PCT / 100)
+                        open_trade = self._close_trade(open_trade, t2_exit, bar_date, "TARGET2", trades)
+                        capital   += open_trade.pnl
+                        open_trade = None
+
+                    elif bars_held > 40:   # give T2 leg double the time
+                        open_trade = self._close_trade(open_trade, bar_close, bar_date, "TIMEOUT", trades)
+                        capital   += open_trade.pnl
+                        open_trade = None
 
             # ── Evaluate new signal ───────────────────────────────
             if open_trade is None:
                 try:
-                    # Temporarily patch strategy's store access
-                    original_store = None
+                    # Patch store in every module that imported it directly.
+                    # `from data.data_store import store` creates a local name
+                    # that won't follow ds_module.store reassignment, so we
+                    # must patch each consumer module individually.
                     import data.data_store as ds_module
-                    original_store      = ds_module.store
-                    ds_module.store     = bt_store
+                    import strategies.base_strategy as base_strat_module
+                    import analysis.regime_detector as regime_module
 
+                    original_store          = ds_module.store
+                    ds_module.store         = bt_store
+                    base_strat_module.store = bt_store
+                    regime_module.store     = bt_store
+
+                    # Enable backtest mode so strategies skip live-only guards
+                    # (opening blackout time check, strict regime filter, etc.)
+                    strategy.backtest_mode = True
                     signal = strategy.evaluate(symbol)
+                    strategy.backtest_mode = False
 
-                    # Restore original store
-                    ds_module.store = original_store
+                    # Restore all patched references
+                    ds_module.store         = original_store
+                    base_strat_module.store = original_store
+                    regime_module.store     = original_store
 
                     if signal and signal.is_valid():
                         # Apply slippage to entry
@@ -202,8 +304,11 @@ class BacktestEngine:
                             if signal.direction.value == "LONG"
                             else 1 - SLIPPAGE_PCT / 100
                         )
-                        # Position sizing
-                        risk_amount   = capital * (RISK_PER_TRADE_PCT / 100)
+                        # Position sizing — scale by signal confidence so
+                        # marginal RSI 60-70 setups get smaller size than
+                        # high-conviction RSI 75+ setups.
+                        confidence_scalar = getattr(signal, "confidence", 1.0)
+                        risk_amount   = capital * (RISK_PER_TRADE_PCT / 100) * confidence_scalar
                         risk_per_unit = abs(entry_price - signal.stop_loss)
                         min_risk      = entry_price * 0.001
                         if risk_per_unit < min_risk:
@@ -219,13 +324,19 @@ class BacktestEngine:
                             entry_price   = entry_price,
                             stop_loss     = signal.stop_loss,
                             target_1      = signal.target_1,
+                            target_2      = getattr(signal, "target_2", 0.0),
                             position_size = size,
                         )
 
                 except Exception as e:
+                    strategy.backtest_mode = False
                     if original_store:
                         import data.data_store as ds_module
-                        ds_module.store = original_store
+                        import strategies.base_strategy as base_strat_module
+                        import analysis.regime_detector as regime_module
+                        ds_module.store         = original_store
+                        base_strat_module.store = original_store
+                        regime_module.store     = original_store
                     logger.debug(f"[Backtest] Signal eval error on bar {i}: {e}")
 
             equity_curve.append(capital)
@@ -287,9 +398,8 @@ class BacktestEngine:
         trade.exit_date    = exit_date
         trade.exit_reason  = reason
         trade.holding_days = max(1, (exit_date - trade.entry_date).days)
-        trade.pnl_pct      = round(
-            trade.pnl / (trade.entry_price * trade.position_size) * 100, 2
-        )
+        cost = trade.entry_price * trade.position_size
+        trade.pnl_pct = round(trade.pnl / cost * 100, 2) if cost else 0.0
         trades.append(trade)
         return trade
 
