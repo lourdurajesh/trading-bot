@@ -86,6 +86,7 @@ PRIORITY_SYMBOLS = [
     "NSE:TCS-EQ",
     "NSE:SBIN-EQ",
     "NSE:INFY-EQ",
-    "NSE:TATAMOTORS-EQ",    # high volume, frequently at extremes
+    "NSE:TMPV-EQ",    # high volume, frequently at extremes
+    "NSE:TMCV-EQ",
     "NSE:BHARTIARTL-EQ",
 ]
