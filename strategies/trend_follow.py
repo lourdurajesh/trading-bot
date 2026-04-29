@@ -71,9 +71,13 @@ class TrendFollowStrategy(BaseStrategy):
             return None
 
         # ── 3. EMA alignment (trend filter) ──────────────────────
+        # Require 3-EMA stack (9>21>50) rather than 4-EMA (9>21>50>200).
+        # After a crash + recovery the 50 can lag below the 200 for 6-8 weeks
+        # even when the trend is clearly resumed — the 200 gate creates a long
+        # dead zone with zero LONG signals. EMA(200) still boosts confidence.
         alignment = ema_alignment(df_1h)
-        if not alignment["bullish"]:
-            self.log_skip(symbol, f"EMA not bullishly aligned: {alignment}")
+        if not (alignment["ema9"] > alignment["ema21"] > alignment["ema50"]):
+            self.log_skip(symbol, f"EMA not bullishly aligned (9/21/50): {alignment['ema9']:.2f}/{alignment['ema21']:.2f}/{alignment['ema50']:.2f}")
             return None
 
         # ── 4. Breakout detection ─────────────────────────────────
@@ -110,6 +114,8 @@ class TrendFollowStrategy(BaseStrategy):
             if not (daily_align["ema9"] > daily_align["ema21"]):
                 self.log_skip(symbol, "Daily EMA9 < EMA21 — trend not confirmed on daily")
                 return None
+            # EMA(200) on daily gives a confidence bonus (not a hard gate)
+
 
         # ── 9. Calculate entry, stop, targets ────────────────────
         atr_val  = atr(df_1h).iloc[-1]
@@ -138,12 +144,19 @@ class TrendFollowStrategy(BaseStrategy):
             return None
 
         # ── 11. Confidence score ──────────────────────────────────
+        daily_3ema = (
+            df_1d is not None
+            and (a := ema_alignment(df_1d))
+            and a["ema9"] > a["ema21"] > a["ema50"]
+        )
+        ema200_bonus = alignment["ema50"] > alignment["ema200"]  # full stack bonus
         confidence = self._calculate_confidence(
             regime_result=regime_result,
             adx_val=adx_val,
             rvol=rvol,
             rsi_val=rsi_val,
-            daily_aligned=df_1d is not None and ema_alignment(df_1d)["bullish"],
+            daily_aligned=daily_3ema,
+            ema200_bonus=ema200_bonus,
             mom_score=momentum_score(df_1h),
         )
 
@@ -187,7 +200,8 @@ class TrendFollowStrategy(BaseStrategy):
         rvol: float,
         rsi_val: float,
         daily_aligned: bool,
-        mom_score: float,
+        ema200_bonus: bool = False,
+        mom_score: float = 0.0,
     ) -> float:
         """
         Weighted confidence score based on signal quality factors.
@@ -206,15 +220,15 @@ class TrendFollowStrategy(BaseStrategy):
         elif adx_val > 20:
             score += 0.08
 
-        # Volume confirmation (0 – 0.20)
+        # Volume confirmation (0 – 0.18)
         if rvol > 2.5:
-            score += 0.20
+            score += 0.18
         elif rvol > 2.0:
-            score += 0.15
+            score += 0.13
         elif rvol > 1.5:
-            score += 0.10
+            score += 0.09
         else:
-            score += 0.05
+            score += 0.04
 
         # RSI quality — not overbought, ideally 55-70 (0 – 0.15)
         if 55 <= rsi_val <= 70:
@@ -222,9 +236,13 @@ class TrendFollowStrategy(BaseStrategy):
         elif 50 <= rsi_val < 55 or 70 < rsi_val <= 75:
             score += 0.08
 
-        # Daily timeframe alignment (0 – 0.15)
+        # Daily timeframe alignment (0 – 0.12)
         if daily_aligned:
-            score += 0.15
+            score += 0.12
+
+        # Full EMA stack (50>200) — extra confirmation (0 – 0.05)
+        if ema200_bonus:
+            score += 0.05
 
         # Momentum score (0 – 0.10)
         score += 0.10 * (mom_score / 10.0)

@@ -24,7 +24,8 @@
       "Bash(python -c ':*)",
       "Bash(python -c \"from config.settings import TOTAL_CAPITAL, RISK_PER_TRADE_PCT; print\\('TOTAL_CAPITAL:', TOTAL_CAPITAL\\); print\\('RISK_PCT:', RISK_PER_TRADE_PCT\\)\")",
       "Bash(xargs grep:*)",
-      "Bash(grep -v \"^$\")"
+      "Bash(grep -v \"^$\")",
+      "Bash(python -c ' *)"
     ]
   }
 }

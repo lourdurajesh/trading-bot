@@ -191,3 +191,8 @@ class BaseStrategy(ABC):
 
     def log_skip(self, symbol: str, reason: str) -> None:
         logger.debug(f"[{self.name}] SKIP {symbol}: {reason}")
+        try:
+            from analysis.signal_health import skip_collector
+            skip_collector.record(symbol, self.name, reason)
+        except Exception:
+            pass

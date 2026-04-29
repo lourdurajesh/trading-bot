@@ -56,9 +56,10 @@ class DirectionalOptionsStrategy(BaseStrategy):
         if symbol not in ("NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:FINNIFTY-INDEX"):
             return None
 
-        # Need TRENDING or BREAKOUT regime
+        # Accept TRENDING, BREAKOUT, or VOLATILE — strategy_selector already
+        # filters regime; duplicating the check here blocked VOLATILE path.
         regime = regime_detector.get_regime(symbol, "1H")
-        if regime.regime not in (Regime.TRENDING, Regime.BREAKOUT):
+        if regime.regime not in (Regime.TRENDING, Regime.BREAKOUT, Regime.VOLATILE):
             self.log_skip(symbol, f"Regime {regime.regime.value} not suitable for directional options")
             return None
 
@@ -82,17 +83,27 @@ class DirectionalOptionsStrategy(BaseStrategy):
         alignment = ema_alignment(df)
         rsi_val   = rsi(df["close"]).iloc[-1]
 
+        # Use 3-EMA stack (9>21>50) for direction — the full 4-EMA stack
+        # (including EMA200) blocks all signals during post-crash recovery
+        # because EMA50 lags below EMA200 for weeks after a sharp reversal.
+        bullish_3 = alignment["ema9"] > alignment["ema21"] > alignment["ema50"]
+        bearish_3 = alignment["ema9"] < alignment["ema21"] < alignment["ema50"]
+
         # Determine direction
-        if alignment["bullish"] and rsi_val > 50:
+        if bullish_3 and rsi_val > 50:
             direction    = Direction.LONG
             option_type  = "call"
             reason = f"Bullish EMA alignment | RSI {rsi_val:.0f} | Buy call debit spread"
-        elif alignment["bearish"] and rsi_val < 50:
+        elif bearish_3 and rsi_val < 50:
             direction    = Direction.SHORT
             option_type  = "put"
             reason = f"Bearish EMA alignment | RSI {rsi_val:.0f} | Buy put debit spread"
         else:
-            self.log_skip(symbol, "No clear directional bias")
+            self.log_skip(
+                symbol,
+                f"No clear directional bias: EMA9={alignment['ema9']:.0f} "
+                f"EMA21={alignment['ema21']:.0f} EMA50={alignment['ema50']:.0f} RSI={rsi_val:.0f}"
+            )
             return None
 
         # ── Fetch live option from chain ──────────────────────────

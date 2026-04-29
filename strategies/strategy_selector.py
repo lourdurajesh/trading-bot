@@ -158,6 +158,16 @@ class StrategySelector:
                 f"open_pos={skipped_position} invalid={skipped_invalid}"
             )
 
+        # Feed health monitor — records skip reasons + drought tracking
+        try:
+            from analysis.signal_health import skip_collector, health_monitor
+            skip_records = skip_collector.flush()
+            health_monitor.update(skip_records, signals_fired=len(signals_submitted))
+            if signals_submitted:
+                health_monitor.record_trade()
+        except Exception:
+            pass
+
         return signals_submitted
 
     def apply_cooldown(self, symbol: str, minutes: int = None) -> None:
@@ -272,7 +282,17 @@ class StrategySelector:
             )
 
         if regime == Regime.VOLATILE:
-            return self._evaluate_options_parallel(symbol, [self._opt_direct])
+            # Directional debit spread (indices only) — options are cheap in volatile markets.
+            # Previously this path was a deadlock: strategy_selector sent VOLATILE to
+            # directional_options, but that strategy then also checked regime != VOLATILE
+            # and returned None immediately. The internal regime check is now relaxed.
+            signal = self._evaluate_options_parallel(symbol, [self._opt_direct])
+            if signal:
+                return signal
+            # Also try premium-selling — high IV in volatile regimes is ideal for condors.
+            return self._evaluate_options_parallel(
+                symbol, [self._opt_income, self._iron_condor]
+            )
 
         return None
 

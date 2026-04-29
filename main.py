@@ -158,7 +158,10 @@ class TradingBot:
         Two-loop architecture:
         Fast loop (5s)  — position monitoring, stop/target hits
         Slow loop (60s) — full signal evaluation + intelligence pipeline
+                        — also runs learning paper trades on every cycle
         """
+        from learning_engine import learning_engine
+
         last_slow_run = 0
 
         while self._running:
@@ -173,7 +176,13 @@ class TradingBot:
                         last_slow_run = now
                         if strategy_selector._cycle_count % 10 == 0:
                             self._log_portfolio_snapshot()
+                        # Production strategies
                         strategy_selector.run_cycle()
+                        # Learning paper trades — parallel, isolated
+                        try:
+                            learning_engine.run_cycle()
+                        except Exception as le:
+                            logger.debug(f"Learning cycle error: {le}")
                 else:
                     logger.debug("Outside market hours — skipping.")
 

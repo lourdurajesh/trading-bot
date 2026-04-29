@@ -109,6 +109,62 @@ def get_paper_positions():
     except Exception as e:
         return {"error": str(e)}
 
+
+# ─────────────────────────────────────────────────────────────────
+# LEARNING PAPER TRADES
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/learning/trades")
+def learning_trades(status: str = None, limit: int = 200):
+    """
+    All learning paper trades.
+    ?status=OPEN|CLOSED   filter by status
+    ?limit=N              max rows (default 200)
+    Each trade includes full entry metadata (RSI, EMA, ATR etc.)
+    for post-trade review and strategy refinement.
+    """
+    try:
+        from learning_engine import learning_engine
+        return {"trades": learning_engine.get_trades(status=status, limit=limit)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/learning/stats")
+def learning_stats():
+    """
+    Aggregate performance of learning strategies.
+    Returns win rate, average R, breakdown by strategy/direction/exit-reason.
+    """
+    try:
+        from learning_engine import learning_engine
+        return learning_engine.get_stats()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/learning/review")
+def learning_review(strategy: str = None):
+    """
+    Closed learning trades grouped by outcome bucket
+    (strong_win / small_win / scratch / small_loss / large_loss).
+    Pass ?strategy=SimpleRSI or ?strategy=SimpleMomentum to filter.
+    """
+    try:
+        from learning_engine import learning_engine
+        trades = learning_engine.get_review(strategy=strategy)
+        from collections import defaultdict
+        grouped: dict = defaultdict(list)
+        for t in trades:
+            grouped[t["outcome_bucket"]].append(t)
+        return {
+            "by_outcome": dict(grouped),
+            "total":      len(trades),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/logs")
 def get_logs(lines: int = 50):
     """Return last N lines from bot log."""
@@ -391,6 +447,48 @@ def get_daily_review(date_str: str = None, capital: float = None):
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.now(tz=IST).isoformat()}
+
+
+# ─────────────────────────────────────────────────────────────────
+# SIGNAL HEALTH — WHY ARE WE NOT TRADING?
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/signals/health")
+def signals_health():
+    """
+    Returns a structured report explaining WHY no trades are firing.
+    Includes: drought length, top blocking conditions (categorised),
+    per-symbol last skip reason, and action-point hints.
+    Refreshes every cycle (~60 s) — poll this to stay current.
+    """
+    try:
+        from analysis.signal_health import health_monitor
+        return health_monitor.snapshot()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/signals/drought")
+def signals_drought():
+    """
+    Compact drought summary: days without a trade + status badge.
+    Suitable for a dashboard status indicator.
+    """
+    try:
+        from analysis.signal_health import health_monitor
+        snap = health_monitor.snapshot()
+        return {
+            "drought_days":   snap["drought_days"],
+            "drought_status": snap["drought_status"],   # OK / CAUTION / WARNING / CRITICAL
+            "last_trade":     snap["last_trade"],
+            "signals_today":  snap["signals_today"],
+            "top_3_reasons": [
+                {"category": b["category"], "hint": b["hint"]}
+                for b in snap["top_blockers_today"][:3]
+            ],
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/stats")
