@@ -28,7 +28,7 @@
     .metric{background:#151a28;border-radius:8px;padding:12px 14px}
     .metric .lbl{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px}
     .metric .val{font-size:20px;font-weight:600;font-family:'Courier New',monospace}
-    .up{color:#22c55e}.down{color:#ef4444}.neutral{color:#94a3b8}.amber{color:#f59e0b}
+    .up{color:#22c55e}.down{color:#ef4444}.neutral{color:#94a3b8}.amber{color:#f59e0b}.orange{color:#f97316}
     .badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
     .badge.long{background:#14532d;color:#86efac}
     .badge.short{background:#450a0a;color:#fca5a5}
@@ -55,8 +55,6 @@
     .empty{color:#475569;font-size:12px;text-align:center;padding:20px}
     .pos-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #1e2433;font-size:12px}
     .pos-row:last-child{border-bottom:none}
-
-    /* Log viewer */
     .log-box{background:#0a0e17;border:1px solid #1e2433;border-radius:8px;padding:12px;height:320px;overflow-y:auto;font-family:'Courier New',monospace;font-size:11px;line-height:1.6}
     .log-line{padding:1px 0;white-space:pre-wrap;word-break:break-all}
     .log-line.info{color:#64748b}
@@ -65,70 +63,115 @@
     .log-line.critical{color:#ff0000;font-weight:bold}
     .log-line.signal{color:#22c55e}
     .log-line.trade{color:#93c5fd}
-
-    /* Service status */
     .svc-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1e2433;font-size:12px}
     .svc-row:last-child{border-bottom:none}
     .svc-dot{width:8px;height:8px;border-radius:50%;margin-right:8px;display:inline-block;flex-shrink:0}
-
-    /* Backtest table */
     .bt-table{width:100%;border-collapse:collapse;font-size:11px}
     .bt-table th{color:#64748b;text-align:left;padding:6px 8px;border-bottom:1px solid #1e2433;font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
     .bt-table td{padding:6px 8px;border-bottom:1px solid #111827;color:#cbd5e1}
     .bt-table tr:hover td{background:#151a28}
     .bt-table .good{color:#22c55e}
     .bt-table .bad{color:#ef4444}
-
-    /* Paper trading */
     .paper-banner{background:#3b2f0a;border:1px solid #f59e0b44;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#fcd34d;display:flex;align-items:center;gap:8px}
+
+    /* ── Signal health widget ── */
+    .health-banner{border-radius:8px;padding:12px 16px;margin-bottom:14px;display:flex;align-items:flex-start;gap:14px;font-size:12px}
+    .health-banner.ok{background:#0d2218;border:1px solid #16653444}
+    .health-banner.caution{background:#2d2200;border:1px solid #f59e0b44}
+    .health-banner.warning{background:#2a1500;border:1px solid #f9731644}
+    .health-banner.critical{background:#1f0505;border:1px solid #ef444444}
+    .health-drought{font-size:28px;font-weight:700;font-family:'Courier New',monospace;line-height:1;flex-shrink:0;min-width:48px;text-align:center}
+    .health-blocker{background:#0f1117;border-radius:6px;padding:7px 10px;margin-top:6px;font-size:11px}
+    .health-blocker .cat{color:#94a3b8;font-weight:500}
+    .health-blocker .hint{color:#64748b;margin-top:2px}
+
+    /* ── Learning & Commodity tables ── */
+    .data-table{width:100%;border-collapse:collapse;font-size:11px}
+    .data-table th{color:#64748b;text-align:left;padding:6px 8px;border-bottom:1px solid #1e2433;font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
+    .data-table td{padding:6px 8px;border-bottom:1px solid #111827;color:#cbd5e1;vertical-align:middle}
+    .data-table tr:hover td{background:#151a28}
+    .data-table .good{color:#22c55e}
+    .data-table .bad{color:#ef4444}
+    .data-table .neutral-cell{color:#94a3b8}
+    .data-table .sym{font-family:monospace;color:#f1f5f9;font-weight:600}
+    .meta-pill{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;background:#1e2433;color:#94a3b8;margin-right:3px;font-family:monospace}
+    .outcome-strong_win{color:#22c55e;font-weight:600}
+    .outcome-small_win{color:#86efac}
+    .outcome-scratch{color:#94a3b8}
+    .outcome-small_loss{color:#fca5a5}
+    .outcome-large_loss{color:#ef4444;font-weight:600}
+    .sub-tabs{display:flex;gap:4px;margin-bottom:14px}
+    .sub-tab{padding:4px 12px;border-radius:5px;border:1px solid #2d3748;background:transparent;color:#64748b;font-size:12px;cursor:pointer}
+    .sub-tab.active{background:#1e293b;color:#f1f5f9;border-color:#334155}
+    .source-live{color:#22c55e;font-size:10px}
+    .source-sim{color:#f59e0b;font-size:10px}
   </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const API = "http://140.245.26.69:8000";
-const WS  = "ws://140.245.26.69:8000/ws/live";
-const WS_LOGS = "ws://140.245.26.69:8000/ws/logs";
+const API      = "http://140.245.26.69:8000";
+const WS       = "ws://140.245.26.69:8000/ws/live";
+const WS_LOGS  = "ws://140.245.26.69:8000/ws/logs";
+
+/* ── helpers ── */
+const fmt = n => (n||0).toLocaleString("en-IN",{maximumFractionDigits:0});
+const fmtR = r => {
+  const v = (r||0).toFixed(2);
+  return (r>=0 ? "+" : "") + v + "R";
+};
+const droughtColor = s => ({OK:"#22c55e",CAUTION:"#f59e0b",WARNING:"#f97316",CRITICAL:"#ef4444"}[s]||"#94a3b8");
+const outcomeLabel = b => ({strong_win:"Strong Win",small_win:"Small Win",scratch:"Scratch",small_loss:"Small Loss",large_loss:"Large Loss"}[b]||b);
 
 function App() {
-  const [data, setData]         = React.useState(null);
-  const [wsOk, setWsOk]         = React.useState(false);
-  const [tab, setTab]           = React.useState("trading");
-  const [logs, setLogs]         = React.useState([]);
-  const [services, setServices] = React.useState(null);
-  const [backtest, setBacktest] = React.useState(null);
-  const [btStrat, setBtStrat]   = React.useState(null);
-  const [paperStats, setPaperStats] = React.useState(null);
-  const [paperPos, setPaperPos] = React.useState([]);
+  const [data, setData]               = React.useState(null);
+  const [wsOk, setWsOk]               = React.useState(false);
+  const [tab, setTab]                 = React.useState("trading");
+  const [logs, setLogs]               = React.useState([]);
+  const [services, setServices]       = React.useState(null);
+  const [backtest, setBacktest]       = React.useState(null);
+  const [btStrat, setBtStrat]         = React.useState(null);
+  const [paperStats, setPaperStats]   = React.useState(null);
+  const [paperPos, setPaperPos]       = React.useState([]);
+
+  /* signal health */
+  const [drought, setDrought]         = React.useState(null);
+
+  /* learning */
+  const [learnStats, setLearnStats]   = React.useState(null);
+  const [learnTrades, setLearnTrades] = React.useState([]);
+  const [learnReview, setLearnReview] = React.useState(null);
+  const [learnSubTab, setLearnSubTab] = React.useState("trades");
+
+  /* commodity */
+  const [commStats, setCommStats]     = React.useState(null);
+  const [commTrades, setCommTrades]   = React.useState([]);
+  const [commSubTab, setCommSubTab]   = React.useState("trades");
+
   const logRef = React.useRef(null);
 
-  // Live data WebSocket
+  /* ── live WS ── */
   React.useEffect(() => {
     let ws;
     function connect() {
       ws = new WebSocket(WS);
-      ws.onopen  = () => setWsOk(true);
-      ws.onclose = () => { setWsOk(false); setTimeout(connect, 3000); };
-      ws.onerror = () => setWsOk(false);
+      ws.onopen    = () => setWsOk(true);
+      ws.onclose   = () => { setWsOk(false); setTimeout(connect, 3000); };
+      ws.onerror   = () => setWsOk(false);
       ws.onmessage = e => { try { setData(JSON.parse(e.data)); } catch{} };
     }
     connect();
     return () => ws && ws.close();
   }, []);
 
-  // Log WebSocket
+  /* ── log WS ── */
   React.useEffect(() => {
     let ws;
     function connectLogs() {
       ws = new WebSocket(WS_LOGS);
       ws.onmessage = e => {
-        setLogs(prev => {
-          const next = [...prev, e.data].slice(-200);
-          return next;
-        });
-        setTimeout(() => {
-          if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-        }, 50);
+        setLogs(prev => [...prev, e.data].slice(-200));
+        setTimeout(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, 50);
       };
       ws.onclose = () => setTimeout(connectLogs, 3000);
     }
@@ -136,7 +179,7 @@ function App() {
     return () => ws && ws.close();
   }, []);
 
-  // Load services + backtest + paper stats
+  /* ── polling fetches ── */
   React.useEffect(() => {
     const loadServices = () =>
       fetch(`${API}/services/status`).then(r=>r.json()).then(setServices).catch(()=>{});
@@ -149,10 +192,26 @@ function App() {
       fetch(`${API}/paper/stats`).then(r=>r.json()).then(setPaperStats).catch(()=>{});
       fetch(`${API}/paper/positions`).then(r=>r.json()).then(setPaperPos).catch(()=>{});
     };
-    loadServices(); loadBacktest(); loadPaper();
+    const loadDrought = () =>
+      fetch(`${API}/signals/drought`).then(r=>r.json()).then(setDrought).catch(()=>{});
+    const loadLearn = () => {
+      fetch(`${API}/learning/stats`).then(r=>r.json()).then(setLearnStats).catch(()=>{});
+      fetch(`${API}/learning/trades?limit=100`).then(r=>r.json()).then(d=>setLearnTrades(d.trades||[])).catch(()=>{});
+      fetch(`${API}/learning/review`).then(r=>r.json()).then(setLearnReview).catch(()=>{});
+    };
+    const loadComm = () => {
+      fetch(`${API}/commodity/stats`).then(r=>r.json()).then(setCommStats).catch(()=>{});
+      fetch(`${API}/commodity/trades?limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});
+    };
+
+    loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadLearn(); loadComm();
+
     const t1 = setInterval(loadServices, 15000);
-    const t2 = setInterval(loadPaper, 5000);
-    return () => { clearInterval(t1); clearInterval(t2); };
+    const t2 = setInterval(loadPaper,    5000);
+    const t3 = setInterval(loadDrought,  60000);
+    const t4 = setInterval(loadLearn,    30000);
+    const t5 = setInterval(loadComm,     60000);
+    return () => [t1,t2,t3,t4,t5].forEach(clearInterval);
   }, []);
 
   const switchMode = m => fetch(`${API}/mode/${m}`, {method:"POST"});
@@ -174,9 +233,144 @@ function App() {
     return "info";
   };
 
+  /* ── signal health mini-widget ── */
+  function SignalHealthWidget() {
+    if (!drought) return null;
+    const { drought_days, drought_status, last_trade, top_3_reasons } = drought;
+    if (drought_status === "OK") return (
+      <div className="health-banner ok" style={{marginBottom:14}}>
+        <span style={{color:"#22c55e",fontWeight:600}}>✓ Signals healthy</span>
+        <span style={{color:"#475569",marginLeft:10,fontSize:11}}>Last trade: {last_trade||"—"}</span>
+      </div>
+    );
+    const cls = (drought_status||"warning").toLowerCase();
+    const col = droughtColor(drought_status);
+    return (
+      <div className={`health-banner ${cls}`}>
+        <div style={{textAlign:"center",flexShrink:0}}>
+          <div className="health-drought" style={{color:col}}>{drought_days}</div>
+          <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",marginTop:2}}>days dry</div>
+        </div>
+        <div style={{flex:1}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+            <span style={{fontWeight:600,fontSize:13,color:col}}>{drought_status}</span>
+            <span style={{fontSize:11,color:"#475569"}}>No trades fired · Last: {last_trade||"—"}</span>
+          </div>
+          {(top_3_reasons||[]).map((b,i)=>(
+            <div key={i} className="health-blocker">
+              <div className="cat">#{i+1} — {b.category?.replace(/_/g," ")}</div>
+              <div className="hint">{b.hint}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  /* ── learning trades table ── */
+  function LearningTradesTable({trades}) {
+    if (!trades.length) return <div className="empty">No learning trades yet</div>;
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Symbol</th><th>Strategy</th><th>Dir</th>
+              <th>Entry</th><th>Exit</th><th>SL</th><th>Target</th>
+              <th>P&L (R)</th><th>Reason</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map(t=>{
+              const r = t.pnl_r||0;
+              return (
+                <tr key={t.id}>
+                  <td className="sym">{(t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","")}</td>
+                  <td style={{color:"#93c5fd",fontSize:10}}>{t.strategy}</td>
+                  <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
+                  <td style={{fontFamily:"monospace"}}>{(t.entry_price||0).toFixed(2)}</td>
+                  <td style={{fontFamily:"monospace"}}>{t.exit_price ? t.exit_price.toFixed(2) : "—"}</td>
+                  <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.stop_loss||0).toFixed(2)}</td>
+                  <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.target||0).toFixed(2)}</td>
+                  <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{t.status==="OPEN"?"open":fmtR(r)}</td>
+                  <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
+                  <td><span className={`badge ${t.status==="OPEN"?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  /* ── learning review by outcome ── */
+  function LearningReviewView() {
+    if (!learnReview) return <div className="empty">Loading...</div>;
+    const buckets = ["strong_win","small_win","scratch","small_loss","large_loss"];
+    const byOutcome = learnReview.by_outcome || {};
+    return (
+      <div>
+        {buckets.map(b => {
+          const trades = byOutcome[b] || [];
+          if (!trades.length) return null;
+          return (
+            <div key={b} style={{marginBottom:16}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <span className={`outcome-${b}`} style={{fontWeight:600,fontSize:13}}>{outcomeLabel(b)}</span>
+                <span style={{color:"#475569",fontSize:11}}>{trades.length} trade{trades.length!==1?"s":""}</span>
+              </div>
+              <LearningTradesTable trades={trades.slice(0,10)}/>
+            </div>
+          );
+        })}
+        {!Object.keys(byOutcome).length && <div className="empty">No closed trades to review yet</div>}
+      </div>
+    );
+  }
+
+  /* ── commodity trades table ── */
+  function CommodityTradesTable({trades}) {
+    if (!trades.length) return <div className="empty">No commodity option trades yet — engine runs during MCX hours (09:00–23:30 IST)</div>;
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Instrument</th><th>Dir</th><th>ATM Strike</th>
+              <th>Net Debit</th><th>Max Profit</th><th>RR</th>
+              <th>P&L (R)</th><th>Reason</th><th>Source</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map(t=>{
+              const r = t.pnl_r||0;
+              const meta = t.metadata||{};
+              return (
+                <tr key={t.id}>
+                  <td className="sym">{(t.instrument||"").replace("MCX:","")}</td>
+                  <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
+                  <td style={{fontFamily:"monospace"}}>{meta.atm_strike||"—"}</td>
+                  <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.net_debit||0).toFixed(2)}</td>
+                  <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.max_profit||0).toFixed(2)}</td>
+                  <td style={{fontFamily:"monospace"}}>{(t.rr_planned||0).toFixed(1)}</td>
+                  <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{t.status==="OPEN"?"open":fmtR(r)}</td>
+                  <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
+                  <td><span className={t.data_source==="live_chain"?"source-live":"source-sim"}>{t.data_source==="live_chain"?"● Live":"◌ Sim"}</span></td>
+                  <td><span className={`badge ${t.status==="OPEN"?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
-      {/* Header */}
+
+      {/* ── Header ── */}
       <div className="header">
         <div>
           <span className={`pulse ${wsOk?"":"off"}`}/>
@@ -191,14 +385,16 @@ function App() {
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* ── Tabs ── */}
       <div className="tabs">
-        {[["trading","Trading"],["paper","Paper P&L"],["logs","Live Logs"],["services","Services"],["backtest","Backtest"]].map(([id,label])=>(
+        {[["trading","Trading"],["paper","Paper P&L"],["learning","Learning"],["commodity","MCX Options"],["logs","Live Logs"],["services","Services"],["backtest","Backtest"]].map(([id,label])=>(
           <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>{label}</button>
         ))}
       </div>
 
-      {/* ── TRADING TAB ── */}
+      {/* ════════════════════════════════════════
+          TRADING TAB
+      ════════════════════════════════════════ */}
       {tab==="trading" && (
         <div>
           {risk?.kill_switch_active && (
@@ -207,16 +403,20 @@ function App() {
               <button className="btn" style={{background:"#dc2626",color:"#fff"}} onClick={resetKill}>Reset</button>
             </div>
           )}
+
+          <SignalHealthWidget/>
+
           <div className="grid4">
             <div className="metric"><div className="lbl">Portfolio value</div>
-              <div className={`val ${pnl>=0?"up":"down"}`}>₹{(stats?.portfolio_value||0).toLocaleString("en-IN",{maximumFractionDigits:0})}</div></div>
+              <div className={`val ${pnl>=0?"up":"down"}`}>₹{fmt(stats?.portfolio_value)}</div></div>
             <div className="metric"><div className="lbl">Total P&L</div>
-              <div className={`val ${pnl>=0?"up":"down"}`}>{pnl>=0?"+":""}₹{Math.abs(pnl).toLocaleString("en-IN",{maximumFractionDigits:0})} <span style={{fontSize:13}}>({pnlPct>=0?"+":""}{pnlPct.toFixed(1)}%)</span></div></div>
+              <div className={`val ${pnl>=0?"up":"down"}`}>{pnl>=0?"+":""}₹{fmt(Math.abs(pnl))} <span style={{fontSize:13}}>({pnlPct>=0?"+":""}{pnlPct.toFixed(1)}%)</span></div></div>
             <div className="metric"><div className="lbl">Win rate</div>
               <div className="val neutral">{stats?.win_rate?.toFixed(0)||0}%</div></div>
             <div className="metric"><div className="lbl">Drawdown</div>
               <div className={`val ${(stats?.drawdown_pct||0)>2?"down":"neutral"}`}>{stats?.drawdown_pct?.toFixed(1)||0}%</div></div>
           </div>
+
           <div className="grid2">
             <div className="card">
               <h2>Open positions ({positions?.length||0})</h2>
@@ -230,7 +430,7 @@ function App() {
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div className={p.unrealised_pnl>=0?"up":"down"} style={{fontSize:15,fontWeight:600}}>
-                      {p.unrealised_pnl>=0?"+":""}₹{Math.abs(p.unrealised_pnl).toLocaleString("en-IN",{maximumFractionDigits:0})}
+                      {p.unrealised_pnl>=0?"+":""}₹{fmt(Math.abs(p.unrealised_pnl))}
                     </div>
                     <div style={{fontSize:10,color:"#64748b"}}>₹{p.entry_price} → ₹{p.ltp}</div>
                   </div>
@@ -247,7 +447,7 @@ function App() {
                   </div>
                   <div className="risk-bar"><div className="risk-bar-fill" style={{width:`${Math.min(heat,100)}%`,background:heat>50?"#ef4444":heat>30?"#f59e0b":"#22c55e"}}/></div>
                 </div>
-                {[["Daily P&L",`₹${(risk?.daily_realised_pnl||0).toLocaleString("en-IN",{maximumFractionDigits:0})}`,risk?.daily_realised_pnl>=0?"up":"down"],
+                {[["Daily P&L",`₹${fmt(risk?.daily_realised_pnl)}`,risk?.daily_realised_pnl>=0?"up":"down"],
                   ["Daily loss limit",`${risk?.daily_loss_limit}%`,"neutral"],
                   ["Risk per trade",`${risk?.risk_per_trade_pct}%`,"neutral"],
                   ["Open positions",stats?.open_positions_count||0,"neutral"],
@@ -262,6 +462,7 @@ function App() {
               </div>
             </div>
           </div>
+
           <div className="card">
             <h2>Signals awaiting confirmation ({pending_signals?.length||0})</h2>
             {!pending_signals?.length ? <div className="empty">No pending signals — bot is scanning markets</div>
@@ -280,7 +481,7 @@ function App() {
                   <div className="level"><div className="lbl">Stop</div><div className="val" style={{color:"#fca5a5"}}>₹{s.stop_loss}</div></div>
                   <div className="level"><div className="lbl">Target</div><div className="val" style={{color:"#86efac"}}>₹{s.target_1}</div></div>
                 </div>
-                <div style={{fontSize:11,color:"#64748b",marginBottom:10}}>R:R {s.risk_reward} · {s.position_size} shares · ₹{s.capital_at_risk?.toLocaleString("en-IN")}</div>
+                <div style={{fontSize:11,color:"#64748b",marginBottom:10}}>R:R {s.risk_reward} · {s.position_size} shares · ₹{(s.capital_at_risk||0).toLocaleString("en-IN")}</div>
                 <div className="btn-row">
                   <button className="btn btn-confirm" onClick={()=>confirm(s.signal_id)}>✓ Confirm</button>
                   <button className="btn btn-reject" onClick={()=>reject(s.signal_id)}>✕ Reject</button>
@@ -291,7 +492,9 @@ function App() {
         </div>
       )}
 
-      {/* ── PAPER P&L TAB ── */}
+      {/* ════════════════════════════════════════
+          PAPER P&L TAB
+      ════════════════════════════════════════ */}
       {tab==="paper" && (
         <div>
           <div className="paper-banner">
@@ -302,7 +505,7 @@ function App() {
               <div className="grid4">
                 <div className="metric"><div className="lbl">Total P&L</div>
                   <div className={`val ${(paperStats.total_pnl||0)>=0?"up":"down"}`}>
-                    {(paperStats.total_pnl||0)>=0?"+":""}₹{Math.abs(paperStats.total_pnl||0).toLocaleString("en-IN",{maximumFractionDigits:0})}
+                    {(paperStats.total_pnl||0)>=0?"+":""}₹{fmt(Math.abs(paperStats.total_pnl||0))}
                   </div></div>
                 <div className="metric"><div className="lbl">Win rate</div>
                   <div className={`val ${(paperStats.win_rate||0)>=50?"up":"down"}`}>{paperStats.win_rate||0}%</div></div>
@@ -314,11 +517,11 @@ function App() {
               <div className="grid2">
                 <div className="card">
                   <h2>Performance</h2>
-                  {[["Realised P&L",`₹${(paperStats.total_realised||0).toLocaleString("en-IN",{maximumFractionDigits:0})}`,(paperStats.total_realised||0)>=0?"up":"down"],
-                    ["Unrealised P&L",`₹${(paperStats.total_unrealised||0).toLocaleString("en-IN",{maximumFractionDigits:0})}`,(paperStats.total_unrealised||0)>=0?"up":"down"],
+                  {[["Realised P&L",`₹${fmt(paperStats.total_realised)}`,(paperStats.total_realised||0)>=0?"up":"down"],
+                    ["Unrealised P&L",`₹${fmt(paperStats.total_unrealised)}`,(paperStats.total_unrealised||0)>=0?"up":"down"],
                     ["Return %",`${paperStats.total_pnl_pct||0}%`,(paperStats.total_pnl_pct||0)>=0?"up":"down"],
-                    ["Avg winner",`₹${(paperStats.avg_winner||0).toLocaleString("en-IN",{maximumFractionDigits:0})}`,"up"],
-                    ["Avg loser",`₹${(paperStats.avg_loser||0).toLocaleString("en-IN",{maximumFractionDigits:0})}`,"down"],
+                    ["Avg winner",`₹${fmt(paperStats.avg_winner)}`,"up"],
+                    ["Avg loser",`₹${fmt(paperStats.avg_loser)}`,"down"],
                     ["Open positions",paperStats.open_positions||0,"neutral"],
                   ].map(([lbl,val,cls])=>(
                     <div key={lbl} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #111827",fontSize:12}}>
@@ -339,7 +542,7 @@ function App() {
                       </div>
                       <div style={{textAlign:"right"}}>
                         <div className={p.unrealised_pnl>=0?"up":"down"} style={{fontWeight:600}}>
-                          {p.unrealised_pnl>=0?"+":""}₹{Math.abs(p.unrealised_pnl).toLocaleString("en-IN",{maximumFractionDigits:0})}
+                          {p.unrealised_pnl>=0?"+":""}₹{fmt(Math.abs(p.unrealised_pnl))}
                         </div>
                         <div style={{fontSize:10,color:"#64748b"}}>₹{p.entry_price} → ₹{p.ltp}</div>
                       </div>
@@ -352,7 +555,228 @@ function App() {
         </div>
       )}
 
-      {/* ── LIVE LOGS TAB ── */}
+      {/* ════════════════════════════════════════
+          LEARNING TAB
+      ════════════════════════════════════════ */}
+      {tab==="learning" && (
+        <div>
+          <div className="paper-banner">
+            🎓 Learning paper trades — SimpleRSI &amp; SimpleMomentum on NSE stocks &amp; indices. No real money.
+          </div>
+
+          {/* stats row */}
+          {learnStats && !learnStats.message ? (
+            <div className="grid4" style={{marginBottom:16}}>
+              <div className="metric"><div className="lbl">Closed trades</div>
+                <div className="val neutral">{learnStats.total_closed||0}</div></div>
+              <div className="metric"><div className="lbl">Win rate</div>
+                <div className={`val ${(learnStats.win_rate_pct||0)>=50?"up":"down"}`}>{learnStats.win_rate_pct||0}%</div></div>
+              <div className="metric"><div className="lbl">Avg R</div>
+                <div className={`val ${(learnStats.avg_r||0)>=0?"up":"down"}`}>{(learnStats.avg_r||0)>=0?"+":""}{(learnStats.avg_r||0).toFixed(2)}R</div></div>
+              <div className="metric"><div className="lbl">Total R</div>
+                <div className={`val ${(learnStats.total_r||0)>=0?"up":"down"}`}>{(learnStats.total_r||0)>=0?"+":""}{(learnStats.total_r||0).toFixed(1)}R</div></div>
+            </div>
+          ) : (
+            <div className="card"><div className="empty">{learnStats?.message||"Loading stats..."}</div></div>
+          )}
+
+          {/* per-strategy breakdown */}
+          {learnStats?.by_strategy && (
+            <div className="grid2" style={{marginBottom:16}}>
+              {Object.entries(learnStats.by_strategy).map(([name, s])=>(
+                <div key={name} className="card">
+                  <h2>{name}</h2>
+                  <div style={{display:"grid",gap:8}}>
+                    {[["Trades", s.total, "neutral"],
+                      ["Win rate", `${s.win_rate}%`, s.win_rate>=50?"up":"down"],
+                      ["Avg R", `${s.avg_r>=0?"+":""}${s.avg_r}R`, s.avg_r>=0?"up":"down"],
+                      ["Wins / Losses", `${s.wins} / ${s.total-s.wins}`, "neutral"],
+                    ].map(([lbl,val,cls])=>(
+                      <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                        <span style={{color:"#64748b"}}>{lbl}</span>
+                        <span className={cls}>{val}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* sub-tabs */}
+          <div className="sub-tabs">
+            {[["trades","All Trades"],["review","Review by Outcome"],["meta","Exit Breakdown"]].map(([id,lbl])=>(
+              <button key={id} className={`sub-tab ${learnSubTab===id?"active":""}`} onClick={()=>setLearnSubTab(id)}>{lbl}</button>
+            ))}
+          </div>
+
+          {learnSubTab==="trades" && (
+            <div className="card">
+              <h2>Recent trades ({learnTrades.length})</h2>
+              <LearningTradesTable trades={learnTrades}/>
+            </div>
+          )}
+
+          {learnSubTab==="review" && (
+            <div className="card">
+              <h2>Trades by outcome bucket</h2>
+              <LearningReviewView/>
+            </div>
+          )}
+
+          {learnSubTab==="meta" && learnStats && (
+            <div className="grid2">
+              <div className="card">
+                <h2>Exit reasons</h2>
+                {learnStats.exit_reasons ? Object.entries(learnStats.exit_reasons).sort((a,b)=>b[1]-a[1]).map(([r,n])=>(
+                  <div key={r} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827",fontSize:12}}>
+                    <span style={{color:"#94a3b8"}}>{r}</span>
+                    <span className={r==="TARGET"?"up":r==="STOP"?"down":"neutral"}>{n}</span>
+                  </div>
+                )) : <div className="empty">No data</div>}
+              </div>
+              <div className="card">
+                <h2>Direction split</h2>
+                {learnStats.directions ? Object.entries(learnStats.directions).map(([d,n])=>(
+                  <div key={d} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827",fontSize:12}}>
+                    <span className={`badge ${d.toLowerCase()}`}>{d}</span>
+                    <span className="neutral">{n} trades</span>
+                  </div>
+                )) : <div className="empty">No data</div>}
+                {learnStats.best_trade_r !== undefined && (
+                  <div style={{marginTop:12,display:"grid",gap:6}}>
+                    {[["Best trade",`+${learnStats.best_trade_r}R`,"up"],
+                      ["Worst trade",`${learnStats.worst_trade_r}R`,"down"],
+                    ].map(([lbl,val,cls])=>(
+                      <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                        <span style={{color:"#64748b"}}>{lbl}</span>
+                        <span className={cls} style={{fontFamily:"monospace"}}>{val}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════
+          MCX COMMODITY OPTIONS TAB
+      ════════════════════════════════════════ */}
+      {tab==="commodity" && (
+        <div>
+          <div className="paper-banner" style={{background:"#0d1f35",borderColor:"#1e3a5f44",color:"#93c5fd"}}>
+            🛢 MCX commodity options paper trades — ATM debit spreads · Live chain + Black-Scholes fallback · 09:00–23:30 IST
+          </div>
+
+          {/* stats row */}
+          {commStats && !commStats.message ? (
+            <div className="grid4" style={{marginBottom:16}}>
+              <div className="metric"><div className="lbl">Closed trades</div>
+                <div className="val neutral">{commStats.total_closed||0}</div></div>
+              <div className="metric"><div className="lbl">Open now</div>
+                <div className="val neutral">{commStats.total_open||0}</div></div>
+              <div className="metric"><div className="lbl">Win rate</div>
+                <div className={`val ${(commStats.win_rate_pct||0)>=50?"up":"down"}`}>{commStats.win_rate_pct||0}%</div></div>
+              <div className="metric"><div className="lbl">Total R</div>
+                <div className={`val ${(commStats.total_r||0)>=0?"up":"down"}`}>{(commStats.total_r||0)>=0?"+":""}{(commStats.total_r||0).toFixed(1)}R</div></div>
+            </div>
+          ) : (
+            <div className="card"><div className="empty">{commStats?.message||"Loading stats... Engine runs during MCX hours."}</div></div>
+          )}
+
+          {/* per-instrument breakdown */}
+          {commStats?.by_instrument && Object.keys(commStats.by_instrument).length > 0 && (
+            <div className="card" style={{marginBottom:16}}>
+              <h2>By instrument</h2>
+              <table className="data-table">
+                <thead>
+                  <tr><th>Instrument</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Wins</th></tr>
+                </thead>
+                <tbody>
+                  {Object.entries(commStats.by_instrument).sort((a,b)=>b[1].total-a[1].total).map(([ins,s])=>(
+                    <tr key={ins}>
+                      <td className="sym">{ins.replace("MCX:","")}</td>
+                      <td>{s.total}</td>
+                      <td className={s.win_rate>=50?"good":"bad"}>{s.win_rate}%</td>
+                      <td className={s.avg_r>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{s.avg_r>=0?"+":""}{s.avg_r}R</td>
+                      <td className="neutral-cell">{s.wins}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* data source note */}
+          {commStats?.data_sources && (
+            <div style={{display:"flex",gap:16,marginBottom:12,fontSize:11}}>
+              {commStats.data_sources.live_chain && <span><span className="source-live">●</span> Live chain: {commStats.data_sources.live_chain} trades</span>}
+              {commStats.data_sources.black_scholes && <span><span className="source-sim">◌</span> Black-Scholes sim: {commStats.data_sources.black_scholes} trades</span>}
+            </div>
+          )}
+
+          {/* sub-tabs */}
+          <div className="sub-tabs">
+            {[["trades","All Trades"],["open","Open Positions"],["exits","Exit Breakdown"]].map(([id,lbl])=>(
+              <button key={id} className={`sub-tab ${commSubTab===id?"active":""}`} onClick={()=>setCommSubTab(id)}>{lbl}</button>
+            ))}
+          </div>
+
+          {commSubTab==="trades" && (
+            <div className="card">
+              <h2>Recent trades ({commTrades.length})</h2>
+              <CommodityTradesTable trades={commTrades}/>
+            </div>
+          )}
+
+          {commSubTab==="open" && (
+            <div className="card">
+              <h2>Open positions ({commStats?.open_positions?.length||0})</h2>
+              {commStats?.open_positions?.length ? (
+                <CommodityTradesTable trades={commStats.open_positions}/>
+              ) : <div className="empty">No open commodity option positions</div>}
+            </div>
+          )}
+
+          {commSubTab==="exits" && commStats && (
+            <div className="grid2">
+              <div className="card">
+                <h2>Exit reasons</h2>
+                {commStats.exit_reasons ? Object.entries(commStats.exit_reasons).sort((a,b)=>b[1]-a[1]).map(([r,n])=>(
+                  <div key={r} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827",fontSize:12}}>
+                    <span style={{color:"#94a3b8"}}>{r}</span>
+                    <span className={r==="TARGET_50PCT"?"up":r.includes("LOSS")||r==="EOD_MCX"?"down":"neutral"}>{n}</span>
+                  </div>
+                )) : <div className="empty">No data</div>}
+              </div>
+              <div className="card">
+                <h2>P&L summary</h2>
+                {commStats.total_closed>0 && (
+                  <div style={{display:"grid",gap:8}}>
+                    {[["Avg R", `${(commStats.avg_r||0)>=0?"+":""}${(commStats.avg_r||0).toFixed(2)}R`, (commStats.avg_r||0)>=0?"up":"down"],
+                      ["Best trade", `+${commStats.best_trade_r||0}R`, "up"],
+                      ["Worst trade", `${commStats.worst_trade_r||0}R`, "down"],
+                      ["Total R", `${(commStats.total_r||0)>=0?"+":""}${(commStats.total_r||0).toFixed(1)}R`, (commStats.total_r||0)>=0?"up":"down"],
+                    ].map(([lbl,val,cls])=>(
+                      <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                        <span style={{color:"#64748b"}}>{lbl}</span>
+                        <span className={cls} style={{fontFamily:"monospace"}}>{val}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!commStats.total_closed && <div className="empty">No closed trades yet</div>}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════
+          LIVE LOGS TAB
+      ════════════════════════════════════════ */}
       {tab==="logs" && (
         <div>
           <div className="card">
@@ -384,7 +808,9 @@ function App() {
         </div>
       )}
 
-      {/* ── SERVICES TAB ── */}
+      {/* ════════════════════════════════════════
+          SERVICES TAB
+      ════════════════════════════════════════ */}
       {tab==="services" && (
         <div>
           <div className="grid2">
@@ -455,7 +881,9 @@ function App() {
         </div>
       )}
 
-      {/* ── BACKTEST TAB ── */}
+      {/* ════════════════════════════════════════
+          BACKTEST TAB
+      ════════════════════════════════════════ */}
       {tab==="backtest" && (
         <div>
           {!backtest ? <div className="empty">Loading backtest results...</div>
@@ -504,13 +932,7 @@ function App() {
                       <table className="bt-table">
                         <thead>
                           <tr>
-                            <th>Symbol</th>
-                            <th>Trades</th>
-                            <th>Win %</th>
-                            <th>PF</th>
-                            <th>Sharpe</th>
-                            <th>Return</th>
-                            <th>Max DD</th>
+                            <th>Symbol</th><th>Trades</th><th>Win %</th><th>PF</th><th>Sharpe</th><th>Return</th><th>Max DD</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -535,6 +957,7 @@ function App() {
           )}
         </div>
       )}
+
     </div>
   );
 }

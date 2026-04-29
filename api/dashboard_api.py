@@ -13,6 +13,14 @@ Endpoints:
   POST /mode/{mode}        — switch AUTO / MANUAL
   POST /kill-switch/reset  — reset kill switch
   WS   /ws/live            — real-time push (ticks every 2s)
+  GET  /signals/health     — WHY no trades are firing (drought, blockers, action points)
+  GET  /signals/drought    — compact drought badge
+  GET  /learning/trades    — NSE learning paper trades (SimpleRSI / SimpleMomentum)
+  GET  /learning/stats     — NSE learning aggregate stats
+  GET  /learning/review    — NSE learning trades grouped by outcome bucket
+  GET  /commodity/trades   — MCX commodity options paper trades
+  GET  /commodity/stats    — MCX commodity options aggregate stats
+  GET  /commodity/chain/{symbol} — last fetched MCX options chain snapshot
 """
 
 import asyncio
@@ -163,6 +171,63 @@ def learning_review(strategy: str = None):
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────
+# COMMODITY OPTIONS LEARNING (MCX paper trades — standalone engine)
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/commodity/trades")
+def commodity_trades(status: str = None, symbol: str = None, limit: int = 200):
+    """
+    MCX commodity options paper trades.
+    ?status=OPEN|CLOSED   filter by status
+    ?symbol=CRUDEOIL      filter by commodity (partial match)
+    ?limit=N              max rows (default 200)
+    Each trade includes spread legs, greeks, P&L, and entry metadata.
+    """
+    try:
+        from commodity_options_learning import commodity_options
+        trades = commodity_options.get_trades(status=status, limit=limit)
+        if symbol:
+            sym_upper = symbol.upper()
+            trades = [t for t in trades if sym_upper in t.get("instrument", "").upper()]
+        return {"trades": trades, "count": len(trades)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/commodity/stats")
+def commodity_stats():
+    """
+    Aggregate performance of MCX commodity options paper trades.
+    Returns win rate, avg R, best/worst trade, breakdown by commodity and direction.
+    """
+    try:
+        from commodity_options_learning import commodity_options
+        return commodity_options.get_stats()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/commodity/chain/{symbol:path}")
+def commodity_chain(symbol: str):
+    """
+    Last fetched options chain snapshot for an MCX symbol.
+    symbol — commodity name, e.g. CRUDEOIL or full Fyers code MCX:CRUDEOIL25JUNFUT
+    Returns spot price, ATM strike, sampled bid/ask from the cached chain.
+    """
+    try:
+        from commodity_options_learning import commodity_options
+        snapshot = commodity_options.get_chain_snapshot(symbol.upper())
+        if snapshot is None:
+            return {
+                "available": False,
+                "message":   "No chain data yet — engine runs during MCX hours (09:00–23:30 IST)",
+            }
+        return {"available": True, **snapshot}
+    except Exception as e:
+        return {"available": False, "error": str(e)}
 
 
 @app.get("/logs")

@@ -161,30 +161,42 @@ class TradingBot:
                         — also runs learning paper trades on every cycle
         """
         from learning_engine import learning_engine
+        from commodity_options_learning import commodity_options
 
-        last_slow_run = 0
+        last_slow_run      = 0
+        last_commodity_run = 0
 
         while self._running:
             try:
+                now = time.time()
+
                 if self._is_market_hours():
                     # ── Fast loop — runs every 5 seconds ──────────
                     position_manager.check_all()
 
                     # ── Slow loop — runs every 60 seconds ─────────
-                    now = time.time()
                     if now - last_slow_run >= EVAL_INTERVAL_SECONDS:
                         last_slow_run = now
                         if strategy_selector._cycle_count % 10 == 0:
                             self._log_portfolio_snapshot()
                         # Production strategies
                         strategy_selector.run_cycle()
-                        # Learning paper trades — parallel, isolated
+                        # NSE learning paper trades — parallel, isolated
                         try:
                             learning_engine.run_cycle()
                         except Exception as le:
                             logger.debug(f"Learning cycle error: {le}")
                 else:
                     logger.debug("Outside market hours — skipping.")
+
+                # Commodity options learning — separate 60s cadence,
+                # MCX hours gate is enforced internally in run_cycle()
+                if now - last_commodity_run >= EVAL_INTERVAL_SECONDS:
+                    last_commodity_run = now
+                    try:
+                        commodity_options.run_cycle()
+                    except Exception as ce:
+                        logger.debug(f"Commodity options cycle error: {ce}")
 
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)
