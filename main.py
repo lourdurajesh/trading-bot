@@ -60,6 +60,14 @@ EVAL_INTERVAL_SECONDS  = 60   # slow loop — full signal evaluation
 FAST_LOOP_INTERVAL     = 5    # fast loop — position monitoring
 WARMUP_SECONDS         = 30   # wait for data streams to populate
 
+# ── Institutional F&O system schedule ────────────────────────────
+from datetime import time as dtime
+_PREMARKT_SCORE_TIME   = dtime(9,  0)   # run conviction_scorer once before open
+_PREMARKT_SCORE_END    = dtime(9, 30)   # window closes at 9:30
+_OI_CLOSE_SNAP_TIME    = dtime(15, 25)  # save OI snapshot 5 min before close
+_NSE_COLLECT_TIME      = dtime(17, 30)  # collect FII participant data after publish
+_NSE_COLLECT_END       = dtime(18, 30)  # retry window closes at 6:30 PM
+
 
 class TradingBot:
 
@@ -107,6 +115,10 @@ class TradingBot:
         # Init options engine (connects Fyers client for chain fetching)
         from analysis.options_engine import options_engine
         options_engine.initialise()
+
+        # Init OI analyzer (same Fyers session, must come after broker init)
+        from analysis.oi_analyzer import oi_analyzer
+        oi_analyzer.initialise()
 
 
         # Step 2: Start data streams
@@ -159,16 +171,45 @@ class TradingBot:
         Fast loop (5s)  — position monitoring, stop/target hits
         Slow loop (60s) — full signal evaluation + intelligence pipeline
                         — also runs learning paper trades on every cycle
+
+        Timed hooks (run once per day at specific times):
+          09:00–09:30  conviction_scorer.score()   — pre-market F&O conviction
+          15:25        oi_analyzer.save_close_snapshot()
+          17:30–18:30  nse_participant_collector.collect()  — FII daily data
         """
         from learning_engine import learning_engine
         from commodity_options_learning import commodity_options
+        from analysis.oi_analyzer import oi_analyzer
+        from intelligence.conviction_scorer import conviction_scorer
+        from intelligence.nse_participant_collector import nse_participant_collector
 
-        last_slow_run      = 0
-        last_commodity_run = 0
+        last_slow_run        = 0
+        last_commodity_run   = 0
+        _conviction_scored_date  = None   # date when score was last computed
+        _oi_snap_saved_date      = None   # date when OI close snapshot was saved
+        _nse_collected_date      = None   # date when FII data was collected
 
         while self._running:
             try:
-                now = time.time()
+                now      = time.time()
+                now_ist  = datetime.now(tz=IST)
+                now_time = now_ist.time()
+                today    = now_ist.date()
+
+                # ── Pre-market conviction scoring (09:00–09:30 IST) ──
+                if (_PREMARKT_SCORE_TIME <= now_time <= _PREMARKT_SCORE_END
+                        and today != _conviction_scored_date
+                        and now_ist.weekday() < 5):
+                    try:
+                        result = conviction_scorer.score("BANKNIFTY")
+                        _conviction_scored_date = today
+                        logger.info(
+                            f"[Main] Conviction score: {result.score:+d} "
+                            f"{result.direction} — "
+                            f"{'TRADE DAY' if result.tradeable else 'no trade (below threshold)'}"
+                        )
+                    except Exception as e:
+                        logger.error(f"[Main] Conviction scorer error: {e}")
 
                 if self._is_market_hours():
                     # ── Fast loop — runs every 5 seconds ──────────
@@ -177,17 +218,59 @@ class TradingBot:
                     # ── Slow loop — runs every 60 seconds ─────────
                     if now - last_slow_run >= EVAL_INTERVAL_SECONDS:
                         last_slow_run = now
+
                         if strategy_selector._cycle_count % 10 == 0:
                             self._log_portfolio_snapshot()
-                        # Production strategies
+
+                        # Refresh OI analyzer (feeds conviction_scorer OI signal)
+                        try:
+                            oi_analyzer.refresh("BANKNIFTY")
+                            oi_analyzer.refresh("NIFTY")
+                        except Exception as e:
+                            logger.debug(f"[Main] OI analyzer refresh error: {e}")
+
+                        # Production strategies (institutional_momentum is highest priority)
                         strategy_selector.run_cycle()
+
                         # NSE learning paper trades — parallel, isolated
                         try:
                             learning_engine.run_cycle()
                         except Exception as le:
                             logger.debug(f"Learning cycle error: {le}")
+
+                    # ── OI close snapshot at 15:25 IST ────────────
+                    if (now_time >= _OI_CLOSE_SNAP_TIME
+                            and today != _oi_snap_saved_date
+                            and now_ist.weekday() < 5):
+                        try:
+                            oi_analyzer.save_close_snapshot()
+                            _oi_snap_saved_date = today
+                            logger.info("[Main] OI close snapshot saved")
+                        except Exception as e:
+                            logger.error(f"[Main] OI snapshot save error: {e}")
+
                 else:
                     logger.debug("Outside market hours — skipping.")
+
+                # ── NSE FII data collection at 17:30 IST ──────────
+                if (_NSE_COLLECT_TIME <= now_time <= _NSE_COLLECT_END
+                        and today != _nse_collected_date
+                        and now_ist.weekday() < 5):
+                    try:
+                        rows = nse_participant_collector.collect()
+                        _nse_collected_date = today
+                        if rows:
+                            score, reason = nse_participant_collector.get_fii_signal()
+                            logger.info(
+                                f"[Main] FII data collected: "
+                                f"net={rows[0].fii_net:+,} "
+                                f"change={rows[0].fii_net_change:+,} "
+                                f"signal={score:+d}"
+                            )
+                        else:
+                            logger.warning("[Main] FII data unavailable today (holiday?)")
+                    except Exception as e:
+                        logger.error(f"[Main] NSE collector error: {e}")
 
                 # Commodity options learning — separate 60s cadence,
                 # MCX hours gate is enforced internally in run_cycle()

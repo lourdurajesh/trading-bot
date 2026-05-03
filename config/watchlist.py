@@ -80,13 +80,14 @@ ALL_US_SYMBOLS  = US_EQUITIES + US_ETFS
 ALL_SYMBOLS     = ALL_NSE_SYMBOLS + ALL_US_SYMBOLS
 
 PRIORITY_SYMBOLS = [
+    "NSE:NIFTYBANK-INDEX",  # institutional momentum — evaluated first (preferred over NIFTY)
     "NSE:NIFTY50-INDEX",
     "NSE:RELIANCE-EQ",
     "NSE:HDFCBANK-EQ",
     "NSE:TCS-EQ",
     "NSE:SBIN-EQ",
     "NSE:INFY-EQ",
-    "NSE:TMPV-EQ",    # high volume, frequently at extremes
+    "NSE:TMPV-EQ",
     "NSE:TMCV-EQ",
     "NSE:BHARTIARTL-EQ",
 ]
