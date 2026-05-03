@@ -27,6 +27,7 @@ from config.settings import (
     MAX_OPTIONS_ALLOCATION_PCT,
     MAX_PORTFOLIO_HEAT,
     MIN_RISK_REWARD,
+    MIN_RISK_REWARD_OPTIONS,
     RISK_PER_TRADE_PCT,
     TOTAL_CAPITAL,
 )
@@ -91,9 +92,10 @@ class RiskManager:
             return RiskDecision(False, "Signal failed basic validity check")
 
         # ── 3. R:R check ──────────────────────────────────────────
-        rr = signal.calculate_rr()
-        if rr < MIN_RISK_REWARD:
-            return RiskDecision(False, f"R:R {rr:.1f} below minimum {MIN_RISK_REWARD}")
+        rr      = signal.calculate_rr()
+        min_rr  = MIN_RISK_REWARD_OPTIONS if signal.signal_type == SignalType.OPTIONS else MIN_RISK_REWARD
+        if rr < min_rr:
+            return RiskDecision(False, f"R:R {rr:.1f} below minimum {min_rr}")
 
         # ── 4. Max open positions ─────────────────────────────────
         if len(open_positions) >= MAX_OPEN_POSITIONS:

@@ -104,10 +104,19 @@ class Signal:
 
     def calculate_rr(self) -> float:
         """Calculate and store Risk:Reward ratio."""
-        risk   = abs(self.entry - self.stop_loss)
-        reward = abs(self.target_1 - self.entry)
+        risk = abs(self.entry - self.stop_loss)
         if risk == 0:
             return 0.0
+        if self.signal_type == SignalType.OPTIONS:
+            # For options, target_1 is an absolute profit amount (not a price level).
+            # Debit spreads:  entry=premium paid, stop_loss=exit premium at 50% loss,
+            #                 target_1=max_profit (absolute INR per unit).
+            # Credit spreads: entry=credit received, stop_loss=2× credit,
+            #                 target_1=credit × profit_target_pct.
+            # In both cases reward = target_1 directly (not |target_1 - entry|).
+            reward = self.target_1
+        else:
+            reward = abs(self.target_1 - self.entry)
         self.risk_reward = round(reward / risk, 2)
         return self.risk_reward
 

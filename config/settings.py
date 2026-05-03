@@ -131,11 +131,25 @@ OPTIONS_STRATEGY_CONFIG: dict = {
 # Minimum signal confidence (0.0 – 1.0) to pass to risk manager
 MIN_SIGNAL_CONFIDENCE = float(os.getenv("MIN_SIGNAL_CONFIDENCE", "0.65"))
 
+# ─────────────────────────────────────────
+# INSTITUTIONAL F&O — conviction-scored ATM options
+# ─────────────────────────────────────────
+
+# Minimum abs(score) to fire an institutional trade (-10 to +10 scale)
+# 7 = FII signal (3) + OI signal (2) + any 2 of the 3 remaining signals
+CONVICTION_THRESHOLD   = int(os.getenv("CONVICTION_THRESHOLD", "7"))
+
+# Max % of capital deployed in a single institutional trade (score 9-10 uses this)
+# Score 7-8 always uses 35%. Hard ceiling enforced by options_risk gate.
+MAX_FO_CAPITAL_PCT     = int(os.getenv("MAX_FO_CAPITAL_PCT", "50"))
+
 # Cooldown period (minutes) on a symbol after a losing trade
 SYMBOL_COOLDOWN_MINUTES = int(os.getenv("SYMBOL_COOLDOWN_MINUTES", "60"))
 
 # Minimum Risk:Reward ratio — signals below this are discarded
-MIN_RISK_REWARD = float(os.getenv("MIN_RISK_REWARD", "1.5"))
+MIN_RISK_REWARD         = float(os.getenv("MIN_RISK_REWARD",         "1.5"))
+# Separate threshold for options signals (debit/credit spreads have different R:R profiles)
+MIN_RISK_REWARD_OPTIONS = float(os.getenv("MIN_RISK_REWARD_OPTIONS", "0.8"))
 
 # ─────────────────────────────────────────
 # TIMEFRAMES (used by data_store + strategies)

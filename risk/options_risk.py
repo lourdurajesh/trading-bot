@@ -125,7 +125,12 @@ class OptionsRiskGate:
         if lot_size <= 0:
             lot_size = 1
 
-        lots, cap_used = self._calculate_lots(premium, lot_size, capital)
+        if strategy_type == "institutional_momentum":
+            # Institutional trades use conviction-based capital deployment (35-50%),
+            # not the standard 1.5% risk budget — lot count is pre-computed by strategy.
+            lots, cap_used = self._calculate_institutional_lots(signal, premium, lot_size, capital)
+        else:
+            lots, cap_used = self._calculate_lots(premium, lot_size, capital)
 
         if lots <= 0:
             return False, "Lot calculation resulted in zero lots — premium too large for budget", 0
@@ -189,6 +194,28 @@ class OptionsRiskGate:
     # ─────────────────────────────────────────────────────────────
     # INTERNAL
     # ─────────────────────────────────────────────────────────────
+
+    def _calculate_institutional_lots(
+        self, signal, premium: float, lot_size: int, capital: float
+    ) -> tuple[int, float]:
+        """
+        Institutional momentum sizing: deploy capital_pct% of total capital.
+        Lots pre-computed by institutional_momentum.py, validated here against hard cap.
+        Hard cap: never exceed MAX_FO_CAPITAL_PCT% regardless of score.
+        """
+        from config.settings import MAX_FO_CAPITAL_PCT
+        meta              = signal.options_meta or {}
+        requested_lots    = int(meta.get("institutional_lots", 1))
+        cost_per_lot      = premium * lot_size
+        if cost_per_lot <= 0:
+            return 0, 0.0
+
+        max_cap           = capital * MAX_FO_CAPITAL_PCT / 100
+        max_lots_by_cap   = int(max_cap / cost_per_lot)
+        lots              = min(requested_lots, max_lots_by_cap)
+        lots              = max(1, lots)   # at least 1 lot if approved
+        capital_used      = round(lots * cost_per_lot, 2)
+        return lots, capital_used
 
     def _calculate_lots(
         self, premium: float, lot_size: int, capital: float

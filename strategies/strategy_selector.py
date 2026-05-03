@@ -27,6 +27,7 @@ from strategies.mean_reversion import MeanReversionStrategy
 from strategies.options_income import OptionsIncomeStrategy
 from strategies.directional_options import DirectionalOptionsStrategy
 from strategies.iron_condor import IronCondorStrategy
+from strategies.institutional_momentum import InstitutionalMomentumStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class StrategySelector:
         self._opt_income   = OptionsIncomeStrategy()
         self._opt_direct   = DirectionalOptionsStrategy()
         self._iron_condor  = IronCondorStrategy()
+        self._institutional = InstitutionalMomentumStrategy()
 
         # Thread pool for parallel options strategy evaluation.
         # Options strategies block on Fyers chain API calls — running them
@@ -184,11 +186,12 @@ class StrategySelector:
         return {
             "cycle_count":        self._cycle_count,
             "strategies_enabled": {
-                "trend_follow":        self._trend.enabled,
-                "mean_reversion":      self._reversion.enabled,
-                "options_income":      self._opt_income.enabled,
-                "directional_options": self._opt_direct.enabled,
-                "iron_condor":         self._iron_condor.enabled,
+                "institutional_momentum": self._institutional.enabled,
+                "trend_follow":           self._trend.enabled,
+                "mean_reversion":         self._reversion.enabled,
+                "options_income":         self._opt_income.enabled,
+                "directional_options":    self._opt_direct.enabled,
+                "iron_condor":            self._iron_condor.enabled,
             },
             "symbols_on_cooldown": len([
                 s for s, exp in self._cooldowns.items()
@@ -255,6 +258,15 @@ class StrategySelector:
         if portfolio_tracker.has_open_position(symbol):
             return None
 
+        # ── INSTITUTIONAL override — highest priority ─────────────
+        # Check conviction_scorer before regime routing.
+        # On high-conviction days (score >= 7), institutional_momentum overrides
+        # all other strategies for BANKNIFTY and NIFTY index symbols.
+        if symbol in ("NSE:NIFTYBANK-INDEX", "NSE:NIFTY50-INDEX"):
+            signal = self._try_strategy(self._institutional, symbol)
+            if signal:
+                return signal
+
         # Get regime
         regime_result = regime_detector.get_regime(symbol, "1H")
         regime = regime_result.regime
@@ -276,23 +288,17 @@ class StrategySelector:
             signal = self._try_strategy(self._reversion, symbol)
             if signal:
                 return signal
-            # Premium-selling strategies in parallel — both hit the chain, benefit from concurrency
-            return self._evaluate_options_parallel(
-                symbol, [self._opt_income, self._iron_condor]
-            )
+            # IronCondor disabled: 3-year backtest shows win rate of 1% on index regimes —
+            # indices almost never stay in a tight ±2% range for a full 30-day cycle.
+            return self._evaluate_options_parallel(symbol, [self._opt_income])
 
         if regime == Regime.VOLATILE:
             # Directional debit spread (indices only) — options are cheap in volatile markets.
-            # Previously this path was a deadlock: strategy_selector sent VOLATILE to
-            # directional_options, but that strategy then also checked regime != VOLATILE
-            # and returned None immediately. The internal regime check is now relaxed.
             signal = self._evaluate_options_parallel(symbol, [self._opt_direct])
             if signal:
                 return signal
-            # Also try premium-selling — high IV in volatile regimes is ideal for condors.
-            return self._evaluate_options_parallel(
-                symbol, [self._opt_income, self._iron_condor]
-            )
+            # IronCondor disabled — see RANGING comment above.
+            return self._evaluate_options_parallel(symbol, [self._opt_income])
 
         return None
 
