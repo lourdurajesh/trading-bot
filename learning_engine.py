@@ -37,6 +37,7 @@ class LearningEngine:
     def __init__(self):
         self._open_positions: dict[str, dict] = {}  # symbol+strategy → trade
         self._init_db()
+        self._restore_open_positions()
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC — called from main loop
@@ -94,6 +95,8 @@ class LearningEngine:
             "metadata":     signal.get("metadata", {}),
             "entry_time":   now_str,
             "status":       "OPEN",
+            "mae_pts":      0.0,
+            "mfe_pts":      0.0,
         }
 
         self._open_positions[key] = trade
@@ -120,6 +123,16 @@ class LearningEngine:
             exit_reason = None
             exit_price  = None
 
+            # Update MAE/MFE using current LTP
+            if direction == "LONG":
+                adverse    = entry - ltp
+                favourable = ltp - entry
+            else:
+                adverse    = ltp - entry
+                favourable = entry - ltp
+            trade["mae_pts"] = max(trade["mae_pts"], adverse)
+            trade["mfe_pts"] = max(trade["mfe_pts"], favourable)
+
             if direction == "LONG":
                 if ltp <= stop:
                     exit_reason, exit_price = "STOP",   ltp
@@ -141,7 +154,10 @@ class LearningEngine:
             if exit_reason:
                 pnl_pts = (exit_price - entry) if direction == "LONG" else (entry - exit_price)
                 pnl_r   = round(pnl_pts / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
-                self._db_close(trade["id"], exit_price, exit_reason, pnl_pts, pnl_r)
+                self._db_close(
+                    trade["id"], exit_price, exit_reason, pnl_pts, pnl_r,
+                    trade["mae_pts"], trade["mfe_pts"],
+                )
                 closed_keys.append(key)
                 logger.info(
                     f"[Learning] CLOSE {trade['id']} | {exit_reason} @ {exit_price:.2f} "
@@ -174,10 +190,38 @@ class LearningEngine:
                     exit_reason  TEXT DEFAULT '',
                     entry_time   TEXT,
                     exit_time    TEXT DEFAULT '',
-                    metadata     TEXT DEFAULT '{}'
+                    metadata     TEXT DEFAULT '{}',
+                    mae_pts      REAL DEFAULT 0,
+                    mfe_pts      REAL DEFAULT 0
                 )
             """)
+            # Safe migration for pre-existing tables
+            for col in ("mae_pts", "mfe_pts"):
+                try:
+                    conn.execute(f"ALTER TABLE learning_trades ADD COLUMN {col} REAL DEFAULT 0")
+                except Exception:
+                    pass
         logger.info("[Learning] DB table ready")
+
+    def _restore_open_positions(self) -> None:
+        """Reload OPEN positions from DB into memory — prevents duplicates across restarts."""
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM learning_trades WHERE status='OPEN'"
+            ).fetchall()
+        for r in rows:
+            trade = dict(r)
+            try:
+                trade["metadata"] = json.loads(trade.get("metadata") or "{}")
+            except Exception:
+                trade["metadata"] = {}
+            trade["mae_pts"] = trade.get("mae_pts") or 0.0
+            trade["mfe_pts"] = trade.get("mfe_pts") or 0.0
+            key = f"{trade['symbol']}:{trade['strategy']}"
+            self._open_positions[key] = trade
+        if self._open_positions:
+            logger.info(f"[Learning] Restored {len(self._open_positions)} open positions from DB")
 
     def _db_insert(self, trade: dict) -> None:
         with sqlite3.connect(DB_PATH) as conn:
@@ -197,17 +241,19 @@ class LearningEngine:
     def _db_close(
         self, trade_id: str, exit_price: float,
         exit_reason: str, pnl_pts: float, pnl_r: float,
+        mae_pts: float = 0.0, mfe_pts: float = 0.0,
     ) -> None:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
                 UPDATE learning_trades
                 SET exit_price=?, exit_reason=?, pnl_pts=?, pnl_r=?,
-                    status='CLOSED', exit_time=?
+                    status='CLOSED', exit_time=?, mae_pts=?, mfe_pts=?
                 WHERE id=?
             """, (
                 exit_price, exit_reason,
                 round(pnl_pts, 2), round(pnl_r, 2),
                 datetime.now(tz=IST).isoformat(),
+                round(mae_pts, 2), round(mfe_pts, 2),
                 trade_id,
             ))
 

@@ -32,7 +32,7 @@ _MARKET_CLOSE   = dtime(15, 15)   # exit 15 min before close
 RSI_OVERSOLD    = 35
 RSI_OVERBOUGHT  = 65
 ATR_STOP_MULT   = 1.5
-TARGET_R        = 2.0
+TARGET_R        = 1.0
 TIMEFRAME       = "15m"
 MIN_BARS        = 30
 
@@ -73,6 +73,12 @@ class SimpleRSIStrategy:
             direction = "SHORT"
 
         if not direction:
+            return None
+
+        # Trend filter: only trade with the EMA21/EMA50 trend
+        if direction == "LONG" and ema21_val < ema50_val:
+            return None
+        if direction == "SHORT" and ema21_val > ema50_val:
             return None
 
         if direction == "LONG":

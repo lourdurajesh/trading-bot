@@ -330,24 +330,24 @@ class TradingBot:
 
     def _is_market_hours(self) -> bool:
         """
-        Returns True only during NSE trading hours (09:15 – 15:30 IST).
-        Simple time-based check — extend with holiday calendar if needed.
+        Returns True only during NSE trading hours (09:15 – 15:30 IST)
+        on non-weekend, non-holiday days.
         """
         from datetime import time as dtime
-        now_ist = datetime.now(tz=IST)   # always IST regardless of server timezone
+        from config.market_holidays import is_trading_holiday
+        now_ist = datetime.now(tz=IST)
         current_time = now_ist.time()
         weekday = now_ist.weekday()   # 0=Mon … 6=Sun
 
-        if weekday >= 5:   # weekend
+        if weekday >= 5:
             return False
 
-        # NSE hours: 09:15 – 15:30 IST
+        if is_trading_holiday(now_ist.date()):
+            return False
+
         nse_open  = dtime(9, 15)
         nse_close = dtime(15, 30)
-        if nse_open <= current_time <= nse_close:
-            return True
-
-        return False
+        return nse_open <= current_time <= nse_close
 
     def _log_portfolio_snapshot(self) -> None:
         """Log a brief portfolio status every 10 cycles."""

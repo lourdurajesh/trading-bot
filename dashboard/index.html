@@ -277,7 +277,7 @@ function App() {
             <tr>
               <th>Symbol</th><th>Strategy</th><th>Dir</th>
               <th>Entry</th><th>Exit</th><th>SL</th><th>Target</th>
-              <th>P&L (R)</th><th>Reason</th><th>Status</th>
+              <th>P&L (R)</th><th>MAE</th><th>MFE</th><th>Reason</th><th>Status</th>
             </tr>
           </thead>
           <tbody>
@@ -293,6 +293,8 @@ function App() {
                   <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.stop_loss||0).toFixed(2)}</td>
                   <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.target||0).toFixed(2)}</td>
                   <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{t.status==="OPEN"?"open":fmtR(r)}</td>
+                  <td style={{fontFamily:"monospace",color:"#fca5a5",fontSize:10}}>{(t.mae_pts||0)>0?`-${(t.mae_pts||0).toFixed(2)}`:"—"}</td>
+                  <td style={{fontFamily:"monospace",color:"#86efac",fontSize:10}}>{(t.mfe_pts||0)>0?`+${(t.mfe_pts||0).toFixed(2)}`:"—"}</td>
                   <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
                   <td><span className={`badge ${t.status==="OPEN"?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
                 </tr>
