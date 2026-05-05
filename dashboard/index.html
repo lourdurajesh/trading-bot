@@ -277,12 +277,19 @@ function App() {
             <tr>
               <th>Symbol</th><th>Strategy</th><th>Dir</th>
               <th>Entry</th><th>Exit</th><th>SL</th><th>Target</th>
-              <th>P&L (R)</th><th>MAE</th><th>MFE</th><th>Reason</th><th>Status</th>
+              <th>Pts/share</th><th>P&L (R)</th><th>MAE</th><th>MFE</th><th>Reason</th><th>Status</th>
             </tr>
           </thead>
           <tbody>
             {trades.map(t=>{
-              const r = t.pnl_r||0;
+              const r    = t.pnl_r||0;
+              const pts  = t.pnl_pts||0;
+              const open = t.status==="OPEN";
+              const livePts = open && t.entry_price
+                ? (t.direction==="LONG"
+                    ? ((t.ltp||t.entry_price) - t.entry_price)
+                    : (t.entry_price - (t.ltp||t.entry_price)))
+                : null;
               return (
                 <tr key={t.id}>
                   <td className="sym">{(t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","")}</td>
@@ -292,11 +299,14 @@ function App() {
                   <td style={{fontFamily:"monospace"}}>{t.exit_price ? t.exit_price.toFixed(2) : "—"}</td>
                   <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.stop_loss||0).toFixed(2)}</td>
                   <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.target||0).toFixed(2)}</td>
-                  <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{t.status==="OPEN"?"open":fmtR(r)}</td>
+                  <td className={open?"neutral-cell":pts>0?"good":pts<0?"bad":"neutral-cell"} style={{fontFamily:"monospace"}}>
+                    {open ? "open" : `${pts>=0?"+":""}${pts.toFixed(2)}`}
+                  </td>
+                  <td className={open?"neutral-cell":r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{open?"open":fmtR(r)}</td>
                   <td style={{fontFamily:"monospace",color:"#fca5a5",fontSize:10}}>{(t.mae_pts||0)>0?`-${(t.mae_pts||0).toFixed(2)}`:"—"}</td>
                   <td style={{fontFamily:"monospace",color:"#86efac",fontSize:10}}>{(t.mfe_pts||0)>0?`+${(t.mfe_pts||0).toFixed(2)}`:"—"}</td>
                   <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
-                  <td><span className={`badge ${t.status==="OPEN"?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
+                  <td><span className={`badge ${open?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
                 </tr>
               );
             })}
