@@ -468,6 +468,150 @@ class PaperTradingEngine:
         self._credit(max(0.0, capital_deployed + pnl))
         return pnl
 
+    # ─────────────────────────────────────────────────────────────
+    # LEARNING MIRROR — every learning trade also becomes a paper trade
+    # ─────────────────────────────────────────────────────────────
+
+    def mirror_learning_open(self, trade: dict) -> Optional[str]:
+        """
+        Called by LearningEngine when it opens a trade.
+        Mirrors it to paper_trades using a 1% risk position-sizing rule.
+        Returns the paper trade ID, or None if capital is insufficient.
+
+        Position sizing: risk 1% of current paper balance.
+          stop_distance = abs(entry - stop_loss)
+          qty = int(risk_amount / stop_distance)  (min 1)
+          capital_deployed = qty * entry * 0.25   (25% intraday margin)
+        """
+        if not self._active:
+            return None
+
+        symbol    = trade.get("symbol", "")
+        direction = trade.get("direction", "LONG")
+        entry     = float(trade.get("entry_price", 0))
+        stop      = float(trade.get("stop_loss", 0))
+
+        if entry <= 0 or stop <= 0:
+            return None
+
+        stop_dist = abs(entry - stop)
+        if stop_dist < 0.01:
+            return None
+
+        balance      = self.get_balance()
+        risk_amount  = balance * 0.01           # 1% risk of remaining capital
+        qty          = max(1, int(risk_amount / stop_dist))
+        capital_req  = qty * entry * 0.25       # 25% intraday margin
+
+        if not self.can_trade(capital_req):
+            logger.info(
+                f"[PaperTrading] Mirror SKIP {symbol}: insufficient capital "
+                f"(balance ₹{balance:,.0f}, required ₹{capital_req:,.0f})"
+            )
+            return None
+
+        order_id  = f"PAPER-LRN-{trade.get('id', 'UNKNOWN')[-8:]}"
+        now_str   = datetime.now(tz=IST).isoformat()
+
+        self._deduct(capital_req)
+
+        logger.info(
+            f"[PaperTrading] MIRROR {direction} {symbol} × {qty} "
+            f"@ ₹{entry:.2f} | Cap ₹{capital_req:,.0f} | Wallet ₹{self.get_balance():,.0f} "
+            f"| {order_id}"
+        )
+
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute("""
+                    INSERT OR IGNORE INTO paper_trades
+                    (id, symbol, strategy, direction, entry_price, stop_loss,
+                     target_1, position_size, capital_at_risk, capital_deployed,
+                     status, entry_time)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    order_id,
+                    symbol,
+                    trade.get("strategy", "Learning"),
+                    direction,
+                    entry,
+                    stop,
+                    float(trade.get("target", entry)),
+                    qty,
+                    round(risk_amount, 2),
+                    round(capital_req, 2),
+                    "OPEN",
+                    now_str,
+                ))
+        except Exception as e:
+            logger.warning(f"[PaperTrading] mirror_learning_open DB error: {e}")
+            self._credit(capital_req)   # undo deduction on failure
+            return None
+
+        return order_id
+
+    def mirror_learning_close(
+        self,
+        learning_id:  str,
+        exit_price:   float,
+        reason:       str,
+    ) -> float:
+        """
+        Called by LearningEngine when it closes a trade.
+        Looks up the mirrored paper trade by learning_id suffix and closes it.
+        Returns realised P&L (0 if no mirrored trade found).
+        """
+        if not self._active:
+            return 0.0
+
+        paper_id = f"PAPER-LRN-{learning_id[-8:]}"
+
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT * FROM paper_trades WHERE id=? AND status='OPEN'",
+                    (paper_id,)
+                ).fetchone()
+
+                if not row:
+                    return 0.0
+
+                entry            = float(row["entry_price"])
+                size             = int(row["position_size"])
+                capital_deployed = float(row["capital_deployed"] or 0)
+                direction        = row["direction"]
+
+                if direction == "LONG":
+                    gross_pnl = (exit_price - entry) * size
+                else:
+                    gross_pnl = (entry - exit_price) * size
+
+                brokerage = (entry + exit_price) * size * BROKERAGE_PCT / 100
+                pnl       = round(gross_pnl - brokerage, 2)
+
+                conn.execute("""
+                    UPDATE paper_trades
+                    SET status='CLOSED', exit_price=?, realised_pnl=?,
+                        exit_reason=?, exit_time=?
+                    WHERE id=?
+                """, (
+                    exit_price, pnl, reason,
+                    datetime.now(tz=IST).isoformat(),
+                    paper_id,
+                ))
+
+            self._credit(max(0.0, capital_deployed + pnl))
+            logger.info(
+                f"[PaperTrading] MIRROR CLOSE {paper_id} @ ₹{exit_price:.2f} "
+                f"| P&L ₹{pnl:+,.0f} | {reason} | Wallet ₹{self.get_balance():,.0f}"
+            )
+            return pnl
+
+        except Exception as e:
+            logger.warning(f"[PaperTrading] mirror_learning_close error: {e}")
+            return 0.0
+
     def _send_alert(self, message: str) -> None:
         try:
             from notifications.alert_service import alert_service

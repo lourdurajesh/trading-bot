@@ -73,6 +73,18 @@
     .bt-table .good{color:#22c55e}
     .bt-table .bad{color:#ef4444}
     .paper-banner{background:#3b2f0a;border:1px solid #f59e0b44;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#fcd34d;display:flex;align-items:center;gap:8px}
+    /* ── System alerts ── */
+    .sys-alert-bar{margin-bottom:14px;display:flex;flex-direction:column;gap:6px}
+    .sys-alert{display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-radius:8px;font-size:12px}
+    .sys-alert.warning{background:#2d2200;border:1px solid #f59e0b55;color:#fcd34d}
+    .sys-alert.error{background:#1f0a0a;border:1px solid #ef444455;color:#fca5a5}
+    .sys-alert.critical{background:#1a0505;border:2px solid #ef4444;color:#ff6b6b;animation:pulse 2s infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
+    .sys-alert-icon{font-size:16px;flex-shrink:0;margin-top:1px}
+    .sys-alert-body{flex:1}
+    .sys-alert-title{font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+    .sys-alert-msg{color:inherit;opacity:.85}
+    .sys-alert-meta{font-size:10px;opacity:.55;margin-top:4px}
 
     /* ── Signal health widget ── */
     .health-banner{border-radius:8px;padding:12px 16px;margin-bottom:14px;display:flex;align-items:flex-start;gap:14px;font-size:12px}
@@ -123,6 +135,195 @@ const fmtR = r => {
 const droughtColor = s => ({OK:"#22c55e",CAUTION:"#f59e0b",WARNING:"#f97316",CRITICAL:"#ef4444"}[s]||"#94a3b8");
 const outcomeLabel = b => ({strong_win:"Strong Win",small_win:"Small Win",scratch:"Scratch",small_loss:"Small Loss",large_loss:"Large Loss"}[b]||b);
 
+/* ─────────────────────────────────────────────────────────────
+   LearningTradesTable — standalone component.
+   Filter/sort state lives HERE, not in App, so App re-renders
+   (from the 2 s WS tick) never unmount this component or steal
+   focus from a date picker / text input.
+   React.memo prevents re-renders unless the trades array changes.
+───────────────────────────────────────────────────────────── */
+const LearningTradesTable = React.memo(function LearningTradesTable({trades, showControls}) {
+  const [filterSym,    setFilterSym]    = React.useState("");
+  const [filterStrat,  setFilterStrat]  = React.useState("all");
+  const [filterDir,    setFilterDir]    = React.useState("all");
+  const [filterStatus, setFilterStatus] = React.useState("all");
+  const [filterDate,   setFilterDate]   = React.useState("");
+  const [sortCol,      setSortCol]      = React.useState("entry_time");
+  const [sortAsc,      setSortAsc]      = React.useState(false);
+
+  if (!trades || !trades.length) return <div className="empty">No learning trades yet</div>;
+
+  const strategies = ["all", ...Array.from(new Set(trades.map(t=>t.strategy).filter(Boolean)))];
+
+  let rows = trades.filter(t => {
+    const sym = (t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","");
+    if (filterSym    && !sym.toLowerCase().includes(filterSym.toLowerCase())) return false;
+    if (filterStrat  !== "all" && t.strategy !== filterStrat) return false;
+    if (filterDir    !== "all" && t.direction !== filterDir)  return false;
+    if (filterStatus !== "all" && t.status    !== filterStatus) return false;
+    if (filterDate) {
+      const d = (t.entry_time||"").slice(0,10);
+      if (d !== filterDate) return false;
+    }
+    return true;
+  });
+
+  const numCols = new Set(["entry_price","exit_price","stop_loss","target","pnl_pts","pnl_r","mae_pts","mfe_pts"]);
+  rows = [...rows].sort((a, b) => {
+    let va = a[sortCol] ?? "", vb = b[sortCol] ?? "";
+    if (numCols.has(sortCol)) { va = Number(va)||0; vb = Number(vb)||0; }
+    else { va = String(va); vb = String(vb); }
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ?  1 : -1;
+    return 0;
+  });
+
+  function SortTh({col, label}) {
+    const active = sortCol === col;
+    return (
+      <th style={{cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"}}
+          onClick={()=>{ if(active) setSortAsc(p=>!p); else { setSortCol(col); setSortAsc(true); } }}>
+        {label} {active ? (sortAsc ? "↑" : "↓") : <span style={{opacity:0.3}}>↕</span>}
+      </th>
+    );
+  }
+
+  const inputStyle = {
+    background:"#0f1623", border:"1px solid #1e2433", borderRadius:4,
+    color:"#e2e8f0", padding:"3px 7px", fontSize:11
+  };
+
+  return (
+    <div>
+      {showControls !== false && (
+        <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10,alignItems:"center"}}>
+          <input
+            type="text" placeholder="Symbol…" value={filterSym}
+            onChange={e=>setFilterSym(e.target.value)}
+            style={{...inputStyle, width:110}}
+          />
+          <select value={filterStrat} onChange={e=>setFilterStrat(e.target.value)} style={inputStyle}>
+            {strategies.map(s=><option key={s} value={s}>{s==="all"?"All strategies":s}</option>)}
+          </select>
+          <select value={filterDir} onChange={e=>setFilterDir(e.target.value)} style={inputStyle}>
+            <option value="all">All dirs</option>
+            <option value="LONG">LONG</option>
+            <option value="SHORT">SHORT</option>
+          </select>
+          <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={inputStyle}>
+            <option value="all">All status</option>
+            <option value="OPEN">OPEN</option>
+            <option value="CLOSED">CLOSED</option>
+          </select>
+          <input
+            type="date" value={filterDate}
+            onChange={e=>setFilterDate(e.target.value)}
+            style={{...inputStyle, colorScheme:"dark"}}
+          />
+          {(filterSym||filterStrat!=="all"||filterDir!=="all"||filterStatus!=="all"||filterDate) && (
+            <button style={{...inputStyle,cursor:"pointer",color:"#f59e0b"}}
+              onClick={()=>{setFilterSym("");setFilterStrat("all");setFilterDir("all");setFilterStatus("all");setFilterDate("");}}>
+              ✕ Clear
+            </button>
+          )}
+          <span style={{marginLeft:"auto",color:"#475569",fontSize:11}}>{rows.length} / {trades.length} rows</span>
+        </div>
+      )}
+      <div style={{overflowX:"auto"}}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <SortTh col="symbol"      label="Symbol"/>
+              <SortTh col="strategy"    label="Strategy"/>
+              <SortTh col="direction"   label="Dir"/>
+              <SortTh col="entry_time"  label="Date"/>
+              <SortTh col="entry_price" label="Entry"/>
+              <SortTh col="exit_price"  label="Exit"/>
+              <SortTh col="stop_loss"   label="SL"/>
+              <SortTh col="target"      label="Target"/>
+              <SortTh col="pnl_pts"     label="Pts"/>
+              <SortTh col="pnl_r"       label="P&L (R)"/>
+              <SortTh col="mae_pts"     label="MAE"/>
+              <SortTh col="mfe_pts"     label="MFE"/>
+              <SortTh col="exit_reason" label="Reason"/>
+              <SortTh col="status"      label="Status"/>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(t=>{
+              const r    = t.pnl_r||0;
+              const pts  = t.pnl_pts||0;
+              const open = t.status==="OPEN";
+              const dateStr = (t.entry_time||"").slice(0,10);
+              return (
+                <tr key={t.id}>
+                  <td className="sym">{(t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","")}</td>
+                  <td style={{color:"#93c5fd",fontSize:10}}>{t.strategy}</td>
+                  <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
+                  <td style={{color:"#64748b",fontSize:10}}>{dateStr}</td>
+                  <td style={{fontFamily:"monospace"}}>{(t.entry_price||0).toFixed(2)}</td>
+                  <td style={{fontFamily:"monospace"}}>{t.exit_price ? t.exit_price.toFixed(2) : "—"}</td>
+                  <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.stop_loss||0).toFixed(2)}</td>
+                  <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.target||0).toFixed(2)}</td>
+                  <td className={open?"neutral-cell":pts>0?"good":pts<0?"bad":"neutral-cell"} style={{fontFamily:"monospace"}}>
+                    {open ? "open" : `${pts>=0?"+":""}${pts.toFixed(2)}`}
+                  </td>
+                  <td className={open?"neutral-cell":r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{open?"open":fmtR(r)}</td>
+                  <td style={{fontFamily:"monospace",color:"#fca5a5",fontSize:10}}>{(t.mae_pts||0)>0?`-${(t.mae_pts||0).toFixed(2)}`:"—"}</td>
+                  <td style={{fontFamily:"monospace",color:"#86efac",fontSize:10}}>{(t.mfe_pts||0)>0?`+${(t.mfe_pts||0).toFixed(2)}`:"—"}</td>
+                  <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
+                  <td><span className={`badge ${open?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+});
+
+/* ── Learning review by outcome (standalone — derives groups from trades prop) ── */
+const LearningReviewView = React.memo(function LearningReviewView({trades}) {
+  if (!trades) return <div className="empty">Loading...</div>;
+  const closed = trades.filter(t=>t.status==="CLOSED");
+
+  function bucket(r) {
+    if (r >= 2.0)  return "strong_win";
+    if (r > 0)     return "small_win";
+    if (r >= -0.5) return "scratch";
+    if (r >= -1.0) return "small_loss";
+    return "large_loss";
+  }
+
+  const buckets = ["strong_win","small_win","scratch","small_loss","large_loss"];
+  const byOutcome = {};
+  for (const t of closed) {
+    const b = bucket(t.pnl_r||0);
+    if (!byOutcome[b]) byOutcome[b] = [];
+    byOutcome[b].push(t);
+  }
+
+  return (
+    <div>
+      {buckets.map(b => {
+        const bTrades = byOutcome[b] || [];
+        if (!bTrades.length) return null;
+        return (
+          <div key={b} style={{marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+              <span className={`outcome-${b}`} style={{fontWeight:600,fontSize:13}}>{outcomeLabel(b)}</span>
+              <span style={{color:"#475569",fontSize:11}}>{bTrades.length} trade{bTrades.length!==1?"s":""}</span>
+            </div>
+            <LearningTradesTable trades={bTrades.slice(0,10)} showControls={false}/>
+          </div>
+        );
+      })}
+      {!closed.length && <div className="empty">No closed trades to review yet</div>}
+    </div>
+  );
+});
+
 function App() {
   const [data, setData]               = React.useState(null);
   const [wsOk, setWsOk]               = React.useState(false);
@@ -134,23 +335,16 @@ function App() {
   const [paperStats, setPaperStats]   = React.useState(null);
   const [paperPos, setPaperPos]       = React.useState([]);
 
+  /* system alerts */
+  const [sysAlerts, setSysAlerts]     = React.useState([]);
+
   /* signal health */
   const [drought, setDrought]         = React.useState(null);
 
-  /* learning */
+  /* learning — data pushed via WS when trades change; filters live inside LearningTradesTable */
   const [learnStats, setLearnStats]   = React.useState(null);
   const [learnTrades, setLearnTrades] = React.useState([]);
-  const [learnReview, setLearnReview] = React.useState(null);
   const [learnSubTab, setLearnSubTab] = React.useState("trades");
-
-  /* learning filters */
-  const [lrnFilterSym,    setLrnFilterSym]    = React.useState("");
-  const [lrnFilterStrat,  setLrnFilterStrat]  = React.useState("all");
-  const [lrnFilterDir,    setLrnFilterDir]    = React.useState("all");
-  const [lrnFilterStatus, setLrnFilterStatus] = React.useState("all");
-  const [lrnFilterDate,   setLrnFilterDate]   = React.useState("");
-  const [lrnSortCol,      setLrnSortCol]      = React.useState("entry_time");
-  const [lrnSortAsc,      setLrnSortAsc]      = React.useState(false);
 
   /* commodity */
   const [commStats, setCommStats]     = React.useState(null);
@@ -167,7 +361,18 @@ function App() {
       ws.onopen    = () => setWsOk(true);
       ws.onclose   = () => { setWsOk(false); setTimeout(connect, 3000); };
       ws.onerror   = () => setWsOk(false);
-      ws.onmessage = e => { try { setData(JSON.parse(e.data)); } catch{} };
+      ws.onmessage = e => {
+        try {
+          const d = JSON.parse(e.data);
+          setData(d);
+          if (Array.isArray(d.system_alerts)) setSysAlerts(d.system_alerts);
+          // Learning data only arrives when trades actually changed (server-side diff)
+          if (d.learning) {
+            setLearnTrades(d.learning.trades || []);
+            setLearnStats(d.learning.stats   || null);
+          }
+        } catch{}
+      };
     }
     connect();
     return () => ws && ws.close();
@@ -202,24 +407,18 @@ function App() {
     };
     const loadDrought = () =>
       fetch(`${API}/signals/drought`).then(r=>r.json()).then(setDrought).catch(()=>{});
-    const loadLearn = () => {
-      fetch(`${API}/learning/stats`).then(r=>r.json()).then(setLearnStats).catch(()=>{});
-      fetch(`${API}/learning/trades?limit=100`).then(r=>r.json()).then(d=>setLearnTrades(d.trades||[])).catch(()=>{});
-      fetch(`${API}/learning/review`).then(r=>r.json()).then(setLearnReview).catch(()=>{});
-    };
     const loadComm = () => {
       fetch(`${API}/commodity/stats`).then(r=>r.json()).then(setCommStats).catch(()=>{});
       fetch(`${API}/commodity/trades?limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});
     };
 
-    loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadLearn(); loadComm();
+    loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadComm();
 
     const t1 = setInterval(loadServices, 15000);
     const t2 = setInterval(loadPaper,    5000);
     const t3 = setInterval(loadDrought,  60000);
-    const t4 = setInterval(loadLearn,    30000);
     const t5 = setInterval(loadComm,     60000);
-    return () => [t1,t2,t3,t4,t5].forEach(clearInterval);
+    return () => [t1,t2,t3,t5].forEach(clearInterval);
   }, []);
 
   const switchMode = m => fetch(`${API}/mode/${m}`, {method:"POST"});
@@ -271,168 +470,6 @@ function App() {
             </div>
           ))}
         </div>
-      </div>
-    );
-  }
-
-  /* ── learning trades table (with filter/sort controls) ── */
-  function LearningTradesTable({trades, showControls}) {
-    if (!trades.length) return <div className="empty">No learning trades yet</div>;
-
-    /* derive filter options from the dataset passed in */
-    const strategies = ["all", ...Array.from(new Set(trades.map(t=>t.strategy).filter(Boolean)))];
-
-    /* apply filters */
-    let rows = trades.filter(t => {
-      const sym = (t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","");
-      if (lrnFilterSym    && !sym.toLowerCase().includes(lrnFilterSym.toLowerCase())) return false;
-      if (lrnFilterStrat  !== "all" && t.strategy !== lrnFilterStrat) return false;
-      if (lrnFilterDir    !== "all" && t.direction !== lrnFilterDir)  return false;
-      if (lrnFilterStatus !== "all" && t.status    !== lrnFilterStatus) return false;
-      if (lrnFilterDate) {
-        const d = (t.entry_time||"").slice(0,10);
-        if (d !== lrnFilterDate) return false;
-      }
-      return true;
-    });
-
-    /* sort */
-    const numCols = new Set(["entry_price","exit_price","stop_loss","target","pnl_pts","pnl_r","mae_pts","mfe_pts"]);
-    rows = [...rows].sort((a, b) => {
-      let va = a[lrnSortCol] ?? "", vb = b[lrnSortCol] ?? "";
-      if (numCols.has(lrnSortCol)) { va = Number(va)||0; vb = Number(vb)||0; }
-      else { va = String(va); vb = String(vb); }
-      if (va < vb) return lrnSortAsc ? -1 : 1;
-      if (va > vb) return lrnSortAsc ?  1 : -1;
-      return 0;
-    });
-
-    function SortTh({col, label}) {
-      const active = lrnSortCol === col;
-      return (
-        <th style={{cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"}}
-            onClick={()=>{ if(active) setLrnSortAsc(p=>!p); else { setLrnSortCol(col); setLrnSortAsc(true); } }}>
-          {label} {active ? (lrnSortAsc ? "↑" : "↓") : <span style={{opacity:0.3}}>↕</span>}
-        </th>
-      );
-    }
-
-    const inputStyle = {
-      background:"#0f1623", border:"1px solid #1e2433", borderRadius:4,
-      color:"#e2e8f0", padding:"3px 7px", fontSize:11
-    };
-
-    return (
-      <div>
-        {showControls !== false && (
-          <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10,alignItems:"center"}}>
-            <input
-              type="text" placeholder="Symbol…" value={lrnFilterSym}
-              onChange={e=>setLrnFilterSym(e.target.value)}
-              style={{...inputStyle, width:110}}
-            />
-            <select value={lrnFilterStrat} onChange={e=>setLrnFilterStrat(e.target.value)} style={inputStyle}>
-              {strategies.map(s=><option key={s} value={s}>{s==="all"?"All strategies":s}</option>)}
-            </select>
-            <select value={lrnFilterDir} onChange={e=>setLrnFilterDir(e.target.value)} style={inputStyle}>
-              <option value="all">All dirs</option>
-              <option value="LONG">LONG</option>
-              <option value="SHORT">SHORT</option>
-            </select>
-            <select value={lrnFilterStatus} onChange={e=>setLrnFilterStatus(e.target.value)} style={inputStyle}>
-              <option value="all">All status</option>
-              <option value="OPEN">OPEN</option>
-              <option value="CLOSED">CLOSED</option>
-            </select>
-            <input
-              type="date" value={lrnFilterDate}
-              onChange={e=>setLrnFilterDate(e.target.value)}
-              style={{...inputStyle, colorScheme:"dark"}}
-            />
-            {(lrnFilterSym||lrnFilterStrat!=="all"||lrnFilterDir!=="all"||lrnFilterStatus!=="all"||lrnFilterDate) && (
-              <button style={{...inputStyle,cursor:"pointer",color:"#f59e0b"}}
-                onClick={()=>{setLrnFilterSym("");setLrnFilterStrat("all");setLrnFilterDir("all");setLrnFilterStatus("all");setLrnFilterDate("");}}>
-                ✕ Clear
-              </button>
-            )}
-            <span style={{marginLeft:"auto",color:"#475569",fontSize:11}}>{rows.length} / {trades.length} rows</span>
-          </div>
-        )}
-        <div style={{overflowX:"auto"}}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <SortTh col="symbol"      label="Symbol"/>
-                <SortTh col="strategy"    label="Strategy"/>
-                <SortTh col="direction"   label="Dir"/>
-                <SortTh col="entry_time"  label="Date"/>
-                <SortTh col="entry_price" label="Entry"/>
-                <SortTh col="exit_price"  label="Exit"/>
-                <SortTh col="stop_loss"   label="SL"/>
-                <SortTh col="target"      label="Target"/>
-                <SortTh col="pnl_pts"     label="Pts"/>
-                <SortTh col="pnl_r"       label="P&L (R)"/>
-                <SortTh col="mae_pts"     label="MAE"/>
-                <SortTh col="mfe_pts"     label="MFE"/>
-                <SortTh col="exit_reason" label="Reason"/>
-                <SortTh col="status"      label="Status"/>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(t=>{
-                const r    = t.pnl_r||0;
-                const pts  = t.pnl_pts||0;
-                const open = t.status==="OPEN";
-                const dateStr = (t.entry_time||"").slice(0,10);
-                return (
-                  <tr key={t.id}>
-                    <td className="sym">{(t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","")}</td>
-                    <td style={{color:"#93c5fd",fontSize:10}}>{t.strategy}</td>
-                    <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
-                    <td style={{color:"#64748b",fontSize:10}}>{dateStr}</td>
-                    <td style={{fontFamily:"monospace"}}>{(t.entry_price||0).toFixed(2)}</td>
-                    <td style={{fontFamily:"monospace"}}>{t.exit_price ? t.exit_price.toFixed(2) : "—"}</td>
-                    <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.stop_loss||0).toFixed(2)}</td>
-                    <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.target||0).toFixed(2)}</td>
-                    <td className={open?"neutral-cell":pts>0?"good":pts<0?"bad":"neutral-cell"} style={{fontFamily:"monospace"}}>
-                      {open ? "open" : `${pts>=0?"+":""}${pts.toFixed(2)}`}
-                    </td>
-                    <td className={open?"neutral-cell":r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{open?"open":fmtR(r)}</td>
-                    <td style={{fontFamily:"monospace",color:"#fca5a5",fontSize:10}}>{(t.mae_pts||0)>0?`-${(t.mae_pts||0).toFixed(2)}`:"—"}</td>
-                    <td style={{fontFamily:"monospace",color:"#86efac",fontSize:10}}>{(t.mfe_pts||0)>0?`+${(t.mfe_pts||0).toFixed(2)}`:"—"}</td>
-                    <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
-                    <td><span className={`badge ${open?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    );
-  }
-
-  /* ── learning review by outcome ── */
-  function LearningReviewView() {
-    if (!learnReview) return <div className="empty">Loading...</div>;
-    const buckets = ["strong_win","small_win","scratch","small_loss","large_loss"];
-    const byOutcome = learnReview.by_outcome || {};
-    return (
-      <div>
-        {buckets.map(b => {
-          const trades = byOutcome[b] || [];
-          if (!trades.length) return null;
-          return (
-            <div key={b} style={{marginBottom:16}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                <span className={`outcome-${b}`} style={{fontWeight:600,fontSize:13}}>{outcomeLabel(b)}</span>
-                <span style={{color:"#475569",fontSize:11}}>{trades.length} trade{trades.length!==1?"s":""}</span>
-              </div>
-              <LearningTradesTable trades={trades.slice(0,10)} showControls={false}/>
-            </div>
-          );
-        })}
-        {!Object.keys(byOutcome).length && <div className="empty">No closed trades to review yet</div>}
       </div>
     );
   }
@@ -492,6 +529,38 @@ function App() {
           <button className="mode-btn" onClick={()=>switchMode("MANUAL")}>MANUAL</button>
         </div>
       </div>
+
+      {/* ── System Alert Banner ── */}
+      {sysAlerts.length > 0 && (
+        <div className="sys-alert-bar">
+          {sysAlerts.map(a => (
+            <div key={a.component} className={`sys-alert ${a.severity}`}>
+              <div className="sys-alert-icon">
+                {a.severity==="critical" ? "🚨" : a.severity==="error" ? "⛔" : "⚠️"}
+              </div>
+              <div className="sys-alert-body">
+                <div className="sys-alert-title">
+                  ACTION REQUIRED — {a.component.replace(/_/g," ").toUpperCase()}
+                </div>
+                <div className="sys-alert-msg">{a.message}</div>
+                <div className="sys-alert-meta">since {a.since} · updated {a.updated}</div>
+              </div>
+              {a.component==="fyers_token" && (
+                <button
+                  className="mode-btn"
+                  style={{flexShrink:0,fontSize:10}}
+                  onClick={()=>fetch(`${API}/system/token/refresh`,{method:"POST"})
+                    .then(r=>r.json())
+                    .then(d=>alert(d.ok ? "Token refreshed successfully" : `Refresh failed: ${d.error||d.status?.fail_count+" fails"}`))
+                  }
+                >
+                  Refresh Token
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ── Tabs ── */}
       <div className="tabs">
@@ -728,7 +797,7 @@ function App() {
           {learnSubTab==="review" && (
             <div className="card">
               <h2>Trades by outcome bucket</h2>
-              <LearningReviewView/>
+              <LearningReviewView trades={learnTrades}/>
             </div>
           )}
 

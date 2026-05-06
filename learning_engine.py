@@ -22,7 +22,7 @@ import json
 import logging
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -36,8 +36,10 @@ class LearningEngine:
 
     def __init__(self):
         self._open_positions: dict[str, dict] = {}  # symbol+strategy → trade
+        self._cooldowns: dict[str, datetime] = {}
         self._init_db()
         self._restore_open_positions()
+        self._load_cooldowns()
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC — called from main loop
@@ -57,6 +59,14 @@ class LearningEngine:
 
         # ── 2. Look for new equity/futures entries ────────────────
         for symbol in ALL_LEARNING_SYMBOLS:
+            # Skip symbols on cooldown
+            if self._is_on_cooldown(symbol):
+                continue
+
+            # Earnings veto — skip if results are within 5 days
+            if self._is_earnings_blocked(symbol):
+                continue
+
             for strat in strategies:
                 key = f"{symbol}:{strat.name}"
                 if key in self._open_positions:
@@ -173,6 +183,14 @@ class LearningEngine:
             f"T {signal['target']:.2f} | R:R {signal['rr']:.1f}"
         )
 
+        # Mirror to paper trading wallet (deducts capital; exits are mirrored on close)
+        try:
+            from paper_trading import paper_trading_engine
+            if paper_trading_engine.is_active():
+                paper_trading_engine.mirror_learning_open(trade)
+        except Exception as exc:
+            logger.debug(f"[Learning] Paper mirror open error: {exc}")
+
     def _check_exits(self, store) -> None:
         closed_keys = []
 
@@ -230,8 +248,90 @@ class LearningEngine:
                     f"| PnL {pnl_pts:+.2f} pts ({pnl_r:+.1f}R)"
                 )
 
+                # Apply per-symbol cooldown (30 min win, 60 min loss)
+                win_exits  = {"TARGET", "TARGET1", "TARGET2"}
+                loss_exits = {"STOP", "EOD", "STALE"}
+                if exit_reason in win_exits:
+                    self._apply_cooldown(symbol, minutes=30)
+                else:
+                    self._apply_cooldown(symbol, minutes=60)
+
+                # Mirror close to paper trading
+                try:
+                    from paper_trading import paper_trading_engine
+                    if paper_trading_engine.is_active():
+                        paper_trading_engine.mirror_learning_close(
+                            trade["id"], exit_price, exit_reason
+                        )
+                except Exception as exc:
+                    logger.debug(f"[Learning] Paper mirror close error: {exc}")
+
         for k in closed_keys:
             del self._open_positions[k]
+
+    # ─────────────────────────────────────────────────────────────
+    # COOLDOWN + EARNINGS VETO
+    # ─────────────────────────────────────────────────────────────
+
+    def _apply_cooldown(self, symbol: str, minutes: int) -> None:
+        expires_at = datetime.now(tz=IST) + timedelta(minutes=minutes)
+        self._cooldowns[symbol] = expires_at
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO learning_cooldowns (symbol, expires_at) VALUES (?, ?)",
+                    (symbol, expires_at.isoformat()),
+                )
+        except Exception as e:
+            logger.debug(f"[Learning] Could not persist cooldown for {symbol}: {e}")
+
+    def _is_on_cooldown(self, symbol: str) -> bool:
+        expiry = self._cooldowns.get(symbol)
+        if not expiry:
+            return False
+        if datetime.now(tz=IST) < expiry:
+            return True
+        del self._cooldowns[symbol]
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute("DELETE FROM learning_cooldowns WHERE symbol=?", (symbol,))
+        except Exception:
+            pass
+        return False
+
+    def _load_cooldowns(self) -> None:
+        """Load non-expired cooldowns from DB on startup — survives restarts."""
+        try:
+            now_str = datetime.now(tz=IST).isoformat()
+            with sqlite3.connect(DB_PATH) as conn:
+                rows = conn.execute(
+                    "SELECT symbol, expires_at FROM learning_cooldowns WHERE expires_at > ?",
+                    (now_str,),
+                ).fetchall()
+            for symbol, expires_str in rows:
+                try:
+                    expires_at = datetime.fromisoformat(expires_str)
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=IST)
+                    self._cooldowns[symbol] = expires_at
+                except Exception:
+                    pass
+            if self._cooldowns:
+                logger.info(
+                    f"[Learning] Restored {len(self._cooldowns)} cooldown(s) from DB: "
+                    f"{list(self._cooldowns.keys())}"
+                )
+        except Exception as e:
+            logger.warning(f"[Learning] Could not load cooldowns from DB: {e}")
+
+    def _is_earnings_blocked(self, symbol: str) -> bool:
+        """Return True if symbol has earnings within 5 days (skip to avoid pre-results noise)."""
+        try:
+            from intelligence.fundamental_guard import fundamental_guard
+            result = fundamental_guard.check(symbol)
+            return not result.allowed
+        except Exception:
+            return False
 
     # ─────────────────────────────────────────────────────────────
     # DB
@@ -267,7 +367,13 @@ class LearningEngine:
                     conn.execute(f"ALTER TABLE learning_trades ADD COLUMN {col} REAL DEFAULT 0")
                 except Exception:
                     pass
-        logger.info("[Learning] DB table ready")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning_cooldowns (
+                    symbol     TEXT PRIMARY KEY,
+                    expires_at TEXT
+                )
+            """)
+        logger.info("[Learning] DB tables ready")
 
     def _restore_open_positions(self) -> None:
         """Reload OPEN positions from DB into memory — prevents duplicates across restarts.
@@ -304,6 +410,15 @@ class LearningEngine:
                 )
                 stale += 1
                 logger.info(f"[Learning] STALE {trade['id']} | {trade['strategy']} {trade['symbol']} — missed EOD close on {entry_date}")
+                # Mirror stale close to paper trading
+                try:
+                    from paper_trading import paper_trading_engine
+                    if paper_trading_engine.is_active():
+                        paper_trading_engine.mirror_learning_close(
+                            trade["id"], trade["entry_price"], "STALE"
+                        )
+                except Exception:
+                    pass
                 continue
 
             key = f"{trade['symbol']}:{trade['strategy']}"

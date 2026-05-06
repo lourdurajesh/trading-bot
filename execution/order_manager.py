@@ -225,13 +225,20 @@ class OrderManager:
         if signal.symbol.startswith("NSE:"):
             from datetime import time as dtime
             now_ist = datetime.now(tz=IST)
-            nse_open     = dtime(9, 15)
-            eod_cutoff   = dtime(15, 15)   # match position_manager EOD_EXIT_TIME
+            nse_open   = dtime(9, 15)
+            eod_cutoff = dtime(15, 15)   # match position_manager EOD_EXIT_TIME
             if not (nse_open <= now_ist.time() <= eod_cutoff):
                 logger.warning(
                     f"[OrderManager] Blocked entry outside NSE hours: "
                     f"{signal.symbol} at {now_ist.strftime('%H:%M:%S')} IST"
                 )
+                # Apply a 60-min cooldown so the same symbol doesn't re-trigger
+                # every cycle for the rest of the session.
+                try:
+                    from strategies.strategy_selector import strategy_selector
+                    strategy_selector.apply_cooldown(signal.symbol, minutes=60)
+                except Exception:
+                    pass
                 return
 
         # Index symbols (NIFTY/BANKNIFTY) can only be traded as options contracts,

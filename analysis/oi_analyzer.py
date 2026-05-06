@@ -104,6 +104,9 @@ class OIAnalyzer:
         self._fyers = None
         self._snapshots: dict[str, OISnapshot] = {}          # symbol → latest snapshot
         self._prev_atm_oi: dict[str, tuple[int, int]] = {}   # symbol → (call_oi, put_oi)
+        # Track consecutive chain-fetch failures per symbol to suppress log spam.
+        # First failure → WARNING; subsequent failures → DEBUG only.
+        self._consecutive_failures: dict[str, int] = {}
         self._load_today_snapshots()
 
     # ─────────────────────────────────────────────────────────────
@@ -111,19 +114,31 @@ class OIAnalyzer:
     # ─────────────────────────────────────────────────────────────
 
     def initialise(self) -> None:
-        """Connect to Fyers API for options chain fetching."""
+        """Connect to Fyers API for options chain fetching. Verifies token is live."""
         try:
             from fyers_apiv3 import fyersModel
             from config import settings
-            if settings.FYERS_ACCESS_TOKEN:
-                self._fyers = fyersModel.FyersModel(
-                    client_id=settings.FYERS_APP_ID,
-                    token=settings.FYERS_ACCESS_TOKEN,
-                    is_async=False,
-                )
+            if not settings.FYERS_ACCESS_TOKEN:
+                logger.warning("[OIAnalyzer] No FYERS_ACCESS_TOKEN — running in simulation mode")
+                return
+
+            client = fyersModel.FyersModel(
+                client_id=settings.FYERS_APP_ID,
+                token=settings.FYERS_ACCESS_TOKEN,
+                is_async=False,
+            )
+            # Verify token works before accepting it
+            resp = client.get_profile()
+            if resp.get("s") == "ok":
+                self._fyers = client
+                self._consecutive_failures.clear()
                 logger.info("[OIAnalyzer] Fyers client initialised")
             else:
-                logger.warning("[OIAnalyzer] No FYERS_ACCESS_TOKEN — running in simulation mode")
+                logger.warning(
+                    f"[OIAnalyzer] Token verification failed: {resp.get('message')} "
+                    f"— falling back to simulation mode"
+                )
+                self._fyers = None
         except Exception as e:
             logger.warning(f"[OIAnalyzer] Fyers init failed: {e}")
 
@@ -217,8 +232,58 @@ class OIAnalyzer:
         try:
             resp = self._fyers.optionchain(data={"symbol": fyers_sym, "strikecount": 20})
             if resp.get("s") != "ok":
-                logger.warning(f"[OIAnalyzer] Chain fetch error for {symbol}: {resp.get('message', 'unknown')}")
-                return []
+                msg = resp.get("message", "unknown")
+                fail_count = self._consecutive_failures.get(symbol, 0) + 1
+                self._consecutive_failures[symbol] = fail_count
+
+                # Log at WARNING for first failure; DEBUG for all subsequent ones
+                if fail_count == 1:
+                    logger.warning(
+                        f"[OIAnalyzer] Chain fetch error for {symbol}: {msg} "
+                        f"— subsequent errors suppressed until resolved"
+                    )
+                    # Report to system health and attempt token refresh if auth error
+                    is_token_error = any(
+                        k in msg.lower()
+                        for k in ("token", "auth", "unauthori", "invalid")
+                    )
+                    if is_token_error:
+                        try:
+                            from system_health import system_health
+                            system_health.set_alert(
+                                "oi_chain",
+                                f"Options chain unavailable: {msg}. "
+                                f"Possible cause: Fyers app may not have options-chain data subscription. "
+                                f"Auto-refresh attempted.",
+                                severity="warning",
+                            )
+                            from token_manager import token_manager
+                            token_manager.notify_token_failure("OIAnalyzer", msg)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            from system_health import system_health
+                            system_health.set_alert(
+                                "oi_chain",
+                                f"Options chain unavailable ({symbol}): {msg}",
+                                severity="warning",
+                            )
+                        except Exception:
+                            pass
+                else:
+                    logger.debug(f"[OIAnalyzer] Chain fetch error for {symbol} (#{fail_count}): {msg}")
+                return self._simulate_chain(symbol)
+
+            # Success — reset failure counter and clear alert
+            if self._consecutive_failures.get(symbol, 0) > 0:
+                self._consecutive_failures[symbol] = 0
+                try:
+                    from system_health import system_health
+                    system_health.clear_alert("oi_chain")
+                    logger.info(f"[OIAnalyzer] Chain fetch restored for {symbol}")
+                except Exception:
+                    pass
 
             rows = []
             for item in resp.get("data", {}).get("optionsChain", []):
@@ -234,8 +299,13 @@ class OIAnalyzer:
                     continue
             return rows
         except Exception as e:
-            logger.warning(f"[OIAnalyzer] Chain fetch exception for {symbol}: {e}")
-            return []
+            fail_count = self._consecutive_failures.get(symbol, 0) + 1
+            self._consecutive_failures[symbol] = fail_count
+            if fail_count == 1:
+                logger.warning(f"[OIAnalyzer] Chain fetch exception for {symbol}: {e}")
+            else:
+                logger.debug(f"[OIAnalyzer] Chain fetch exception for {symbol} (#{fail_count}): {e}")
+            return self._simulate_chain(symbol)
 
     def _get_spot(self, symbol: str) -> Optional[float]:
         """Get current spot price from Fyers or data_store."""

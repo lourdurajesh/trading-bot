@@ -55,6 +55,28 @@ app.add_middleware(
 # Track connected WebSocket clients
 _ws_clients: list[WebSocket] = []
 
+# Learning data change-detection — only push to WS when trades actually change
+_last_learning_hash: str = ""
+
+
+def _get_learning_payload() -> dict | None:
+    """Return learning trades+stats when they've changed since last call; None otherwise."""
+    global _last_learning_hash
+    import hashlib
+    try:
+        from learning_engine import learning_engine
+        trades = learning_engine.get_trades(limit=200)
+        stats  = learning_engine.get_stats()
+        h = hashlib.md5(
+            b",".join(f"{t['id']}:{t['status']}".encode() for t in trades)
+        ).hexdigest()[:12]
+        if h == _last_learning_hash:
+            return None
+        _last_learning_hash = h
+        return {"trades": trades, "stats": stats}
+    except Exception:
+        return None
+
 
 # ─────────────────────────────────────────────────────────────────
 # REST ENDPOINTS
@@ -514,6 +536,32 @@ def health():
     return {"status": "ok", "time": datetime.now(tz=IST).isoformat()}
 
 
+@app.get("/system/alerts")
+def get_system_alerts():
+    """Active system health alerts — token failures, API errors, etc."""
+    try:
+        from system_health import system_health
+        return {
+            "alerts":       system_health.get_alerts(),
+            "has_critical": system_health.has_critical(),
+            "count":        len(system_health.get_alerts()),
+        }
+    except Exception as e:
+        return {"alerts": [], "error": str(e)}
+
+
+@app.post("/system/token/refresh")
+def trigger_token_refresh():
+    """Manually trigger a Fyers token refresh (bypasses cooldown)."""
+    try:
+        from token_manager import token_manager
+        token_manager._last_attempt = None   # bypass cooldown for manual trigger
+        ok = token_manager.check_and_refresh_if_needed()
+        return {"ok": ok, "status": token_manager.get_status()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # ─────────────────────────────────────────────────────────────────
 # SIGNAL HEALTH — WHY ARE WE NOT TRADING?
 # ─────────────────────────────────────────────────────────────────
@@ -806,12 +854,31 @@ def _build_live_payload() -> dict:
         from paper_trading import paper_trading_engine
         if paper_trading_engine.is_active():
             paper_wallet = {
-                "balance":     paper_trading_engine.get_balance(),
+                "balance":      paper_trading_engine.get_balance(),
                 "is_exhausted": paper_trading_engine.is_capital_exhausted(),
-                "starting":    500_000.0,
+                "starting":     500_000.0,
             }
     except Exception:
         pass
+
+    # System health alerts — any component failures needing attention
+    system_alerts: list[dict] = []
+    try:
+        from system_health import system_health
+        system_alerts = system_health.get_alerts()
+    except Exception:
+        pass
+
+    # Token manager status
+    token_status = None
+    try:
+        from token_manager import token_manager
+        token_status = token_manager.get_status()
+    except Exception:
+        pass
+
+    # Learning data — only included when trades have changed (nil otherwise)
+    learning = _get_learning_payload()
 
     return {
         "timestamp":       datetime.now(tz=IST).isoformat(),
@@ -822,4 +889,7 @@ def _build_live_payload() -> dict:
         "pending_signals": pending,
         "ltps":            ltps,
         "paper_wallet":    paper_wallet,
+        "system_alerts":   system_alerts,
+        "token_status":    token_status,
+        "learning":        learning,
     }

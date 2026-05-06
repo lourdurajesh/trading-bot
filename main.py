@@ -109,7 +109,14 @@ class TradingBot:
 
         # Step 1: Init brokers
         logger.info("Connecting to brokers...")
+
+        # Auto-refresh token before first init — covers the case where the token
+        # expired overnight and nobody ran generate_token.py manually.
+        from token_manager import token_manager
         fyers_broker.initialise()
+        if not fyers_broker._initialised:
+            logger.info("Fyers token invalid at startup — attempting auto-refresh...")
+            token_manager.check_and_refresh_if_needed()
         alpaca_broker.initialise()
 
         # Init options engine (connects Fyers client for chain fetching)
@@ -185,6 +192,8 @@ class TradingBot:
 
         last_slow_run        = 0
         last_commodity_run   = 0
+        last_token_check     = 0          # periodic token health check
+        TOKEN_CHECK_INTERVAL = 1800       # check token every 30 min
         _conviction_scored_date  = None   # date when score was last computed
         _oi_snap_saved_date      = None   # date when OI close snapshot was saved
         _nse_collected_date      = None   # date when FII data was collected
@@ -271,6 +280,15 @@ class TradingBot:
                             logger.warning("[Main] FII data unavailable today (holiday?)")
                     except Exception as e:
                         logger.error(f"[Main] NSE collector error: {e}")
+
+                # ── Periodic Fyers token health check (every 30 min) ───
+                if now - last_token_check >= TOKEN_CHECK_INTERVAL:
+                    last_token_check = now
+                    try:
+                        from token_manager import token_manager
+                        token_manager.check_and_refresh_if_needed()
+                    except Exception as te:
+                        logger.debug(f"[Main] Token check error: {te}")
 
                 # Commodity options learning — separate 60s cadence,
                 # MCX hours gate is enforced internally in run_cycle()
