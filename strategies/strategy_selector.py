@@ -59,7 +59,10 @@ class StrategySelector:
         )
 
         # Cooldown tracker: symbol → datetime when cooldown expires
+        # Loaded from DB on startup so restarts don't lose cooldown state.
         self._cooldowns: dict[str, datetime] = {}
+        self._init_cooldown_db()
+        self._load_cooldowns()
 
         # Cycle counter for logging
         self._cycle_count = 0
@@ -174,12 +177,69 @@ class StrategySelector:
 
     def apply_cooldown(self, symbol: str, minutes: int = None) -> None:
         """
-        Apply cooldown to a symbol after a losing trade.
-        Called by portfolio_tracker on loss close.
+        Apply cooldown to a symbol after any trade exit.
+        Persisted to DB so bot restarts don't clear the cooldown.
         """
-        duration = minutes or SYMBOL_COOLDOWN_MINUTES
-        self._cooldowns[symbol] = datetime.now(tz=IST) + timedelta(minutes=duration)
-        logger.info(f"[StrategySelector] Cooldown applied to {symbol} for {duration} minutes.")
+        duration   = minutes or SYMBOL_COOLDOWN_MINUTES
+        expires_at = datetime.now(tz=IST) + timedelta(minutes=duration)
+        self._cooldowns[symbol] = expires_at
+        self._persist_cooldown(symbol, expires_at)
+        logger.info(f"[StrategySelector] Cooldown applied to {symbol} for {duration} min (until {expires_at.strftime('%H:%M')}).")
+
+    # ─────────────────────────────────────────────────────────────
+    # COOLDOWN PERSISTENCE
+    # ─────────────────────────────────────────────────────────────
+
+    def _init_cooldown_db(self) -> None:
+        try:
+            import sqlite3, os
+            from config.settings import DB_PATH
+            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS symbol_cooldowns (
+                        symbol     TEXT PRIMARY KEY,
+                        expires_at TEXT
+                    )
+                """)
+        except Exception as e:
+            logger.warning(f"[StrategySelector] Cooldown DB init failed: {e}")
+
+    def _load_cooldowns(self) -> None:
+        """Load non-expired cooldowns from DB on startup."""
+        try:
+            import sqlite3
+            from config.settings import DB_PATH
+            now_str = datetime.now(tz=IST).isoformat()
+            with sqlite3.connect(DB_PATH) as conn:
+                rows = conn.execute(
+                    "SELECT symbol, expires_at FROM symbol_cooldowns WHERE expires_at > ?",
+                    (now_str,)
+                ).fetchall()
+            for symbol, expires_str in rows:
+                try:
+                    expires_at = datetime.fromisoformat(expires_str)
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=IST)
+                    self._cooldowns[symbol] = expires_at
+                except Exception:
+                    pass
+            if self._cooldowns:
+                logger.info(f"[StrategySelector] Restored {len(self._cooldowns)} cooldown(s) from DB: {list(self._cooldowns.keys())}")
+        except Exception as e:
+            logger.warning(f"[StrategySelector] Could not load cooldowns from DB: {e}")
+
+    def _persist_cooldown(self, symbol: str, expires_at: datetime) -> None:
+        try:
+            import sqlite3
+            from config.settings import DB_PATH
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO symbol_cooldowns (symbol, expires_at) VALUES (?, ?)",
+                    (symbol, expires_at.isoformat()),
+                )
+        except Exception as e:
+            logger.warning(f"[StrategySelector] Could not persist cooldown for {symbol}: {e}")
 
     def get_status(self) -> dict:
         """Returns selector status for dashboard."""

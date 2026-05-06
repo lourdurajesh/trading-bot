@@ -409,6 +409,7 @@ class PositionManager:
                 except Exception:
                     pass
                 alert_service.trade_closed(symbol, closed.realised_pnl, reason)
+                self._apply_exit_cooldown(symbol, reason)
             with self._lock:
                 self._breakeven_applied.discard(symbol)
                 self._partial_exited.discard(symbol)
@@ -502,15 +503,7 @@ class PositionManager:
             closed = portfolio_tracker.close_position(symbol, price, reason)
             if closed:
                 alert_service.trade_closed(symbol, closed.realised_pnl, reason)
-
-                # Apply cooldown after stop or EOD exit so the same signal
-                # cannot re-fire next cycle before the position is confirmed closed.
-                if reason in ("STOP", "EOD_FORCED", "MAX_HOLD"):
-                    try:
-                        from strategies.strategy_selector import strategy_selector
-                        strategy_selector.apply_cooldown(symbol)
-                    except Exception:
-                        pass
+                self._apply_exit_cooldown(symbol, reason)
 
             # Clean up tracking sets (locked)
             with self._lock:
@@ -634,6 +627,30 @@ class PositionManager:
             )
         except Exception as e:
             logger.warning(f"[PositionManager] Broker SL update failed (non-fatal): {e}")
+
+    def _apply_exit_cooldown(self, symbol: str, reason: str) -> None:
+        """
+        Apply a re-entry cooldown after any position close.
+        Persisted to DB so bot restarts don't lose the cooldown.
+
+        Loss/forced exits  → full SYMBOL_COOLDOWN_MINUTES (default 60 min)
+        Target/win exits   → 30 min (prevent immediate same-day re-entry)
+        """
+        from config.settings import SYMBOL_COOLDOWN_MINUTES
+        win_reasons  = {"TARGET1", "TARGET2", "TARGET1_PARTIAL", "TARGET_50PCT_CREDIT"}
+        loss_reasons = {"STOP", "EOD_FORCED", "MAX_HOLD", "DTE_FORCED",
+                        "STOP_50PCT_PREMIUM", "STOP_2X_CREDIT", "SL_PLACEMENT_FAILED"}
+        if reason in win_reasons:
+            minutes = 30
+        elif reason in loss_reasons:
+            minutes = SYMBOL_COOLDOWN_MINUTES
+        else:
+            minutes = 30   # unknown reason — short cooldown as safety net
+        try:
+            from strategies.strategy_selector import strategy_selector
+            strategy_selector.apply_cooldown(symbol, minutes=minutes)
+        except Exception as e:
+            logger.warning(f"[PositionManager] Could not apply cooldown for {symbol}: {e}")
 
     def reset_symbol(self, symbol: str) -> None:
         """Clean up tracking state for a symbol after full exit."""

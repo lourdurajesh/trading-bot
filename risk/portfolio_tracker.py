@@ -277,6 +277,15 @@ class PortfolioTracker:
                     exit_time       TEXT
                 )
             """)
+        # Safe migrations for pre-existing tables
+        for col, typedef in [
+            ("target_2",    "REAL DEFAULT 0"),
+            ("signal_type", "TEXT DEFAULT 'EQUITY'"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typedef}")
+            except Exception:
+                pass
         logger.info(f"[Portfolio] Database initialised at {DB_PATH}")
 
     def _save_position(self, pos: Position) -> None:

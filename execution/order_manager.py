@@ -234,6 +234,16 @@ class OrderManager:
                 )
                 return
 
+        # Index symbols (NIFTY/BANKNIFTY) can only be traded as options contracts,
+        # never as direct equity orders. Block any non-options signal on an index
+        # to prevent accidental broker calls on untradeable instruments.
+        if "INDEX" in signal.symbol and signal.signal_type != SignalType.OPTIONS:
+            logger.warning(
+                f"[OrderManager] BLOCKED equity order on index {signal.symbol} "
+                f"(strategy={signal.strategy}) — indices require options contracts"
+            )
+            return
+
         # Options: multi-leg execution via dedicated path
         if signal.signal_type == SignalType.OPTIONS:
             self._execute_options(signal)
