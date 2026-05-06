@@ -800,6 +800,19 @@ def _build_live_payload() -> dict:
         for pos in positions
     }
 
+    # Paper wallet balance (only when paper trading is active)
+    paper_wallet = None
+    try:
+        from paper_trading import paper_trading_engine
+        if paper_trading_engine.is_active():
+            paper_wallet = {
+                "balance":     paper_trading_engine.get_balance(),
+                "is_exhausted": paper_trading_engine.is_capital_exhausted(),
+                "starting":    500_000.0,
+            }
+    except Exception:
+        pass
+
     return {
         "timestamp":       datetime.now(tz=IST).isoformat(),
         "mode":            order_manager.mode,
@@ -808,4 +821,5 @@ def _build_live_payload() -> dict:
         "positions":       positions,
         "pending_signals": pending,
         "ltps":            ltps,
+        "paper_wallet":    paper_wallet,
     }

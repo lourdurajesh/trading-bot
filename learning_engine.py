@@ -45,7 +45,7 @@ class LearningEngine:
 
     def run_cycle(self) -> None:
         """Evaluate learning strategies and manage open positions."""
-        from config.learning_watchlist import ALL_LEARNING_SYMBOLS, COMMODITY_SYMBOLS
+        from config.learning_watchlist import ALL_LEARNING_SYMBOLS, COMMODITY_SYMBOLS, LEARNING_NSE_INDICES
         from strategies.simple_rsi       import SimpleRSIStrategy
         from strategies.simple_momentum  import SimpleMomentumStrategy
         from data.data_store              import store
@@ -55,7 +55,7 @@ class LearningEngine:
         # ── 1. Monitor existing open positions ───────────────────
         self._check_exits(store)
 
-        # ── 2. Look for new entries ───────────────────────────────
+        # ── 2. Look for new equity/futures entries ────────────────
         for symbol in ALL_LEARNING_SYMBOLS:
             for strat in strategies:
                 key = f"{symbol}:{strat.name}"
@@ -70,6 +70,72 @@ class LearningEngine:
 
                 if signal:
                     self._open_trade(signal)
+
+        # ── 3. NSE index options learning (isolated from production) ──
+        self._run_nse_options_learning(LEARNING_NSE_INDICES)
+
+    def _run_nse_options_learning(self, index_symbols: list) -> None:
+        """
+        Paper-trade NSE index options (NIFTY/BANKNIFTY/FINNIFTY) in learning mode.
+        Uses DirectionalOptionsStrategy to get the signal, but tracks the trade in
+        INDEX SPACE (1% stop, 2% target on the underlying LTP) so the normal
+        _check_exits() logic works correctly.
+
+        The option premium from DirectionalOptionsStrategy is stored in metadata
+        for reference. The R-value result tells you: "was the directional call
+        right — did the index move 2% in our favour before hitting the 1% stop?"
+
+        Falls back gracefully when Fyers chain is unavailable (Black-Scholes sim).
+        Saved to learning_trades with metadata.instrument_type = 'nse_options'.
+        """
+        try:
+            from strategies.directional_options import DirectionalOptionsStrategy
+            from data.data_store import store as _store
+            strat = DirectionalOptionsStrategy()
+            for symbol in index_symbols:
+                key = f"{symbol}:DirectionalOptions_LRN"
+                if key in self._open_positions:
+                    continue
+                try:
+                    sig = strat.evaluate(symbol)
+                    if sig is None:
+                        continue
+
+                    # Track in index-space: stop = 1%, target = 2%
+                    index_ltp = _store.get_ltp(symbol) or 0
+                    if index_ltp <= 0:
+                        continue
+                    stop_dist   = round(index_ltp * 0.01, 1)
+                    target_dist = round(index_ltp * 0.02, 1)
+                    if sig.direction.value == "LONG":
+                        stop   = round(index_ltp - stop_dist,   1)
+                        target = round(index_ltp + target_dist, 1)
+                    else:
+                        stop   = round(index_ltp + stop_dist,   1)
+                        target = round(index_ltp - target_dist, 1)
+
+                    signal_dict = {
+                        "strategy":    "DirectionalOptions_LRN",
+                        "symbol":      sig.symbol,
+                        "direction":   sig.direction.value,
+                        "entry_price": index_ltp,   # index level (not premium)
+                        "stop_loss":   stop,
+                        "target":      target,
+                        "rr":          round(target_dist / stop_dist, 1),
+                        "metadata": {
+                            "instrument_type": "nse_options",
+                            "regime":          sig.regime,
+                            "reason":          sig.reason,
+                            "confidence":      round(sig.confidence, 2),
+                            "option_premium":  sig.entry,
+                            **(sig.options_meta or {}),
+                        },
+                    }
+                    self._open_trade(signal_dict)
+                except Exception as exc:
+                    logger.debug(f"[Learning/NSEOptions] {symbol}: {exc}")
+        except Exception as e:
+            logger.debug(f"[Learning/NSEOptions] setup error: {e}")
 
     # ─────────────────────────────────────────────────────────────
     # TRADE MANAGEMENT
@@ -204,12 +270,18 @@ class LearningEngine:
         logger.info("[Learning] DB table ready")
 
     def _restore_open_positions(self) -> None:
-        """Reload OPEN positions from DB into memory — prevents duplicates across restarts."""
+        """Reload OPEN positions from DB into memory — prevents duplicates across restarts.
+        Trades from a previous day are immediately marked STALE (they missed EOD close)."""
+        today = datetime.now(tz=IST).date()
+
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM learning_trades WHERE status='OPEN'"
             ).fetchall()
+
+        restored = 0
+        stale    = 0
         for r in rows:
             trade = dict(r)
             try:
@@ -218,10 +290,30 @@ class LearningEngine:
                 trade["metadata"] = {}
             trade["mae_pts"] = trade.get("mae_pts") or 0.0
             trade["mfe_pts"] = trade.get("mfe_pts") or 0.0
+
+            # Trades from a prior day missed their EOD close — mark STALE
+            try:
+                entry_date = datetime.fromisoformat(trade["entry_time"]).astimezone(IST).date()
+            except Exception:
+                entry_date = today
+
+            if entry_date < today:
+                self._db_close(
+                    trade["id"], trade["entry_price"], "STALE",
+                    0.0, 0.0, trade["mae_pts"], trade["mfe_pts"],
+                )
+                stale += 1
+                logger.info(f"[Learning] STALE {trade['id']} | {trade['strategy']} {trade['symbol']} — missed EOD close on {entry_date}")
+                continue
+
             key = f"{trade['symbol']}:{trade['strategy']}"
             self._open_positions[key] = trade
-        if self._open_positions:
-            logger.info(f"[Learning] Restored {len(self._open_positions)} open positions from DB")
+            restored += 1
+
+        if stale:
+            logger.info(f"[Learning] Closed {stale} stale position(s) from previous day(s)")
+        if restored:
+            logger.info(f"[Learning] Restored {restored} open position(s) from DB")
 
     def _db_insert(self, trade: dict) -> None:
         with sqlite3.connect(DB_PATH) as conn:
