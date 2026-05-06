@@ -143,6 +143,15 @@ function App() {
   const [learnReview, setLearnReview] = React.useState(null);
   const [learnSubTab, setLearnSubTab] = React.useState("trades");
 
+  /* learning filters */
+  const [lrnFilterSym,    setLrnFilterSym]    = React.useState("");
+  const [lrnFilterStrat,  setLrnFilterStrat]  = React.useState("all");
+  const [lrnFilterDir,    setLrnFilterDir]    = React.useState("all");
+  const [lrnFilterStatus, setLrnFilterStatus] = React.useState("all");
+  const [lrnFilterDate,   setLrnFilterDate]   = React.useState("");
+  const [lrnSortCol,      setLrnSortCol]      = React.useState("entry_time");
+  const [lrnSortAsc,      setLrnSortAsc]      = React.useState(false);
+
   /* commodity */
   const [commStats, setCommStats]     = React.useState(null);
   const [commTrades, setCommTrades]   = React.useState([]);
@@ -170,8 +179,7 @@ function App() {
     function connectLogs() {
       ws = new WebSocket(WS_LOGS);
       ws.onmessage = e => {
-        setLogs(prev => [...prev, e.data].slice(-200));
-        setTimeout(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, 50);
+        setLogs(prev => [e.data, ...prev].slice(0, 200));
       };
       ws.onclose = () => setTimeout(connectLogs, 3000);
     }
@@ -267,51 +275,139 @@ function App() {
     );
   }
 
-  /* ── learning trades table ── */
-  function LearningTradesTable({trades}) {
+  /* ── learning trades table (with filter/sort controls) ── */
+  function LearningTradesTable({trades, showControls}) {
     if (!trades.length) return <div className="empty">No learning trades yet</div>;
+
+    /* derive filter options from the dataset passed in */
+    const strategies = ["all", ...Array.from(new Set(trades.map(t=>t.strategy).filter(Boolean)))];
+
+    /* apply filters */
+    let rows = trades.filter(t => {
+      const sym = (t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","");
+      if (lrnFilterSym    && !sym.toLowerCase().includes(lrnFilterSym.toLowerCase())) return false;
+      if (lrnFilterStrat  !== "all" && t.strategy !== lrnFilterStrat) return false;
+      if (lrnFilterDir    !== "all" && t.direction !== lrnFilterDir)  return false;
+      if (lrnFilterStatus !== "all" && t.status    !== lrnFilterStatus) return false;
+      if (lrnFilterDate) {
+        const d = (t.entry_time||"").slice(0,10);
+        if (d !== lrnFilterDate) return false;
+      }
+      return true;
+    });
+
+    /* sort */
+    const numCols = new Set(["entry_price","exit_price","stop_loss","target","pnl_pts","pnl_r","mae_pts","mfe_pts"]);
+    rows = [...rows].sort((a, b) => {
+      let va = a[lrnSortCol] ?? "", vb = b[lrnSortCol] ?? "";
+      if (numCols.has(lrnSortCol)) { va = Number(va)||0; vb = Number(vb)||0; }
+      else { va = String(va); vb = String(vb); }
+      if (va < vb) return lrnSortAsc ? -1 : 1;
+      if (va > vb) return lrnSortAsc ?  1 : -1;
+      return 0;
+    });
+
+    function SortTh({col, label}) {
+      const active = lrnSortCol === col;
+      return (
+        <th style={{cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"}}
+            onClick={()=>{ if(active) setLrnSortAsc(p=>!p); else { setLrnSortCol(col); setLrnSortAsc(true); } }}>
+          {label} {active ? (lrnSortAsc ? "↑" : "↓") : <span style={{opacity:0.3}}>↕</span>}
+        </th>
+      );
+    }
+
+    const inputStyle = {
+      background:"#0f1623", border:"1px solid #1e2433", borderRadius:4,
+      color:"#e2e8f0", padding:"3px 7px", fontSize:11
+    };
+
     return (
-      <div style={{overflowX:"auto"}}>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Symbol</th><th>Strategy</th><th>Dir</th>
-              <th>Entry</th><th>Exit</th><th>SL</th><th>Target</th>
-              <th>Pts/share</th><th>P&L (R)</th><th>MAE</th><th>MFE</th><th>Reason</th><th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trades.map(t=>{
-              const r    = t.pnl_r||0;
-              const pts  = t.pnl_pts||0;
-              const open = t.status==="OPEN";
-              const livePts = open && t.entry_price
-                ? (t.direction==="LONG"
-                    ? ((t.ltp||t.entry_price) - t.entry_price)
-                    : (t.entry_price - (t.ltp||t.entry_price)))
-                : null;
-              return (
-                <tr key={t.id}>
-                  <td className="sym">{(t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","")}</td>
-                  <td style={{color:"#93c5fd",fontSize:10}}>{t.strategy}</td>
-                  <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
-                  <td style={{fontFamily:"monospace"}}>{(t.entry_price||0).toFixed(2)}</td>
-                  <td style={{fontFamily:"monospace"}}>{t.exit_price ? t.exit_price.toFixed(2) : "—"}</td>
-                  <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.stop_loss||0).toFixed(2)}</td>
-                  <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.target||0).toFixed(2)}</td>
-                  <td className={open?"neutral-cell":pts>0?"good":pts<0?"bad":"neutral-cell"} style={{fontFamily:"monospace"}}>
-                    {open ? "open" : `${pts>=0?"+":""}${pts.toFixed(2)}`}
-                  </td>
-                  <td className={open?"neutral-cell":r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{open?"open":fmtR(r)}</td>
-                  <td style={{fontFamily:"monospace",color:"#fca5a5",fontSize:10}}>{(t.mae_pts||0)>0?`-${(t.mae_pts||0).toFixed(2)}`:"—"}</td>
-                  <td style={{fontFamily:"monospace",color:"#86efac",fontSize:10}}>{(t.mfe_pts||0)>0?`+${(t.mfe_pts||0).toFixed(2)}`:"—"}</td>
-                  <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
-                  <td><span className={`badge ${open?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div>
+        {showControls !== false && (
+          <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10,alignItems:"center"}}>
+            <input
+              type="text" placeholder="Symbol…" value={lrnFilterSym}
+              onChange={e=>setLrnFilterSym(e.target.value)}
+              style={{...inputStyle, width:110}}
+            />
+            <select value={lrnFilterStrat} onChange={e=>setLrnFilterStrat(e.target.value)} style={inputStyle}>
+              {strategies.map(s=><option key={s} value={s}>{s==="all"?"All strategies":s}</option>)}
+            </select>
+            <select value={lrnFilterDir} onChange={e=>setLrnFilterDir(e.target.value)} style={inputStyle}>
+              <option value="all">All dirs</option>
+              <option value="LONG">LONG</option>
+              <option value="SHORT">SHORT</option>
+            </select>
+            <select value={lrnFilterStatus} onChange={e=>setLrnFilterStatus(e.target.value)} style={inputStyle}>
+              <option value="all">All status</option>
+              <option value="OPEN">OPEN</option>
+              <option value="CLOSED">CLOSED</option>
+            </select>
+            <input
+              type="date" value={lrnFilterDate}
+              onChange={e=>setLrnFilterDate(e.target.value)}
+              style={{...inputStyle, colorScheme:"dark"}}
+            />
+            {(lrnFilterSym||lrnFilterStrat!=="all"||lrnFilterDir!=="all"||lrnFilterStatus!=="all"||lrnFilterDate) && (
+              <button style={{...inputStyle,cursor:"pointer",color:"#f59e0b"}}
+                onClick={()=>{setLrnFilterSym("");setLrnFilterStrat("all");setLrnFilterDir("all");setLrnFilterStatus("all");setLrnFilterDate("");}}>
+                ✕ Clear
+              </button>
+            )}
+            <span style={{marginLeft:"auto",color:"#475569",fontSize:11}}>{rows.length} / {trades.length} rows</span>
+          </div>
+        )}
+        <div style={{overflowX:"auto"}}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <SortTh col="symbol"      label="Symbol"/>
+                <SortTh col="strategy"    label="Strategy"/>
+                <SortTh col="direction"   label="Dir"/>
+                <SortTh col="entry_time"  label="Date"/>
+                <SortTh col="entry_price" label="Entry"/>
+                <SortTh col="exit_price"  label="Exit"/>
+                <SortTh col="stop_loss"   label="SL"/>
+                <SortTh col="target"      label="Target"/>
+                <SortTh col="pnl_pts"     label="Pts"/>
+                <SortTh col="pnl_r"       label="P&L (R)"/>
+                <SortTh col="mae_pts"     label="MAE"/>
+                <SortTh col="mfe_pts"     label="MFE"/>
+                <SortTh col="exit_reason" label="Reason"/>
+                <SortTh col="status"      label="Status"/>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(t=>{
+                const r    = t.pnl_r||0;
+                const pts  = t.pnl_pts||0;
+                const open = t.status==="OPEN";
+                const dateStr = (t.entry_time||"").slice(0,10);
+                return (
+                  <tr key={t.id}>
+                    <td className="sym">{(t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","")}</td>
+                    <td style={{color:"#93c5fd",fontSize:10}}>{t.strategy}</td>
+                    <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
+                    <td style={{color:"#64748b",fontSize:10}}>{dateStr}</td>
+                    <td style={{fontFamily:"monospace"}}>{(t.entry_price||0).toFixed(2)}</td>
+                    <td style={{fontFamily:"monospace"}}>{t.exit_price ? t.exit_price.toFixed(2) : "—"}</td>
+                    <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.stop_loss||0).toFixed(2)}</td>
+                    <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.target||0).toFixed(2)}</td>
+                    <td className={open?"neutral-cell":pts>0?"good":pts<0?"bad":"neutral-cell"} style={{fontFamily:"monospace"}}>
+                      {open ? "open" : `${pts>=0?"+":""}${pts.toFixed(2)}`}
+                    </td>
+                    <td className={open?"neutral-cell":r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{open?"open":fmtR(r)}</td>
+                    <td style={{fontFamily:"monospace",color:"#fca5a5",fontSize:10}}>{(t.mae_pts||0)>0?`-${(t.mae_pts||0).toFixed(2)}`:"—"}</td>
+                    <td style={{fontFamily:"monospace",color:"#86efac",fontSize:10}}>{(t.mfe_pts||0)>0?`+${(t.mfe_pts||0).toFixed(2)}`:"—"}</td>
+                    <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
+                    <td><span className={`badge ${open?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   }
@@ -332,7 +428,7 @@ function App() {
                 <span className={`outcome-${b}`} style={{fontWeight:600,fontSize:13}}>{outcomeLabel(b)}</span>
                 <span style={{color:"#475569",fontSize:11}}>{trades.length} trade{trades.length!==1?"s":""}</span>
               </div>
-              <LearningTradesTable trades={trades.slice(0,10)}/>
+              <LearningTradesTable trades={trades.slice(0,10)} showControls={false}/>
             </div>
           );
         })}
@@ -624,8 +720,8 @@ function App() {
 
           {learnSubTab==="trades" && (
             <div className="card">
-              <h2>Recent trades ({learnTrades.length})</h2>
-              <LearningTradesTable trades={learnTrades}/>
+              <h2>Recent trades</h2>
+              <LearningTradesTable trades={learnTrades} showControls={true}/>
             </div>
           )}
 
