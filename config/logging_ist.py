@@ -13,6 +13,7 @@ Usage:
 """
 
 import logging
+import logging.handlers
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -38,12 +39,13 @@ def setup_logging(
     log_file: str | None = None,
 ) -> None:
     """
-    Configure root logger with IST timestamps.
+    Configure root logger with IST timestamps and daily log rotation.
 
     Args:
         level:    Logging level (default INFO)
         fmt:      Log record format string
-        log_file: Optional path to a .log file (appended to stdout handler)
+        log_file: Path to log file. Rotates at midnight; all rotated files are kept
+                  (backupCount=0 means no automatic deletion).
     """
     formatter = ISTFormatter(fmt)
 
@@ -51,7 +53,17 @@ def setup_logging(
     if log_file:
         import os
         os.makedirs(os.path.dirname(log_file) if os.path.dirname(log_file) else ".", exist_ok=True)
-        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+        fh = logging.handlers.TimedRotatingFileHandler(
+            log_file,
+            when        = "midnight",
+            interval    = 1,
+            backupCount = 0,       # 0 = keep all rotated files, never delete
+            encoding    = "utf-8",
+            utc         = False,
+        )
+        # Suffix format: watchdog.log.2026-05-06
+        fh.suffix = "%Y-%m-%d"
+        handlers.append(fh)
 
     for handler in handlers:
         handler.setFormatter(formatter)
