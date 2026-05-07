@@ -183,11 +183,10 @@ class LearningEngine:
             f"T {signal['target']:.2f} | R:R {signal['rr']:.1f}"
         )
 
-        # Mirror to paper trading wallet (deducts capital; exits are mirrored on close)
+        # Mirror to paper trading wallet — always, regardless of PAPER_TRADING mode
         try:
             from paper_trading import paper_trading_engine
-            if paper_trading_engine.is_active():
-                paper_trading_engine.mirror_learning_open(trade)
+            paper_trading_engine.mirror_learning_open(trade)
         except Exception as exc:
             logger.debug(f"[Learning] Paper mirror open error: {exc}")
 
@@ -256,13 +255,12 @@ class LearningEngine:
                 else:
                     self._apply_cooldown(symbol, minutes=60)
 
-                # Mirror close to paper trading
+                # Mirror close to paper trading — always
                 try:
                     from paper_trading import paper_trading_engine
-                    if paper_trading_engine.is_active():
-                        paper_trading_engine.mirror_learning_close(
-                            trade["id"], exit_price, exit_reason
-                        )
+                    paper_trading_engine.mirror_learning_close(
+                        trade["id"], exit_price, exit_reason
+                    )
                 except Exception as exc:
                     logger.debug(f"[Learning] Paper mirror close error: {exc}")
 
@@ -410,13 +408,12 @@ class LearningEngine:
                 )
                 stale += 1
                 logger.info(f"[Learning] STALE {trade['id']} | {trade['strategy']} {trade['symbol']} — missed EOD close on {entry_date}")
-                # Mirror stale close to paper trading
+                # Mirror stale close to paper trading — always
                 try:
                     from paper_trading import paper_trading_engine
-                    if paper_trading_engine.is_active():
-                        paper_trading_engine.mirror_learning_close(
-                            trade["id"], trade["entry_price"], "STALE"
-                        )
+                    paper_trading_engine.mirror_learning_close(
+                        trade["id"], trade["entry_price"], "STALE"
+                    )
                 except Exception:
                     pass
                 continue

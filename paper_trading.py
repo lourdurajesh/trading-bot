@@ -70,10 +70,12 @@ class PaperTradingEngine:
 
     def __init__(self):
         self._active = PAPER_TRADING
+        # Always initialise DB — learning mirrors need the tables even when
+        # full paper trading mode is off (PAPER_TRADING=false).
+        self._init_db()
         if self._active:
             logger.info("[PaperTrading] PAPER TRADING MODE ACTIVE — no real orders will be placed")
-            self._init_db()
-            logger.info(f"[PaperTrading] Paper wallet balance: ₹{self.get_balance():,.0f}")
+        logger.info(f"[PaperTrading] Paper wallet balance: ₹{self.get_balance():,.0f}")
 
     def is_active(self) -> bool:
         return self._active
@@ -476,6 +478,8 @@ class PaperTradingEngine:
         """
         Called by LearningEngine when it opens a trade.
         Mirrors it to paper_trades using a 1% risk position-sizing rule.
+        Always active regardless of PAPER_TRADING env var — learning mirrors
+        run independently of full paper trading mode.
         Returns the paper trade ID, or None if capital is insufficient.
 
         Position sizing: risk 1% of current paper balance.
@@ -483,8 +487,6 @@ class PaperTradingEngine:
           qty = int(risk_amount / stop_distance)  (min 1)
           capital_deployed = qty * entry * 0.25   (25% intraday margin)
         """
-        if not self._active:
-            return None
 
         symbol    = trade.get("symbol", "")
         direction = trade.get("direction", "LONG")
@@ -559,10 +561,9 @@ class PaperTradingEngine:
         """
         Called by LearningEngine when it closes a trade.
         Looks up the mirrored paper trade by learning_id suffix and closes it.
+        Always active regardless of PAPER_TRADING env var.
         Returns realised P&L (0 if no mirrored trade found).
         """
-        if not self._active:
-            return 0.0
 
         paper_id = f"PAPER-LRN-{learning_id[-8:]}"
 

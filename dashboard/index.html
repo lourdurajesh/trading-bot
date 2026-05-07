@@ -449,6 +449,13 @@ function App() {
   const heat   = (positions||[]).reduce((s,p)=>s+(p.capital_at_risk||0),0) / ((stats?.total_capital||1)) * 100;
   const isPaper = mode === "AUTO" && paperStats?.mode === "PAPER";
 
+  /* when paper mode is active, show paper wallet figures on the Trading tab */
+  const displayPortVal = isPaper ? ((paperStats?.available_balance||0)+(paperStats?.capital_deployed||0)) : (stats?.portfolio_value||0);
+  const displayPnl     = isPaper ? (paperStats?.total_pnl||0) : pnl;
+  const displayPnlPct  = isPaper ? (paperStats?.total_pnl_pct||0) : pnlPct;
+  const displayWinRate = isPaper ? (paperStats?.win_rate||0) : (stats?.win_rate||0);
+  const displayDdPct   = isPaper ? (100-(paperStats?.balance_pct||100)) : (stats?.drawdown_pct||0);
+
   const logColor = line => {
     if (line.includes("CRITICAL") || line.includes("ERROR")) return "error";
     if (line.includes("WARNING")) return "warn";
@@ -601,14 +608,14 @@ function App() {
           <SignalHealthWidget/>
 
           <div className="grid4">
-            <div className="metric"><div className="lbl">Portfolio value</div>
-              <div className={`val ${pnl>=0?"up":"down"}`}>₹{fmt(stats?.portfolio_value)}</div></div>
+            <div className="metric"><div className="lbl">{isPaper?"Paper wallet value":"Portfolio value"}</div>
+              <div className={`val ${displayPnl>=0?"up":"down"}`}>₹{fmt(displayPortVal)}</div></div>
             <div className="metric"><div className="lbl">Total P&L</div>
-              <div className={`val ${pnl>=0?"up":"down"}`}>{pnl>=0?"+":""}₹{fmt(Math.abs(pnl))} <span style={{fontSize:13}}>({pnlPct>=0?"+":""}{pnlPct.toFixed(1)}%)</span></div></div>
+              <div className={`val ${displayPnl>=0?"up":"down"}`}>{displayPnl>=0?"+":""}₹{fmt(Math.abs(displayPnl))} <span style={{fontSize:13}}>({displayPnlPct>=0?"+":""}{displayPnlPct.toFixed(1)}%)</span></div></div>
             <div className="metric"><div className="lbl">Win rate</div>
-              <div className="val neutral">{stats?.win_rate?.toFixed(0)||0}%</div></div>
-            <div className="metric"><div className="lbl">Drawdown</div>
-              <div className={`val ${(stats?.drawdown_pct||0)>2?"down":"neutral"}`}>{stats?.drawdown_pct?.toFixed(1)||0}%</div></div>
+              <div className="val neutral">{Number(displayWinRate).toFixed(0)}%</div></div>
+            <div className="metric"><div className="lbl">{isPaper?"Wallet drawdown":"Drawdown"}</div>
+              <div className={`val ${displayDdPct>2?"down":"neutral"}`}>{displayDdPct.toFixed(1)}%</div></div>
           </div>
 
           <div className="grid2">
@@ -692,11 +699,34 @@ function App() {
       {tab==="paper" && (
         <div>
           <div className="paper-banner">
-            📝 Paper trading mode — all trades are simulated. No real money at risk.
+            📝 Paper wallet — ₹5L corpus tracking all learning-mirrored trades. Not your live portfolio.
           </div>
           {paperStats ? (
             <div>
-              <div className="grid4">
+              {/* Wallet row — most important number first */}
+              <div className="grid4" style={{marginBottom:10}}>
+                <div className="metric">
+                  <div className="lbl">Wallet balance</div>
+                  <div className={`val ${(paperStats.available_balance||0)>=(paperStats.starting_capital||500000)*0.9?"up":(paperStats.available_balance||0)>=(paperStats.starting_capital||500000)*0.7?"neutral":"down"}`}>
+                    ₹{fmt(paperStats.available_balance||0)}
+                  </div>
+                </div>
+                <div className="metric">
+                  <div className="lbl">Starting capital</div>
+                  <div className="val neutral">₹{fmt(paperStats.starting_capital||500000)}</div>
+                </div>
+                <div className="metric">
+                  <div className="lbl">Capital deployed</div>
+                  <div className="val amber">₹{fmt(paperStats.capital_deployed||0)}</div>
+                </div>
+                <div className="metric">
+                  <div className="lbl">Wallet %</div>
+                  <div className={`val ${(paperStats.balance_pct||100)>=90?"up":(paperStats.balance_pct||100)>=70?"neutral":"down"}`}>
+                    {paperStats.balance_pct||100}%
+                  </div>
+                </div>
+              </div>
+              <div className="grid4" style={{marginBottom:16}}>
                 <div className="metric"><div className="lbl">Total P&L</div>
                   <div className={`val ${(paperStats.total_pnl||0)>=0?"up":"down"}`}>
                     {(paperStats.total_pnl||0)>=0?"+":""}₹{fmt(Math.abs(paperStats.total_pnl||0))}
@@ -713,7 +743,7 @@ function App() {
                   <h2>Performance</h2>
                   {[["Realised P&L",`₹${fmt(paperStats.total_realised)}`,(paperStats.total_realised||0)>=0?"up":"down"],
                     ["Unrealised P&L",`₹${fmt(paperStats.total_unrealised)}`,(paperStats.total_unrealised||0)>=0?"up":"down"],
-                    ["Return %",`${paperStats.total_pnl_pct||0}%`,(paperStats.total_pnl_pct||0)>=0?"up":"down"],
+                    ["Return on ₹5L",`${paperStats.total_pnl_pct||0}%`,(paperStats.total_pnl_pct||0)>=0?"up":"down"],
                     ["Avg winner",`₹${fmt(paperStats.avg_winner)}`,"up"],
                     ["Avg loser",`₹${fmt(paperStats.avg_loser)}`,"down"],
                     ["Open positions",paperStats.open_positions||0,"neutral"],
