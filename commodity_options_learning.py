@@ -51,56 +51,88 @@ MCX_MARKET_CLOSE = dtime(23, 30)
 # Stop taking new entries 30 min before close (spread widens)
 MCX_ENTRY_CUTOFF = dtime(23, 0)
 
-# symbol → {lot_size, strike_step, typical_iv, price_unit}
+# Keyed by short commodity name.  Full Fyers symbol is built dynamically
+# via _fyers_sym() so contracts never expire silently.
 MCX_CONTRACTS = {
-    "MCX:CRUDEOIL25JUNFUT": {
-        "short":       "CRUDEOIL",
+    "CRUDEOIL": {
         "lot_size":    100,        # barrels per lot
         "strike_step": 100,        # INR per barrel
-        "typical_iv":  0.40,       # ~40% historical
+        "typical_iv":  0.40,
         "price_unit":  "INR/bbl",
         "min_price":   3000,
         "max_price":   12000,
     },
-    "MCX:GOLD25JUNFUT": {
-        "short":       "GOLD",
-        "lot_size":    100,        # units (1 unit = 10g)
-        "strike_step": 500,        # INR per 10g
+    "GOLD": {
+        "lot_size":    100,        # 1 unit = 10g
+        "strike_step": 500,
         "typical_iv":  0.18,
         "price_unit":  "INR/10g",
         "min_price":   50000,
         "max_price":   120000,
     },
-    "MCX:SILVER25JUNFUT": {
-        "short":       "SILVER",
+    "SILVER": {
         "lot_size":    30,         # kg
-        "strike_step": 1000,       # INR per kg
+        "strike_step": 1000,
         "typical_iv":  0.28,
         "price_unit":  "INR/kg",
         "min_price":   60000,
         "max_price":   120000,
     },
-    "MCX:COPPER25JUNFUT": {
-        "short":       "COPPER",
-        "lot_size":    2500,       # kg (1 lot = 2.5 MT)
-        "strike_step": 10,         # INR per kg
+    "COPPER": {
+        "lot_size":    2500,       # kg (2.5 MT)
+        "strike_step": 10,
         "typical_iv":  0.25,
         "price_unit":  "INR/kg",
         "min_price":   400,
         "max_price":   1200,
     },
-    "MCX:NATURALGAS25JUNFUT": {
-        "short":       "NATURALGAS",
+    "NATURALGAS": {
         "lot_size":    1250,       # mmBtu
-        "strike_step": 10,         # INR per mmBtu
-        "typical_iv":  0.55,       # very volatile
+        "strike_step": 10,
+        "typical_iv":  0.55,
         "price_unit":  "INR/mmBtu",
         "min_price":   100,
         "max_price":   600,
     },
 }
 
-ALL_MCX_SYMBOLS = list(MCX_CONTRACTS.keys())
+ALL_MCX_SHORTS = list(MCX_CONTRACTS.keys())
+
+_MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
+
+# Days-before-month-end trigger for rolling to next contract.
+# Rule: roll when calendar day >= (days_in_month - buffer).
+# NATURALGAS uses 32 (> any month) so it always resolves to next month —
+# MCX NG expires ~25th of the month PRIOR to the contract month.
+_ROLLOVER_BUFFER = {
+    "CRUDEOIL":   14,   # expires ~19th; roll by ~17th
+    "GOLD":       28,   # expires ~5th; next month active most of current month
+    "SILVER":     28,
+    "COPPER":     5,    # last Thursday; roll last 5 days
+    "NATURALGAS": 32,   # always next month
+}
+
+
+def _fyers_sym(short: str) -> str:
+    """Return the active front-month MCX futures symbol for today.
+
+    Example (called on 7-May-2026):
+        _fyers_sym("CRUDEOIL")   → "MCX:CRUDEOIL26MAYFUT"
+        _fyers_sym("NATURALGAS") → "MCX:NATURALGAS26JUNFUT"
+    """
+    import calendar as _cal
+    now   = datetime.now(tz=IST)
+    year  = now.year
+    month = now.month
+    days_in_month = _cal.monthrange(year, month)[1]
+    buf   = _ROLLOVER_BUFFER.get(short, 5)
+
+    if now.day >= max(days_in_month - buf, 1):
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+
+    return f"MCX:{short}{str(year)[-2:]}{_MONTHS[month - 1]}FUT"
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -165,30 +197,31 @@ class CommodityOptionsLearning:
 
         # 2. New entry scan (stop 30 min before close)
         if now.time() <= MCX_ENTRY_CUTOFF:
-            for symbol in ALL_MCX_SYMBOLS:
-                self._evaluate(symbol, store, now)
+            for short in ALL_MCX_SHORTS:
+                self._evaluate(short, store, now)
 
     # ─────────────────────────────────────────────────────────────
     # STRATEGY LOGIC
     # ─────────────────────────────────────────────────────────────
 
-    def _evaluate(self, symbol: str, store, now: datetime) -> None:
-        meta = MCX_CONTRACTS[symbol]
+    def _evaluate(self, short: str, store, now: datetime) -> None:
+        meta   = MCX_CONTRACTS[short]
+        symbol = _fyers_sym(short)   # e.g. MCX:CRUDEOIL26MAYFUT
 
-        # Already have an open position for this symbol?
-        if any(symbol in k for k in self._open_positions):
+        # Already have an open position for this commodity?
+        if any(short in k for k in self._open_positions):
             return
 
         # Get futures price
         spot = store.get_ltp(symbol)
         if not spot or spot < meta["min_price"] or spot > meta["max_price"]:
-            logger.debug(f"[CommOpts] {meta['short']} spot {spot} — invalid/unavailable")
+            logger.debug(f"[CommOpts] {short} spot {spot} — invalid/unavailable (sym={symbol})")
             return
 
         # 1H trend check
         df = store.get_ohlcv(symbol, "1H", n=50)
         if df is None or len(df) < 20:
-            logger.debug(f"[CommOpts] {meta['short']} insufficient 1H data")
+            logger.debug(f"[CommOpts] {short} insufficient 1H data")
             return
 
         direction, rsi_val, ema20_val = self._get_direction(df, spot)
@@ -196,11 +229,11 @@ class CommodityOptionsLearning:
             return
 
         # Fetch options chain (or simulate)
-        chain = self._get_chain(symbol)
+        chain    = self._get_chain(symbol)
         opt_type = "call" if direction == "LONG" else "put"
 
         trade = self._build_trade(
-            symbol=symbol, meta=meta, spot=spot, direction=direction,
+            symbol=symbol, short=short, meta=meta, spot=spot, direction=direction,
             opt_type=opt_type, chain=chain, rsi_val=rsi_val,
             ema20_val=ema20_val, now=now,
         )
@@ -227,7 +260,7 @@ class CommodityOptionsLearning:
         return None, 0, 0
 
     def _build_trade(
-        self, symbol, meta, spot, direction, opt_type, chain,
+        self, symbol, short, meta, spot, direction, opt_type, chain,
         rsi_val, ema20_val, now,
     ) -> Optional[dict]:
         """Build a debit spread trade (buy ATM + sell OTM)."""
@@ -263,12 +296,12 @@ class CommodityOptionsLearning:
         max_profit   = round(spread_width - net_debit, 2)
 
         if net_debit <= 0 or max_profit <= 0:
-            logger.debug(f"[CommOpts] {meta['short']} invalid spread pricing: debit={net_debit}")
+            logger.debug(f"[CommOpts] {short} invalid spread pricing: debit={net_debit}")
             return None
 
         rr = round(max_profit / net_debit, 2)
         if rr < 1.0:
-            logger.debug(f"[CommOpts] {meta['short']} R:R {rr:.2f} too low")
+            logger.debug(f"[CommOpts] {short} R:R {rr:.2f} too low")
             return None
 
         # Notional risk per lot
@@ -278,7 +311,7 @@ class CommodityOptionsLearning:
         return {
             "id":           trade_id,
             "symbol":       symbol,
-            "instrument":   meta["short"],
+            "instrument":   short,
             "direction":    direction,
             "opt_type":     opt_type,
             "strategy":     "CommodityDebitSpread",
@@ -357,7 +390,7 @@ class CommodityOptionsLearning:
             del self._open_positions[k]
 
     def _open_trade(self, trade: dict) -> None:
-        key = f"{trade['symbol']}:{trade['direction']}"
+        key = f"{trade['instrument']}:{trade['direction']}"
         self._open_positions[key] = trade
         self._db_insert(trade)
         logger.info(
@@ -637,17 +670,15 @@ class CommodityOptionsLearning:
         }
 
 
-    def _resolve_symbol(self, symbol: str) -> str:
-        """Resolve short name (CRUDEOIL) or partial match to full MCX Fyers symbol."""
-        if symbol in MCX_CONTRACTS:
-            return symbol
-        sym_up = symbol.upper()
-        for full_sym, meta in MCX_CONTRACTS.items():
-            if meta.get("short", "").upper() == sym_up:
-                return full_sym
-            if sym_up in full_sym:
-                return full_sym
-        return symbol
+    def _to_short(self, symbol: str) -> str:
+        """Map 'CRUDEOIL' or 'MCX:CRUDEOIL26MAYFUT' → short name key in MCX_CONTRACTS."""
+        sym_up = symbol.upper().replace("MCX:", "")
+        if sym_up in MCX_CONTRACTS:
+            return sym_up
+        for short in MCX_CONTRACTS:
+            if sym_up.startswith(short):
+                return short
+        return sym_up
 
     def get_full_chain(self, symbol: str, expiry_idx: int = 0) -> dict:
         """Return full options chain with Greeks for dashboard display."""
@@ -656,8 +687,9 @@ class CommodityOptionsLearning:
         now    = datetime.now(tz=IST)
         today  = now.date()
 
-        full_sym   = self._resolve_symbol(symbol)
-        meta       = MCX_CONTRACTS.get(full_sym, {})
+        short      = self._to_short(symbol)
+        full_sym   = _fyers_sym(short)
+        meta       = MCX_CONTRACTS.get(short, {})
         step       = meta.get("strike_step", 100)
         typical_iv = meta.get("typical_iv", 0.35)
 
@@ -739,7 +771,7 @@ class CommodityOptionsLearning:
             return {
                 "source":     "live_chain",
                 "symbol":     full_sym,
-                "short":      meta.get("short", full_sym),
+                "short":      short,
                 "spot":       spot,
                 "atm":        atm,
                 "dte":        dte,
@@ -749,21 +781,21 @@ class CommodityOptionsLearning:
                 "fetched_at": now.isoformat(),
             }
 
-        return self._bs_chain(full_sym, spot, step, typical_iv, meta)
+        return self._bs_chain(full_sym, short, spot, step, typical_iv, meta)
 
-    def _bs_chain(self, symbol: str, spot, step: int, iv: float, meta: dict = None) -> dict:
+    def _bs_chain(self, symbol: str, short: str, spot, step: int, iv: float, meta: dict = None) -> dict:
         """Generate Black-Scholes chain estimates when live chain is unavailable."""
         from analysis.options_engine import OptionsEngine
         engine = OptionsEngine()
         now    = datetime.now(tz=IST)
         if meta is None:
-            meta = MCX_CONTRACTS.get(symbol, {})
+            meta = MCX_CONTRACTS.get(short, {})
 
         if not spot:
             return {
                 "source":     "bs_estimate",
                 "symbol":     symbol,
-                "short":      meta.get("short", symbol),
+                "short":      short,
                 "spot":       None,
                 "atm":        None,
                 "dte":        21,
@@ -804,7 +836,7 @@ class CommodityOptionsLearning:
         return {
             "source":     "bs_estimate",
             "symbol":     symbol,
-            "short":      meta.get("short", symbol),
+            "short":      short,
             "spot":       spot,
             "atm":        atm,
             "dte":        21,
