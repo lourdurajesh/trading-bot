@@ -297,7 +297,7 @@ class TradingBot:
                     try:
                         commodity_options.run_cycle()
                     except Exception as ce:
-                        logger.debug(f"Commodity options cycle error: {ce}")
+                        logger.exception(f"[CommOpts] Cycle error: {ce}")
 
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)

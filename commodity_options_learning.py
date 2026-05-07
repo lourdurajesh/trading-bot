@@ -192,6 +192,9 @@ class CommodityOptionsLearning:
 
         from data.data_store import store
 
+        open_count = len(self._open_positions)
+        logger.info(f"[CommOpts] Cycle @ {now.strftime('%H:%M')} IST | open={open_count}")
+
         # 1. Exit monitoring
         self._check_exits(store, now)
 
@@ -215,17 +218,18 @@ class CommodityOptionsLearning:
         # Get futures price
         spot = store.get_ltp(symbol)
         if not spot or spot < meta["min_price"] or spot > meta["max_price"]:
-            logger.debug(f"[CommOpts] {short} spot {spot} — invalid/unavailable (sym={symbol})")
+            logger.info(f"[CommOpts] {short} no valid spot (got {spot}, sym={symbol})")
             return
 
         # 1H trend check
         df = store.get_ohlcv(symbol, "1H", n=50)
         if df is None or len(df) < 20:
-            logger.debug(f"[CommOpts] {short} insufficient 1H data")
+            logger.info(f"[CommOpts] {short} insufficient 1H bars (got {len(df) if df is not None else 0})")
             return
 
         direction, rsi_val, ema20_val = self._get_direction(df, spot)
         if not direction:
+            logger.info(f"[CommOpts] {short} no trend — spot={spot:.2f} RSI={rsi_val:.1f} EMA20={ema20_val:.2f}")
             return
 
         # Fetch options chain (or simulate)
