@@ -200,12 +200,13 @@ class FyersStream:
                 logger.debug(f"Gap fill failed for {symbol}: {e}")
 
     def _subscribe(self) -> None:
-        """Subscribe to all symbols in watchlist."""
+        """Subscribe to NSE + MCX symbols."""
         import config.watchlist as _wl
-        symbols = list(set(_wl.ALL_NSE_SYMBOLS))   # deduplicate — reads current value after dynamic watchlist load
-        # Fyers WebSocket subscribe takes a list of symbol strings
+        from commodity_options_learning import _fyers_sym, ALL_MCX_SHORTS
+        mcx_symbols = [_fyers_sym(s) for s in ALL_MCX_SHORTS]
+        symbols = list(set(_wl.ALL_NSE_SYMBOLS + mcx_symbols))
         self._ws_client.subscribe(symbols=symbols, data_type="SymbolUpdate")
-        logger.info(f"Subscribed to {len(symbols)} NSE symbols.")
+        logger.info(f"Subscribed to {len(symbols)} symbols — NSE: {len(_wl.ALL_NSE_SYMBOLS)}, MCX: {len(mcx_symbols)} {mcx_symbols}")
 
     # ─────────────────────────────────────────────────────────────
     # INTERNAL — historical data seeding
@@ -215,23 +216,25 @@ class FyersStream:
         """
         Fetch historical OHLCV from Fyers REST API on startup.
         Seeds DataStore so strategies have data immediately on first tick.
-        Runs for all NSE symbols so every symbol is tradeable from the first cycle.
+        Runs for NSE and MCX symbols so every symbol is tradeable from the first cycle.
         """
         if not self._fyers_client:
             logger.info("Skipping historical seeding (no REST client).")
             return
 
         import config.watchlist as _wl
+        from commodity_options_learning import _fyers_sym, ALL_MCX_SHORTS
+
         nse_priority = [s for s in _wl.ALL_NSE_SYMBOLS if s.startswith("NSE:")]
 
-        timeframes_to_seed = {
+        nse_timeframes = {
             "15m": {"resolution": "15", "days_back": 30},
             "1H":  {"resolution": "60", "days_back": 90},
             "1D":  {"resolution": "D",  "days_back": 365},
         }
 
         for symbol in nse_priority:
-            for tf, params in timeframes_to_seed.items():
+            for tf, params in nse_timeframes.items():
                 try:
                     df = self._fetch_historical(symbol, params["resolution"], params["days_back"])
                     if df is not None and len(df) > 0:
@@ -239,6 +242,21 @@ class FyersStream:
                 except Exception as e:
                     logger.error(f"Historical seed failed for {symbol} [{tf}]: {e}")
                 time.sleep(0.3)   # rate limit — Fyers allows ~10 req/sec
+
+        # Seed MCX futures — 1H candles are enough for the EMA/RSI trend check
+        logger.info("Seeding MCX historical data...")
+        for short in ALL_MCX_SHORTS:
+            symbol = _fyers_sym(short)
+            try:
+                df = self._fetch_historical(symbol, "60", 90)
+                if df is not None and len(df) > 0:
+                    store.load_historical(symbol, "1H", df)
+                    logger.info(f"[MCX] Seeded {len(df)} 1H candles for {symbol}")
+                else:
+                    logger.warning(f"[MCX] No historical data returned for {symbol}")
+            except Exception as e:
+                logger.error(f"[MCX] Historical seed failed for {symbol}: {e}")
+            time.sleep(0.3)
 
     def _fetch_historical(
         self, symbol: str, resolution: str, days_back: int
