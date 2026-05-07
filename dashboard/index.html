@@ -142,7 +142,7 @@ const outcomeLabel = b => ({strong_win:"Strong Win",small_win:"Small Win",scratc
    focus from a date picker / text input.
    React.memo prevents re-renders unless the trades array changes.
 ───────────────────────────────────────────────────────────── */
-const LearningTradesTable = React.memo(function LearningTradesTable({trades, showControls}) {
+const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltps={}, showControls}) {
   const [filterSym,    setFilterSym]    = React.useState("");
   const [filterStrat,  setFilterStrat]  = React.useState("all");
   const [filterDir,    setFilterDir]    = React.useState("all");
@@ -238,6 +238,7 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, sho
               <SortTh col="direction"   label="Dir"/>
               <SortTh col="entry_time"  label="Date"/>
               <SortTh col="entry_price" label="Entry"/>
+              <th style={{whiteSpace:"nowrap",color:"#f59e0b"}}>LTP</th>
               <SortTh col="exit_price"  label="Exit"/>
               <SortTh col="stop_loss"   label="SL"/>
               <SortTh col="target"      label="Target"/>
@@ -251,10 +252,18 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, sho
           </thead>
           <tbody>
             {rows.map(t=>{
-              const r    = t.pnl_r||0;
-              const pts  = t.pnl_pts||0;
-              const open = t.status==="OPEN";
+              const r       = t.pnl_r||0;
+              const pts     = t.pnl_pts||0;
+              const open    = t.status==="OPEN";
               const dateStr = (t.entry_time||"").slice(0,10);
+              const ltp     = open ? (ltps[t.symbol] || null) : null;
+              const livePts = ltp != null
+                ? (t.direction==="LONG" ? ltp - t.entry_price : t.entry_price - ltp)
+                : null;
+              const ltpColor = ltp == null ? "#64748b"
+                : livePts > 0 ? "#22c55e"
+                : livePts < 0 ? "#ef4444"
+                : "#94a3b8";
               return (
                 <tr key={t.id}>
                   <td className="sym">{(t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","")}</td>
@@ -262,11 +271,16 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, sho
                   <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
                   <td style={{color:"#64748b",fontSize:10}}>{dateStr}</td>
                   <td style={{fontFamily:"monospace"}}>{(t.entry_price||0).toFixed(2)}</td>
+                  <td style={{fontFamily:"monospace",color:ltpColor,fontWeight:open?"600":"400"}}>
+                    {ltp != null ? ltp.toFixed(2) : "—"}
+                  </td>
                   <td style={{fontFamily:"monospace"}}>{t.exit_price ? t.exit_price.toFixed(2) : "—"}</td>
                   <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.stop_loss||0).toFixed(2)}</td>
                   <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.target||0).toFixed(2)}</td>
-                  <td className={open?"neutral-cell":pts>0?"good":pts<0?"bad":"neutral-cell"} style={{fontFamily:"monospace"}}>
-                    {open ? "open" : `${pts>=0?"+":""}${pts.toFixed(2)}`}
+                  <td className={open?(livePts==null?"neutral-cell":livePts>0?"good":livePts<0?"bad":"neutral-cell"):pts>0?"good":pts<0?"bad":"neutral-cell"} style={{fontFamily:"monospace"}}>
+                    {open
+                      ? (livePts != null ? `${livePts>=0?"+":""}${livePts.toFixed(2)}` : "—")
+                      : `${pts>=0?"+":""}${pts.toFixed(2)}`}
                   </td>
                   <td className={open?"neutral-cell":r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{open?"open":fmtR(r)}</td>
                   <td style={{fontFamily:"monospace",color:"#fca5a5",fontSize:10}}>{(t.mae_pts||0)>0?`-${(t.mae_pts||0).toFixed(2)}`:"—"}</td>
@@ -342,9 +356,10 @@ function App() {
   const [drought, setDrought]         = React.useState(null);
 
   /* learning — data pushed via WS when trades change; filters live inside LearningTradesTable */
-  const [learnStats, setLearnStats]   = React.useState(null);
-  const [learnTrades, setLearnTrades] = React.useState([]);
-  const [learnSubTab, setLearnSubTab] = React.useState("trades");
+  const [learnStats,   setLearnStats]   = React.useState(null);
+  const [learnTrades,  setLearnTrades]  = React.useState([]);
+  const [learnLtps,    setLearnLtps]    = React.useState({});
+  const [learnSubTab,  setLearnSubTab]  = React.useState("trades");
 
   /* commodity */
   const [commStats, setCommStats]     = React.useState(null);
@@ -366,11 +381,13 @@ function App() {
           const d = JSON.parse(e.data);
           setData(d);
           if (Array.isArray(d.system_alerts)) setSysAlerts(d.system_alerts);
-          // Learning data only arrives when trades actually changed (server-side diff)
+          // Learning trades+stats: only sent when changed (per-connection hash on server)
           if (d.learning) {
             setLearnTrades(d.learning.trades || []);
             setLearnStats(d.learning.stats   || null);
           }
+          // Learning LTPs: sent every tick for open positions
+          if (d.learning_ltps) setLearnLtps(d.learning_ltps);
         } catch{}
       };
     }
@@ -790,7 +807,7 @@ function App() {
           {learnSubTab==="trades" && (
             <div className="card">
               <h2>Recent trades</h2>
-              <LearningTradesTable trades={learnTrades} showControls={true}/>
+              <LearningTradesTable trades={learnTrades} ltps={learnLtps} showControls={true}/>
             </div>
           )}
 

@@ -55,13 +55,13 @@ app.add_middleware(
 # Track connected WebSocket clients
 _ws_clients: list[WebSocket] = []
 
-# Learning data change-detection — only push to WS when trades actually change
-_last_learning_hash: str = ""
-
-
-def _get_learning_payload() -> dict | None:
-    """Return learning trades+stats when they've changed since last call; None otherwise."""
-    global _last_learning_hash
+def _get_learning_payload(prev_hash: str) -> tuple[dict | None, str]:
+    """
+    Return (data, new_hash).
+    data is None when trades haven't changed since prev_hash.
+    Pass prev_hash="" on first call to force the initial push.
+    Hash is per-WS-connection so every new client gets the full dataset on connect.
+    """
     import hashlib
     try:
         from learning_engine import learning_engine
@@ -70,12 +70,11 @@ def _get_learning_payload() -> dict | None:
         h = hashlib.md5(
             b",".join(f"{t['id']}:{t['status']}".encode() for t in trades)
         ).hexdigest()[:12]
-        if h == _last_learning_hash:
-            return None
-        _last_learning_hash = h
-        return {"trades": trades, "stats": stats}
+        if h == prev_hash:
+            return None, h
+        return {"trades": trades, "stats": stats}, h
     except Exception:
-        return None
+        return None, prev_hash
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -821,9 +820,11 @@ async def websocket_live(ws: WebSocket):
     await ws.accept()
     _ws_clients.append(ws)
     logger.info(f"Dashboard WebSocket connected. Clients: {len(_ws_clients)}")
+    # Per-connection hash: starts empty so the first tick always pushes learning data
+    conn_learning_hash = ""
     try:
         while True:
-            payload = _build_live_payload()
+            payload, conn_learning_hash = _build_live_payload(conn_learning_hash)
             await ws.send_text(json.dumps(payload))
             await asyncio.sleep(2)
     except WebSocketDisconnect:
@@ -835,18 +836,33 @@ async def websocket_live(ws: WebSocket):
             _ws_clients.remove(ws)
 
 
-def _build_live_payload() -> dict:
-    """Build the real-time payload sent to dashboard every 2 seconds."""
+def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
+    """Build the real-time payload sent to dashboard every 2 seconds.
+    Returns (payload, new_conn_learning_hash) so the WS loop can track
+    per-connection state."""
     stats     = portfolio_tracker.get_stats()
     risk      = risk_manager.status()
     positions = portfolio_tracker.get_open_positions()
     pending   = order_manager.get_pending_signals()
 
-    # Live LTPs for open positions
+    # Live LTPs for production open positions
     ltps = {
         pos["symbol"]: store.get_ltp(pos["symbol"])
         for pos in positions
     }
+
+    # Live LTPs for open learning trades (separate dict, sent every tick)
+    learning_ltps: dict = {}
+    try:
+        from learning_engine import learning_engine
+        open_learning = learning_engine.get_trades(status="OPEN")
+        for t in open_learning:
+            sym = t["symbol"]
+            ltp = store.get_ltp(sym)
+            if ltp:
+                learning_ltps[sym] = ltp
+    except Exception:
+        pass
 
     # Paper wallet balance (only when paper trading is active)
     paper_wallet = None
@@ -877,8 +893,8 @@ def _build_live_payload() -> dict:
     except Exception:
         pass
 
-    # Learning data — only included when trades have changed (nil otherwise)
-    learning = _get_learning_payload()
+    # Learning trades+stats — only when changed (per-connection hash)
+    learning, new_hash = _get_learning_payload(conn_learning_hash)
 
     return {
         "timestamp":       datetime.now(tz=IST).isoformat(),
@@ -888,8 +904,9 @@ def _build_live_payload() -> dict:
         "positions":       positions,
         "pending_signals": pending,
         "ltps":            ltps,
+        "learning_ltps":   learning_ltps,
         "paper_wallet":    paper_wallet,
         "system_alerts":   system_alerts,
         "token_status":    token_status,
         "learning":        learning,
-    }
+    }, new_hash
