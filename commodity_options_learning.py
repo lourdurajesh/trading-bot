@@ -107,9 +107,15 @@ _MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DE
 _ROLLOVER_BUFFER = {
     "CRUDEOIL":   14,   # expires ~19th; roll by ~17th
     "GOLD":       28,   # expires ~5th; next month active most of current month
-    "SILVER":     28,
+    "SILVER":     28,   # expires ~5th; next valid month (see _VALID_MONTHS)
     "COPPER":     5,    # last Thursday; roll last 5 days
-    "NATURALGAS": 32,   # always next month
+    "NATURALGAS": 32,   # always next month (expires 25th of prior month)
+}
+
+# MCX Silver only has contracts for these months — Fyers rejects all others.
+# All other commodities trade every calendar month so no restriction needed.
+_VALID_MONTHS: dict[str, list[int]] = {
+    "SILVER": [3, 5, 7, 9, 12],   # MAR, MAY, JUL, SEP, DEC
 }
 
 
@@ -119,6 +125,7 @@ def _fyers_sym(short: str) -> str:
     Example (called on 7-May-2026):
         _fyers_sym("CRUDEOIL")   → "MCX:CRUDEOIL26MAYFUT"
         _fyers_sym("NATURALGAS") → "MCX:NATURALGAS26JUNFUT"
+        _fyers_sym("SILVER")     → "MCX:SILVER26JULFUT"  (skips June — invalid)
     """
     import calendar as _cal
     now   = datetime.now(tz=IST)
@@ -131,6 +138,14 @@ def _fyers_sym(short: str) -> str:
         month += 1
         if month > 12:
             month, year = 1, year + 1
+
+    # Advance to next valid expiry month for commodities with restricted schedules
+    valid = _VALID_MONTHS.get(short)
+    if valid:
+        while month not in valid:
+            month += 1
+            if month > 12:
+                month, year = 1, year + 1
 
     return f"MCX:{short}{str(year)[-2:]}{_MONTHS[month - 1]}FUT"
 
