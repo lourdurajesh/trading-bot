@@ -251,6 +251,20 @@ def commodity_chain(symbol: str):
         return {"available": False, "error": str(e)}
 
 
+@app.get("/commodity/chain-full/{symbol:path}")
+def commodity_chain_full(symbol: str, expiry_idx: int = 0):
+    """
+    Full MCX options chain for a symbol — all strikes with CE/PE LTP, IV, OI, Greeks.
+    symbol     — short name (CRUDEOIL) or full Fyers code (MCX:CRUDEOIL25JUNFUT)
+    expiry_idx — which expiry to display (0 = nearest)
+    """
+    try:
+        from commodity_options_learning import commodity_options
+        return commodity_options.get_full_chain(symbol.upper(), expiry_idx=expiry_idx)
+    except Exception as e:
+        return {"error": str(e), "source": "error", "strikes": [], "expiries": []}
+
+
 @app.get("/logs")
 def get_logs(lines: int = 50):
     """Return last N lines from bot log."""

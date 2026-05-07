@@ -637,6 +637,185 @@ class CommodityOptionsLearning:
         }
 
 
+    def _resolve_symbol(self, symbol: str) -> str:
+        """Resolve short name (CRUDEOIL) or partial match to full MCX Fyers symbol."""
+        if symbol in MCX_CONTRACTS:
+            return symbol
+        sym_up = symbol.upper()
+        for full_sym, meta in MCX_CONTRACTS.items():
+            if meta.get("short", "").upper() == sym_up:
+                return full_sym
+            if sym_up in full_sym:
+                return full_sym
+        return symbol
+
+    def get_full_chain(self, symbol: str, expiry_idx: int = 0) -> dict:
+        """Return full options chain with Greeks for dashboard display."""
+        from analysis.options_engine import OptionsEngine
+        engine = OptionsEngine()
+        now    = datetime.now(tz=IST)
+        today  = now.date()
+
+        full_sym   = self._resolve_symbol(symbol)
+        meta       = MCX_CONTRACTS.get(full_sym, {})
+        step       = meta.get("strike_step", 100)
+        typical_iv = meta.get("typical_iv", 0.35)
+
+        spot = None
+        try:
+            from data.data_store import store
+            spot = store.get_ltp(full_sym)
+        except Exception:
+            pass
+
+        chain = self._get_chain(full_sym)
+
+        if chain:
+            expiries_raw = chain.get("expiryData", [])
+            expiry_list  = [e.get("expiry", "") for e in expiries_raw]
+            underlying   = chain.get("underlyingValue")
+            if spot is None:
+                spot = underlying
+
+            if not expiries_raw:
+                return self._bs_chain(full_sym, spot, step, typical_iv, meta)
+
+            idx          = min(expiry_idx, len(expiries_raw) - 1)
+            expiry_entry = expiries_raw[idx]
+            expiry_str   = expiry_entry.get("expiry", "")
+
+            try:
+                from datetime import datetime as _dt
+                exp_date = _dt.strptime(expiry_str, "%Y-%m-%d").date()
+                dte = max((exp_date - today).days, 1)
+            except Exception:
+                dte = 21
+
+            T   = dte / 365.0
+            atm = _atm_strike(spot or 0, step) if spot else 0
+
+            strikes_out = []
+            for row in expiry_entry.get("optionsChain", []):
+                k  = float(row.get("strikePrice", 0))
+                ce = row.get("CE", {}) or {}
+                pe = row.get("PE", {}) or {}
+
+                ce_ltp = float(ce.get("ltp") or ce.get("close_price") or 0)
+                pe_ltp = float(pe.get("ltp") or pe.get("close_price") or 0)
+                ce_iv  = float(ce.get("iv") or 0)
+                pe_iv  = float(pe.get("iv") or 0)
+                ce_oi  = int(ce.get("oi") or ce.get("openInterest") or 0)
+                pe_oi  = int(pe.get("oi") or pe.get("openInterest") or 0)
+                ce_vol = int(ce.get("volume") or ce.get("vol") or 0)
+                pe_vol = int(pe.get("volume") or pe.get("vol") or 0)
+
+                sigma_c = ce_iv if ce_iv > 0 else typical_iv
+                sigma_p = pe_iv if pe_iv > 0 else typical_iv
+
+                g_ce = engine.black_scholes(spot, k, T, 0.065, sigma_c, "call") if spot and T > 0 else None
+                g_pe = engine.black_scholes(spot, k, T, 0.065, sigma_p, "put")  if spot and T > 0 else None
+
+                strikes_out.append({
+                    "strike":    k,
+                    "is_atm":    abs(k - atm) < step * 0.5,
+                    "ce_ltp":    round(ce_ltp, 2),
+                    "ce_iv":     round(ce_iv * 100, 1),
+                    "ce_oi":     ce_oi,
+                    "ce_vol":    ce_vol,
+                    "ce_delta":  round(g_ce.delta, 3) if g_ce else 0,
+                    "ce_theta":  round(g_ce.theta, 2) if g_ce else 0,
+                    "ce_symbol": ce.get("symbol", ""),
+                    "pe_ltp":    round(pe_ltp, 2),
+                    "pe_iv":     round(pe_iv * 100, 1),
+                    "pe_oi":     pe_oi,
+                    "pe_vol":    pe_vol,
+                    "pe_delta":  round(g_pe.delta, 3) if g_pe else 0,
+                    "pe_theta":  round(g_pe.theta, 2) if g_pe else 0,
+                    "pe_symbol": pe.get("symbol", ""),
+                })
+
+            strikes_out.sort(key=lambda x: x["strike"])
+
+            return {
+                "source":     "live_chain",
+                "symbol":     full_sym,
+                "short":      meta.get("short", full_sym),
+                "spot":       spot,
+                "atm":        atm,
+                "dte":        dte,
+                "expiry":     expiry_str,
+                "expiries":   expiry_list,
+                "strikes":    strikes_out,
+                "fetched_at": now.isoformat(),
+            }
+
+        return self._bs_chain(full_sym, spot, step, typical_iv, meta)
+
+    def _bs_chain(self, symbol: str, spot, step: int, iv: float, meta: dict = None) -> dict:
+        """Generate Black-Scholes chain estimates when live chain is unavailable."""
+        from analysis.options_engine import OptionsEngine
+        engine = OptionsEngine()
+        now    = datetime.now(tz=IST)
+        if meta is None:
+            meta = MCX_CONTRACTS.get(symbol, {})
+
+        if not spot:
+            return {
+                "source":     "bs_estimate",
+                "symbol":     symbol,
+                "short":      meta.get("short", symbol),
+                "spot":       None,
+                "atm":        None,
+                "dte":        21,
+                "expiry":     None,
+                "expiries":   [],
+                "strikes":    [],
+                "note":       "No spot price — start bot during MCX hours (09:00–23:30 IST)",
+                "fetched_at": now.isoformat(),
+            }
+
+        atm = _atm_strike(spot, step)
+        T   = 21 / 365.0
+        strikes_out = []
+
+        for i in range(-5, 6):
+            k    = atm + i * step
+            g_ce = engine.black_scholes(spot, k, T, 0.065, iv, "call")
+            g_pe = engine.black_scholes(spot, k, T, 0.065, iv, "put")
+            strikes_out.append({
+                "strike":    k,
+                "is_atm":    i == 0,
+                "ce_ltp":    g_ce.price,
+                "ce_iv":     round(iv * 100, 1),
+                "ce_oi":     0,
+                "ce_vol":    0,
+                "ce_delta":  g_ce.delta,
+                "ce_theta":  g_ce.theta,
+                "ce_symbol": "",
+                "pe_ltp":    g_pe.price,
+                "pe_iv":     round(iv * 100, 1),
+                "pe_oi":     0,
+                "pe_vol":    0,
+                "pe_delta":  g_pe.delta,
+                "pe_theta":  g_pe.theta,
+                "pe_symbol": "",
+            })
+
+        return {
+            "source":     "bs_estimate",
+            "symbol":     symbol,
+            "short":      meta.get("short", symbol),
+            "spot":       spot,
+            "atm":        atm,
+            "dte":        21,
+            "expiry":     None,
+            "expiries":   [],
+            "strikes":    strikes_out,
+            "note":       "Live chain unavailable — Black-Scholes estimates (DTE=21, typical IV)",
+            "fetched_at": now.isoformat(),
+        }
+
+
 def _count_field(trades: list[dict], field: str) -> dict:
     c: dict = {}
     for t in trades:

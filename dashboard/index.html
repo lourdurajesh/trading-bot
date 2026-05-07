@@ -117,6 +117,21 @@
     .sub-tab.active{background:#1e293b;color:#f1f5f9;border-color:#334155}
     .source-live{color:#22c55e;font-size:10px}
     .source-sim{color:#f59e0b;font-size:10px}
+
+    /* ── Options chain table ── */
+    .chain-wrap{overflow-x:auto}
+    .chain-table{width:100%;border-collapse:collapse;font-size:11px;font-family:'Courier New',monospace}
+    .chain-table th{color:#64748b;padding:5px 8px;text-align:right;font-size:9px;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid #1e2433;font-weight:500;white-space:nowrap}
+    .chain-table th.ctr{text-align:center}
+    .chain-table td{padding:5px 8px;border-bottom:1px solid #111827;text-align:right;color:#cbd5e1;white-space:nowrap}
+    .chain-table td.ctr{text-align:center;font-weight:700;color:#f1f5f9;font-size:12px;background:#151a28}
+    .chain-table tr.atm td{background:#0e1f35;border-top:1px solid #3b82f633;border-bottom:1px solid #3b82f633}
+    .chain-table tr.atm td.ctr{color:#60a5fa;font-size:13px;background:#0a1a2e}
+    .chain-table tr:hover td{background:#151a28}
+    .chain-table tr.atm:hover td{background:#122540}
+    .chain-table tr.atm:hover td.ctr{background:#0d1f35}
+    .chain-sym-btn{padding:3px 10px;border-radius:4px;border:1px solid #2d3748;background:transparent;color:#64748b;font-size:11px;cursor:pointer;margin-right:4px;font-family:'Courier New',monospace;transition:all .1s}
+    .chain-sym-btn.active{border-color:#3b82f6;background:#1e3a5f;color:#93c5fd}
   </style>
 </head>
 <body>
@@ -366,6 +381,12 @@ function App() {
   const [commTrades, setCommTrades]   = React.useState([]);
   const [commSubTab, setCommSubTab]   = React.useState("trades");
 
+  /* options chain */
+  const [commChain,       setCommChain]       = React.useState(null);
+  const [commChainSym,    setCommChainSym]    = React.useState("CRUDEOIL");
+  const [commChainExpIdx, setCommChainExpIdx] = React.useState(0);
+  const [commChainBusy,   setCommChainBusy]   = React.useState(false);
+
   const logRef = React.useRef(null);
 
   /* ── live WS ── */
@@ -430,6 +451,7 @@ function App() {
     };
 
     loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadComm();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
 
     const t1 = setInterval(loadServices, 15000);
     const t2 = setInterval(loadPaper,    5000);
@@ -437,6 +459,16 @@ function App() {
     const t5 = setInterval(loadComm,     60000);
     return () => [t1,t2,t3,t5].forEach(clearInterval);
   }, []);
+
+  /* ── options chain fetch (on-demand when chain sub-tab is visible) ── */
+  React.useEffect(() => {
+    if (tab !== "commodity" || commSubTab !== "chain") return;
+    setCommChainBusy(true);
+    fetch(`${API}/commodity/chain-full/${commChainSym}?expiry_idx=${commChainExpIdx}`)
+      .then(r => r.json())
+      .then(d => { setCommChain(d); setCommChainBusy(false); })
+      .catch(() => setCommChainBusy(false));
+  }, [tab, commSubTab, commChainSym, commChainExpIdx]);
 
   const switchMode = m => fetch(`${API}/mode/${m}`, {method:"POST"});
   const confirm    = id => fetch(`${API}/signals/${id}/confirm`, {method:"POST"});
@@ -532,6 +564,142 @@ function App() {
             })}
           </tbody>
         </table>
+      </div>
+    );
+  }
+
+  /* ── options chain view ── */
+  function OptionsChainView() {
+    const SYMS = ["CRUDEOIL","GOLD","SILVER","COPPER","NATURALGAS"];
+    const chain = commChain;
+
+    function fetchChain(sym, idx) {
+      setCommChainBusy(true);
+      fetch(`${API}/commodity/chain-full/${sym}?expiry_idx=${idx}`)
+        .then(r => r.json())
+        .then(d => { setCommChain(d); setCommChainBusy(false); })
+        .catch(() => setCommChainBusy(false));
+    }
+
+    return (
+      <div>
+        {/* symbol + expiry selectors */}
+        <div style={{display:"flex",flexWrap:"wrap",gap:12,marginBottom:14,alignItems:"center"}}>
+          <div style={{display:"flex",gap:2,alignItems:"center"}}>
+            <span style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em",marginRight:6}}>Symbol</span>
+            {SYMS.map(s => (
+              <button key={s}
+                className={`chain-sym-btn${commChainSym===s?" active":""}`}
+                onClick={() => { setCommChainSym(s); setCommChainExpIdx(0); setCommChain(null); }}
+              >{s}</button>
+            ))}
+          </div>
+          {chain?.expiries?.length > 1 && (
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <span style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em"}}>Expiry</span>
+              <select value={commChainExpIdx}
+                onChange={e => { const i=Number(e.target.value); setCommChainExpIdx(i); fetchChain(commChainSym,i); }}
+                style={{background:"#0f1623",border:"1px solid #1e2433",borderRadius:4,color:"#e2e8f0",padding:"3px 7px",fontSize:11}}>
+                {chain.expiries.map((exp,i) => <option key={exp} value={i}>{exp}</option>)}
+              </select>
+            </div>
+          )}
+          <button className="mode-btn" style={{marginLeft:"auto"}}
+            onClick={() => fetchChain(commChainSym, commChainExpIdx)}>
+            ↻ Refresh
+          </button>
+        </div>
+
+        {/* meta bar */}
+        {chain && (
+          <div style={{display:"flex",gap:14,marginBottom:12,fontSize:11,flexWrap:"wrap",alignItems:"center",padding:"8px 12px",background:"#151a28",borderRadius:8,border:"1px solid #1e2433"}}>
+            <span style={{color:"#64748b"}}>Spot</span>
+            <span style={{fontFamily:"monospace",fontWeight:700,color:"#f1f5f9",fontSize:16}}>
+              {chain.spot ? chain.spot.toLocaleString("en-IN",{maximumFractionDigits:2}) : "—"}
+            </span>
+            <span style={{color:"#64748b",marginLeft:6}}>ATM</span>
+            <span style={{fontFamily:"monospace",fontWeight:700,color:"#60a5fa",fontSize:15}}>{chain.atm ?? "—"}</span>
+            {chain.expiry && <>
+              <span style={{color:"#64748b",marginLeft:6}}>Expiry</span>
+              <span style={{fontFamily:"monospace",color:"#94a3b8"}}>{chain.expiry}</span>
+            </>}
+            {chain.dte && <>
+              <span style={{color:"#64748b"}}>DTE</span>
+              <span style={{fontFamily:"monospace",color:"#fcd34d",fontWeight:600}}>{chain.dte}d</span>
+            </>}
+            <span style={{marginLeft:6}} className={chain.source==="live_chain"?"source-live":"source-sim"}>
+              {chain.source==="live_chain"?"● Live Chain":"◌ BS Estimate"}
+            </span>
+            {chain.note && <span style={{color:"#f59e0b",fontSize:10,marginLeft:4}}>{chain.note}</span>}
+          </div>
+        )}
+
+        {commChainBusy && <div className="empty">Loading chain data...</div>}
+
+        {!commChainBusy && !chain && (
+          <div className="empty">Click a symbol above to load the options chain</div>
+        )}
+
+        {/* chain table */}
+        {!commChainBusy && chain?.strikes?.length > 0 && (
+          <div className="chain-wrap">
+            <table className="chain-table">
+              <thead>
+                <tr>
+                  <th style={{color:"#86efac"}}>CE OI</th>
+                  <th style={{color:"#86efac"}}>CE Vol</th>
+                  <th style={{color:"#86efac"}}>IV%</th>
+                  <th style={{color:"#86efac"}}>Δ</th>
+                  <th style={{color:"#86efac"}}>θ</th>
+                  <th style={{color:"#86efac",fontSize:11}}>LTP</th>
+                  <th className="ctr" style={{color:"#94a3b8",minWidth:72}}>Strike</th>
+                  <th style={{textAlign:"left",color:"#fca5a5",fontSize:11}}>LTP</th>
+                  <th style={{textAlign:"left",color:"#fca5a5"}}>θ</th>
+                  <th style={{textAlign:"left",color:"#fca5a5"}}>Δ</th>
+                  <th style={{textAlign:"left",color:"#fca5a5"}}>IV%</th>
+                  <th style={{textAlign:"left",color:"#fca5a5"}}>PE Vol</th>
+                  <th style={{textAlign:"left",color:"#fca5a5"}}>PE OI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {chain.strikes.map(row => {
+                  const atm = row.is_atm;
+                  return (
+                    <tr key={row.strike} className={atm?"atm":""}>
+                      {/* CE side */}
+                      <td style={{color:row.ce_oi>0?"#94a3b8":"#334155"}}>{row.ce_oi>0?row.ce_oi.toLocaleString("en-IN"):"—"}</td>
+                      <td style={{color:row.ce_vol>0?"#94a3b8":"#334155"}}>{row.ce_vol>0?row.ce_vol.toLocaleString("en-IN"):"—"}</td>
+                      <td style={{color:row.ce_iv>0?"#94a3b8":"#334155"}}>{row.ce_iv>0?row.ce_iv.toFixed(1)+"%":"—"}</td>
+                      <td style={{color:"#86efac"}}>{row.ce_delta.toFixed(3)}</td>
+                      <td style={{color:"#f59e0b"}}>{row.ce_theta.toFixed(2)}</td>
+                      <td style={{fontWeight:700,color:"#86efac",fontSize:12}}>{row.ce_ltp>0?row.ce_ltp.toFixed(2):"—"}</td>
+                      {/* strike center */}
+                      <td className="ctr">
+                        {Number.isInteger(row.strike) ? row.strike : row.strike.toFixed(0)}
+                        {atm && <span style={{fontSize:7,color:"#60a5fa",marginLeft:3,verticalAlign:"middle",letterSpacing:0}}>▲ATM</span>}
+                      </td>
+                      {/* PE side */}
+                      <td style={{textAlign:"left",fontWeight:700,color:"#fca5a5",fontSize:12}}>{row.pe_ltp>0?row.pe_ltp.toFixed(2):"—"}</td>
+                      <td style={{textAlign:"left",color:"#f59e0b"}}>{row.pe_theta.toFixed(2)}</td>
+                      <td style={{textAlign:"left",color:"#fca5a5"}}>{row.pe_delta.toFixed(3)}</td>
+                      <td style={{textAlign:"left",color:row.pe_iv>0?"#94a3b8":"#334155"}}>{row.pe_iv>0?row.pe_iv.toFixed(1)+"%":"—"}</td>
+                      <td style={{textAlign:"left",color:row.pe_vol>0?"#94a3b8":"#334155"}}>{row.pe_vol>0?row.pe_vol.toLocaleString("en-IN"):"—"}</td>
+                      <td style={{textAlign:"left",color:row.pe_oi>0?"#94a3b8":"#334155"}}>{row.pe_oi>0?row.pe_oi.toLocaleString("en-IN"):"—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!commChainBusy && chain && chain.strikes?.length === 0 && (
+          <div className="empty">
+            {chain.source==="bs_estimate" && !chain.spot
+              ? "No spot price available. Start the bot during MCX hours (09:00–23:30 IST)."
+              : "No strikes returned from chain."}
+          </div>
+        )}
       </div>
     );
   }
@@ -943,7 +1111,7 @@ function App() {
 
           {/* sub-tabs */}
           <div className="sub-tabs">
-            {[["trades","All Trades"],["open","Open Positions"],["exits","Exit Breakdown"]].map(([id,lbl])=>(
+            {[["trades","All Trades"],["open","Open Positions"],["exits","Exit Breakdown"],["chain","Options Chain"]].map(([id,lbl])=>(
               <button key={id} className={`sub-tab ${commSubTab===id?"active":""}`} onClick={()=>setCommSubTab(id)}>{lbl}</button>
             ))}
           </div>
@@ -993,6 +1161,17 @@ function App() {
                 )}
                 {!commStats.total_closed && <div className="empty">No closed trades yet</div>}
               </div>
+            </div>
+          )}
+
+          {commSubTab==="chain" && (
+            <div className="card">
+              <h2>Live Options Chain
+                <span style={{marginLeft:8,fontWeight:400,color:"#475569",fontSize:10,textTransform:"none",letterSpacing:0}}>
+                  CE (calls) ← Strike → PE (puts) · Green=CE · Red=PE · Blue highlight=ATM
+                </span>
+              </h2>
+              <OptionsChainView/>
             </div>
           )}
         </div>
