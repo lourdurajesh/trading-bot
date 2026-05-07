@@ -37,10 +37,10 @@ SLIPPAGE_EQUITY  = 0.0005   # 0.05% — liquid large-caps / MCX futures
 SLIPPAGE_OPTIONS = 0.003    # 0.30% — accounts for bid-ask spread on options
 
 # ── Trading fees (round trip) ─────────────────────────────────────
-# Brokerage: ₹20/order (Zerodha/Fyers flat fee) × 2 sides + basic taxes
-# Options also include STT on sell side (~0.0625% of premium).
-FEES_EQUITY_FLAT       = 40.0   # ₹40 per equity/futures round trip
-FEES_OPTIONS_PER_LOT   = 50.0   # ₹50 per lot options round trip
+# Fyers: ₹20 flat per order (not per lot) for all segments.
+# Round trip = entry order + exit order = ₹40 flat regardless of lot count.
+FEES_EQUITY_FLAT   = 40.0   # ₹40 per equity/futures round trip
+FEES_OPTIONS_FLAT  = 40.0   # ₹40 per options round trip (₹20 × 2 orders, flat)
 
 # ── Swing vs intraday hold classification ─────────────────────────
 # Swing strategies are NOT forced to close at EOD; they run until
@@ -319,7 +319,7 @@ class LearningEngine:
 
                 if instrument_type == "nse_options":
                     # pnl_pts is in ₹ (premium diff × lot_size) — fees deduct directly
-                    fees    = FEES_OPTIONS_PER_LOT
+                    fees    = FEES_OPTIONS_FLAT
                     pnl_pts = round((eff_exit - entry) * lot_size - fees, 2)
                     pnl_r   = round((eff_exit - entry) / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
                 else:
