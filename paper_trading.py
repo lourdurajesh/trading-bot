@@ -492,18 +492,27 @@ class PaperTradingEngine:
         direction = trade.get("direction", "LONG")
         entry     = float(trade.get("entry_price", 0))
         stop      = float(trade.get("stop_loss", 0))
+        metadata  = trade.get("metadata") or {}
+        instrument_type = metadata.get("instrument_type", "")
 
         if entry <= 0 or stop <= 0:
             return None
 
-        stop_dist = abs(entry - stop)
-        if stop_dist < 0.01:
-            return None
+        balance     = self.get_balance()
+        risk_amount = balance * 0.01  # 1% of current balance
 
-        balance      = self.get_balance()
-        risk_amount  = balance * 0.01           # 1% risk of remaining capital
-        qty          = max(1, int(risk_amount / stop_dist))
-        capital_req  = qty * entry * 0.25       # 25% intraday margin
+        if instrument_type == "nse_options":
+            # Options: full premium upfront (no intraday margin on option buying)
+            lot_size    = int(metadata.get("lot_size", 1)) or 1
+            lots        = max(1, int(risk_amount / (lot_size * entry)))
+            qty         = lots * lot_size
+            capital_req = qty * entry
+        else:
+            stop_dist = abs(entry - stop)
+            if stop_dist < 0.01:
+                return None
+            qty         = max(1, int(risk_amount / stop_dist))
+            capital_req = qty * entry * 0.25   # 25% intraday margin for equity/futures
 
         if not self.can_trade(capital_req):
             logger.info(

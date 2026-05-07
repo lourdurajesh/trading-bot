@@ -257,12 +257,11 @@ class OrderManager:
             return
 
         # Paper trading mode — simulate execution
+        # paper_trading_engine (₹5L wallet) is exclusive to learning mirrors; only
+        # portfolio_tracker is written here so Trading tab and Paper P&L tab stay separate.
         if PAPER_TRADING:
-            from paper_trading import paper_trading_engine
-            order_id = paper_trading_engine.place_order(signal)
-            if order_id:
-                portfolio_tracker.open_position(signal, fill_price=signal.entry)
-                logger.info(f"[OrderManager] [PAPER] Trade recorded: {signal.symbol}")
+            portfolio_tracker.open_position(signal, fill_price=signal.entry)
+            logger.info(f"[OrderManager] [PAPER] Trade recorded: {signal.symbol}")
             return
 
         broker = self._get_broker(signal.symbol)
@@ -359,18 +358,13 @@ class OrderManager:
         qty           = lots * lot_size
 
         # Paper trading — record position, skip real order placement
+        # paper_trading_engine (₹5L wallet) is exclusive to learning mirrors.
         if PAPER_TRADING:
-            try:
-                from paper_trading import paper_trading_engine
-                order_id = paper_trading_engine.place_order(signal)
-                if order_id:
-                    portfolio_tracker.open_position(signal, fill_price=signal.entry)
-                    logger.info(
-                        f"[OrderManager] [PAPER/OPTIONS] {strategy_type} "
-                        f"{signal.symbol} × {lots} lot(s)"
-                    )
-            except Exception as e:
-                logger.debug(f"[OrderManager] Paper options record failed: {e}")
+            portfolio_tracker.open_position(signal, fill_price=signal.entry)
+            logger.info(
+                f"[OrderManager] [PAPER/OPTIONS] {strategy_type} "
+                f"{signal.symbol} × {lots} lot(s)"
+            )
             return
 
         legs = self._build_option_legs(strategy_type, meta, qty)

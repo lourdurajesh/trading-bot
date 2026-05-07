@@ -31,6 +31,23 @@ DB_PATH = "db/trades.db"
 
 logger = logging.getLogger(__name__)
 
+# ── Slippage model ────────────────────────────────────────────────
+# Applied at entry (worse fill) and exit (worse fill) to make P&L realistic.
+SLIPPAGE_EQUITY  = 0.0005   # 0.05% — liquid large-caps / MCX futures
+SLIPPAGE_OPTIONS = 0.003    # 0.30% — accounts for bid-ask spread on options
+
+# ── Trading fees (round trip) ─────────────────────────────────────
+# Brokerage: ₹20/order (Zerodha/Fyers flat fee) × 2 sides + basic taxes
+# Options also include STT on sell side (~0.0625% of premium).
+FEES_EQUITY_FLAT       = 40.0   # ₹40 per equity/futures round trip
+FEES_OPTIONS_PER_LOT   = 50.0   # ₹50 per lot options round trip
+
+# ── Swing vs intraday hold classification ─────────────────────────
+# Swing strategies are NOT forced to close at EOD; they run until
+# stop/target hit or SWING_MAX_HOLD_DAYS trading days have elapsed.
+_SWING_STRATEGIES = {"TrendFollow", "MeanReversion"}
+SWING_MAX_HOLD_DAYS = 5
+
 
 class LearningEngine:
 
@@ -46,106 +63,117 @@ class LearningEngine:
     # ─────────────────────────────────────────────────────────────
 
     def run_cycle(self) -> None:
-        """Evaluate learning strategies and manage open positions."""
-        from config.learning_watchlist import ALL_LEARNING_SYMBOLS, COMMODITY_SYMBOLS, LEARNING_NSE_INDICES
-        from strategies.simple_rsi       import SimpleRSIStrategy
-        from strategies.simple_momentum  import SimpleMomentumStrategy
-        from data.data_store              import store
+        """Evaluate all strategies and manage open positions."""
+        from config.learning_watchlist import (
+            LEARNING_NSE_EQUITIES, LEARNING_NSE_INDICES, LEARNING_MCX_COMMODITIES,
+        )
+        from strategies.trend_follow    import TrendFollowStrategy
+        from strategies.mean_reversion  import MeanReversionStrategy
+        from strategies.simple_momentum import SimpleMomentumStrategy
+        from strategies.simple_rsi      import SimpleRSIStrategy
+        from data.data_store            import store
 
-        strategies = [SimpleRSIStrategy(), SimpleMomentumStrategy()]
+        equity_strategies = [
+            TrendFollowStrategy(),
+            MeanReversionStrategy(),
+            SimpleMomentumStrategy(),
+            SimpleRSIStrategy(),
+        ]
 
         # ── 1. Monitor existing open positions ───────────────────
         self._check_exits(store)
 
-        # ── 2. Look for new equity/futures entries ────────────────
-        for symbol in ALL_LEARNING_SYMBOLS:
-            # Skip symbols on cooldown
+        # ── 2. Equity + commodity entries — 1 trade per symbol per strategy ──
+        for symbol in LEARNING_NSE_EQUITIES + LEARNING_MCX_COMMODITIES:
             if self._is_on_cooldown(symbol):
                 continue
-
-            # Earnings veto — skip if results are within 5 days
             if self._is_earnings_blocked(symbol):
                 continue
 
-            for strat in strategies:
-                key = f"{symbol}:{strat.name}"
-                if key in self._open_positions:
-                    continue  # already in this trade
-
+            for strat in equity_strategies:
+                if f"{symbol}:{strat.name}" in self._open_positions:
+                    continue  # already in this strategy's trade for this symbol
                 try:
                     signal = strat.evaluate(symbol)
                 except Exception as exc:
                     logger.debug(f"[Learning] {strat.name}/{symbol} error: {exc}")
                     continue
-
                 if signal:
-                    self._open_trade(signal)
+                    self._open_trade(self._sig_to_learning_dict(signal, strat.name))
 
-        # ── 3. NSE index options learning (isolated from production) ──
-        self._run_nse_options_learning(LEARNING_NSE_INDICES)
+        # ── 3. Index options entries ──────────────────────────────
+        self._run_index_options_learning(LEARNING_NSE_INDICES)
 
-    def _run_nse_options_learning(self, index_symbols: list) -> None:
+    def _sig_to_learning_dict(self, sig, strategy_name: str) -> dict:
+        """Convert a Signal object or legacy dict to the learning trade dict format."""
+        base_name = strategy_name.replace("_LRN", "")
+        hold_type = "swing" if base_name in _SWING_STRATEGIES else "intraday"
+
+        if isinstance(sig, dict):
+            # SimpleRSI / SimpleMomentum return dicts — just inject hold_type
+            d = sig.copy()
+            d.setdefault("metadata", {})["hold_type"] = hold_type
+            return d
+
+        entry = sig.entry
+        stop  = sig.stop_loss
+        tgt   = sig.target_1
+        rr    = sig.risk_reward or (
+            round(abs(tgt - entry) / abs(entry - stop), 2)
+            if abs(entry - stop) > 0 else 0
+        )
+        meta = {
+            "regime":      sig.regime,
+            "reason":      sig.reason,
+            "confidence":  sig.confidence,
+            "signal_type": sig.signal_type.value if hasattr(sig.signal_type, "value") else str(sig.signal_type),
+            "hold_type":   hold_type,
+        }
+        if sig.options_meta:
+            meta.update(sig.options_meta)
+        if getattr(sig, "signal_type", None) and sig.signal_type.value == "OPTIONS":
+            meta["instrument_type"] = "nse_options"
+        return {
+            "strategy":    strategy_name,
+            "symbol":      sig.symbol,
+            "direction":   sig.direction.value,
+            "entry_price": entry,
+            "stop_loss":   stop,
+            "target":      tgt,
+            "rr":          rr,
+            "metadata":    meta,
+        }
+
+    def _run_index_options_learning(self, index_symbols: list) -> None:
         """
-        Paper-trade NSE index options (NIFTY/BANKNIFTY/FINNIFTY) in learning mode.
-        Uses DirectionalOptionsStrategy to get the signal, but tracks the trade in
-        INDEX SPACE (1% stop, 2% target on the underlying LTP) so the normal
-        _check_exits() logic works correctly.
-
-        The option premium from DirectionalOptionsStrategy is stored in metadata
-        for reference. The R-value result tells you: "was the directional call
-        right — did the index move 2% in our favour before hitting the 1% stop?"
-
-        Falls back gracefully when Fyers chain is unavailable (Black-Scholes sim).
-        Saved to learning_trades with metadata.instrument_type = 'nse_options'.
+        Evaluate DirectionalOptions and InstitutionalMomentum on NIFTY/BANKNIFTY/FINNIFTY.
+        Tracks using actual option premium (entry=debit cost, stop=50% loss, target=max_profit).
+        _check_exits() uses nfo_symbol LTP for premium-based P&L in rupees.
+        Paper wallet mirrors use lot-based sizing (lots × lot_size × premium).
         """
         try:
-            from strategies.directional_options import DirectionalOptionsStrategy
-            from data.data_store import store as _store
-            strat = DirectionalOptionsStrategy()
+            from strategies.directional_options    import DirectionalOptionsStrategy
+            from strategies.institutional_momentum import InstitutionalMomentumStrategy
+            index_strategies = [
+                DirectionalOptionsStrategy(),
+                InstitutionalMomentumStrategy(),
+            ]
             for symbol in index_symbols:
-                key = f"{symbol}:DirectionalOptions_LRN"
-                if key in self._open_positions:
+                if self._is_on_cooldown(symbol):
                     continue
-                try:
-                    sig = strat.evaluate(symbol)
-                    if sig is None:
+                for strat in index_strategies:
+                    strat_name = f"{strat.name}_LRN"
+                    if f"{symbol}:{strat_name}" in self._open_positions:
                         continue
-
-                    # Track in index-space: stop = 1%, target = 2%
-                    index_ltp = _store.get_ltp(symbol) or 0
-                    if index_ltp <= 0:
+                    try:
+                        sig = strat.evaluate(symbol)
+                    except Exception as exc:
+                        logger.debug(f"[Learning/IndexOptions] {strat.name}/{symbol}: {exc}")
                         continue
-                    stop_dist   = round(index_ltp * 0.01, 1)
-                    target_dist = round(index_ltp * 0.02, 1)
-                    if sig.direction.value == "LONG":
-                        stop   = round(index_ltp - stop_dist,   1)
-                        target = round(index_ltp + target_dist, 1)
-                    else:
-                        stop   = round(index_ltp + stop_dist,   1)
-                        target = round(index_ltp - target_dist, 1)
-
-                    signal_dict = {
-                        "strategy":    "DirectionalOptions_LRN",
-                        "symbol":      sig.symbol,
-                        "direction":   sig.direction.value,
-                        "entry_price": index_ltp,   # index level (not premium)
-                        "stop_loss":   stop,
-                        "target":      target,
-                        "rr":          round(target_dist / stop_dist, 1),
-                        "metadata": {
-                            "instrument_type": "nse_options",
-                            "regime":          sig.regime,
-                            "reason":          sig.reason,
-                            "confidence":      round(sig.confidence, 2),
-                            "option_premium":  sig.entry,
-                            **(sig.options_meta or {}),
-                        },
-                    }
-                    self._open_trade(signal_dict)
-                except Exception as exc:
-                    logger.debug(f"[Learning/NSEOptions] {symbol}: {exc}")
+                    if sig:
+                        self._open_trade(self._sig_to_learning_dict(sig, strat_name))
         except Exception as e:
-            logger.debug(f"[Learning/NSEOptions] setup error: {e}")
+            logger.debug(f"[Learning/IndexOptions] setup error: {e}")
 
     # ─────────────────────────────────────────────────────────────
     # TRADE MANAGEMENT
@@ -154,7 +182,17 @@ class LearningEngine:
     def _open_trade(self, signal: dict) -> None:
         symbol   = signal["symbol"]
         strategy = signal["strategy"]
-        key      = f"{symbol}:{strategy}"
+        meta     = signal.get("metadata") or {}
+        direction        = signal["direction"]
+        instrument_type  = meta.get("instrument_type", "")
+
+        # Apply entry slippage: buyer pays more, seller receives less
+        slip     = SLIPPAGE_OPTIONS if instrument_type == "nse_options" else SLIPPAGE_EQUITY
+        raw_entry = float(signal["entry_price"])
+        if direction == "LONG" or instrument_type == "nse_options":
+            entry_price = round(raw_entry * (1 + slip), 2)
+        else:
+            entry_price = round(raw_entry * (1 - slip), 2)
 
         trade_id = f"LRN-{uuid.uuid4().hex[:8].upper()}"
         now_str  = datetime.now(tz=IST).isoformat()
@@ -163,19 +201,19 @@ class LearningEngine:
             "id":           trade_id,
             "symbol":       symbol,
             "strategy":     strategy,
-            "direction":    signal["direction"],
-            "entry_price":  signal["entry_price"],
+            "direction":    direction,
+            "entry_price":  entry_price,
             "stop_loss":    signal["stop_loss"],
             "target":       signal["target"],
             "rr":           signal["rr"],
-            "metadata":     signal.get("metadata", {}),
+            "metadata":     meta,
             "entry_time":   now_str,
             "status":       "OPEN",
             "mae_pts":      0.0,
             "mfe_pts":      0.0,
         }
 
-        self._open_positions[key] = trade
+        self._open_positions[f"{symbol}:{strategy}"] = trade
         self._db_insert(trade)
         logger.info(
             f"[Learning] OPEN {trade_id} | {strategy} {signal['direction']} {symbol} "
@@ -183,7 +221,7 @@ class LearningEngine:
             f"T {signal['target']:.2f} | R:R {signal['rr']:.1f}"
         )
 
-        # Mirror to paper trading wallet — always, regardless of PAPER_TRADING mode
+        # Mirror to paper wallet — capital-limited; options use lot-based sizing
         try:
             from paper_trading import paper_trading_engine
             paper_trading_engine.mirror_learning_open(trade)
@@ -191,23 +229,44 @@ class LearningEngine:
             logger.debug(f"[Learning] Paper mirror open error: {exc}")
 
     def _check_exits(self, store) -> None:
+        from datetime import time as dtime
         closed_keys = []
 
         for key, trade in list(self._open_positions.items()):
-            symbol = trade["symbol"]
-            ltp    = store.get_ltp(symbol)
+            symbol   = trade["symbol"]
+            metadata = trade.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            instrument_type = metadata.get("instrument_type", "")
+            nfo_symbol      = metadata.get("nfo_symbol")
+            lot_size        = int(metadata.get("lot_size", 1)) or 1
+
+            # Gap 2: options must use nfo_symbol LTP — never fall back to index LTP
+            # (index at 25,000 against premium stop at ₹100 would never trigger)
+            if instrument_type == "nse_options":
+                if not nfo_symbol:
+                    continue  # no contract symbol recorded — skip this cycle
+                ltp = store.get_ltp(nfo_symbol)
+                if not ltp or ltp <= 0:
+                    continue  # chain data unavailable this cycle — wait for next
+            else:
+                ltp = store.get_ltp(symbol)
             if not ltp:
                 continue
 
-            direction  = trade["direction"]
-            stop       = trade["stop_loss"]
-            target     = trade["target"]
-            entry      = trade["entry_price"]
+            direction   = trade["direction"]
+            stop        = trade["stop_loss"]
+            target      = trade["target"]
+            entry       = trade["entry_price"]
+            hold_type   = metadata.get("hold_type", "intraday")
             exit_reason = None
             exit_price  = None
 
-            # Update MAE/MFE using current LTP
-            if direction == "LONG":
+            # MAE/MFE — options always "long" the contract
+            if instrument_type == "nse_options":
+                adverse    = entry - ltp
+                favourable = ltp - entry
+            elif direction == "LONG":
                 adverse    = entry - ltp
                 favourable = ltp - entry
             else:
@@ -216,7 +275,13 @@ class LearningEngine:
             trade["mae_pts"] = max(trade["mae_pts"], adverse)
             trade["mfe_pts"] = max(trade["mfe_pts"], favourable)
 
-            if direction == "LONG":
+            # Stop / target exits
+            if instrument_type == "nse_options":
+                if ltp <= stop:
+                    exit_reason, exit_price = "STOP",   ltp
+                elif ltp >= target:
+                    exit_reason, exit_price = "TARGET", ltp
+            elif direction == "LONG":
                 if ltp <= stop:
                     exit_reason, exit_price = "STOP",   ltp
                 elif ltp >= target:
@@ -227,35 +292,61 @@ class LearningEngine:
                 elif ltp <= target:
                     exit_reason, exit_price = "TARGET", ltp
 
-            # EOD forced close at 15:20 IST
+            # Gap 1: EOD close only for intraday strategies
+            # Swing strategies run across sessions until stop/target or max hold
             now_time = datetime.now(tz=IST).time()
-            from datetime import time as dtime
             if now_time >= dtime(15, 20) and exit_reason is None:
-                exit_reason = "EOD"
-                exit_price  = ltp
+                if hold_type == "intraday":
+                    exit_reason = "EOD"
+                    exit_price  = ltp
+                else:
+                    try:
+                        entry_dt  = datetime.fromisoformat(trade["entry_time"]).astimezone(IST)
+                        days_held = (datetime.now(tz=IST) - entry_dt).days
+                        if days_held >= SWING_MAX_HOLD_DAYS:
+                            exit_reason = "MAX_HOLD"
+                            exit_price  = ltp
+                    except Exception:
+                        pass
 
             if exit_reason:
-                pnl_pts = (exit_price - entry) if direction == "LONG" else (entry - exit_price)
-                pnl_r   = round(pnl_pts / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
+                # Gap 3: apply exit slippage (exit at worse price)
+                slip = SLIPPAGE_OPTIONS if instrument_type == "nse_options" else SLIPPAGE_EQUITY
+                if direction == "LONG" or instrument_type == "nse_options":
+                    eff_exit = round(exit_price * (1 - slip), 2)  # sell at bid
+                else:
+                    eff_exit = round(exit_price * (1 + slip), 2)  # buy back at ask
+
+                if instrument_type == "nse_options":
+                    # pnl_pts is in ₹ (premium diff × lot_size) — fees deduct directly
+                    fees    = FEES_OPTIONS_PER_LOT
+                    pnl_pts = round((eff_exit - entry) * lot_size - fees, 2)
+                    pnl_r   = round((eff_exit - entry) / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
+                else:
+                    # pnl_pts is in price points; fees stored separately (no qty to convert)
+                    fees    = FEES_EQUITY_FLAT
+                    pnl_pts = round((eff_exit - entry) if direction == "LONG" else (entry - eff_exit), 2)
+                    pnl_r   = round(pnl_pts / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
+
+                exit_price = eff_exit  # store slippage-adjusted price
+
                 self._db_close(
                     trade["id"], exit_price, exit_reason, pnl_pts, pnl_r,
-                    trade["mae_pts"], trade["mfe_pts"],
+                    trade["mae_pts"], trade["mfe_pts"], fees,
                 )
                 closed_keys.append(key)
                 logger.info(
                     f"[Learning] CLOSE {trade['id']} | {exit_reason} @ {exit_price:.2f} "
-                    f"| PnL {pnl_pts:+.2f} pts ({pnl_r:+.1f}R)"
+                    f"| PnL {pnl_pts:+.2f} ({'₹' if instrument_type=='nse_options' else 'pts'}) "
+                    f"fees ₹{fees:.0f} ({pnl_r:+.1f}R)"
                 )
 
-                # Apply per-symbol cooldown (30 min win, 60 min loss)
-                win_exits  = {"TARGET", "TARGET1", "TARGET2"}
-                loss_exits = {"STOP", "EOD", "STALE"}
+                win_exits = {"TARGET", "TARGET1", "TARGET2"}
                 if exit_reason in win_exits:
                     self._apply_cooldown(symbol, minutes=30)
                 else:
                     self._apply_cooldown(symbol, minutes=60)
 
-                # Mirror close to paper trading — always
                 try:
                     from paper_trading import paper_trading_engine
                     paper_trading_engine.mirror_learning_close(
@@ -360,9 +451,9 @@ class LearningEngine:
                 )
             """)
             # Safe migration for pre-existing tables
-            for col in ("mae_pts", "mfe_pts"):
+            for col, default in [("mae_pts", 0), ("mfe_pts", 0), ("fees", 0)]:
                 try:
-                    conn.execute(f"ALTER TABLE learning_trades ADD COLUMN {col} REAL DEFAULT 0")
+                    conn.execute(f"ALTER TABLE learning_trades ADD COLUMN {col} REAL DEFAULT {default}")
                 except Exception:
                     pass
             conn.execute("""
@@ -402,13 +493,23 @@ class LearningEngine:
                 entry_date = today
 
             if entry_date < today:
+                hold_type = trade.get("metadata", {}).get("hold_type", "intraday")
+                days_held = (today - entry_date).days
+                # Swing trades within max hold window resume normally
+                if hold_type == "swing" and days_held <= SWING_MAX_HOLD_DAYS:
+                    self._open_positions[f"{trade['symbol']}:{trade['strategy']}"] = trade
+                    restored += 1
+                    logger.info(
+                        f"[Learning] RESUME swing {trade['id']} | {trade['strategy']} "
+                        f"{trade['symbol']} — day {days_held}/{SWING_MAX_HOLD_DAYS}"
+                    )
+                    continue
                 self._db_close(
                     trade["id"], trade["entry_price"], "STALE",
                     0.0, 0.0, trade["mae_pts"], trade["mfe_pts"],
                 )
                 stale += 1
                 logger.info(f"[Learning] STALE {trade['id']} | {trade['strategy']} {trade['symbol']} — missed EOD close on {entry_date}")
-                # Mirror stale close to paper trading — always
                 try:
                     from paper_trading import paper_trading_engine
                     paper_trading_engine.mirror_learning_close(
@@ -418,8 +519,7 @@ class LearningEngine:
                     pass
                 continue
 
-            key = f"{trade['symbol']}:{trade['strategy']}"
-            self._open_positions[key] = trade
+            self._open_positions[f"{trade['symbol']}:{trade['strategy']}"] = trade
             restored += 1
 
         if stale:
@@ -446,18 +546,20 @@ class LearningEngine:
         self, trade_id: str, exit_price: float,
         exit_reason: str, pnl_pts: float, pnl_r: float,
         mae_pts: float = 0.0, mfe_pts: float = 0.0,
+        fees: float = 0.0,
     ) -> None:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
                 UPDATE learning_trades
                 SET exit_price=?, exit_reason=?, pnl_pts=?, pnl_r=?,
-                    status='CLOSED', exit_time=?, mae_pts=?, mfe_pts=?
+                    status='CLOSED', exit_time=?, mae_pts=?, mfe_pts=?, fees=?
                 WHERE id=?
             """, (
                 exit_price, exit_reason,
                 round(pnl_pts, 2), round(pnl_r, 2),
                 datetime.now(tz=IST).isoformat(),
                 round(mae_pts, 2), round(mfe_pts, 2),
+                round(fees, 2),
                 trade_id,
             ))
 
@@ -502,17 +604,20 @@ class LearningEngine:
         for t in trades:
             s = t["strategy"]
             if s not in by_strategy:
-                by_strategy[s] = {"total": 0, "wins": 0, "total_r": 0.0}
-            by_strategy[s]["total"]   += 1
-            by_strategy[s]["total_r"] += t["pnl_r"]
+                by_strategy[s] = {"total": 0, "wins": 0, "total_r": 0.0, "total_fees": 0.0}
+            by_strategy[s]["total"]      += 1
+            by_strategy[s]["total_r"]    += t["pnl_r"]
+            by_strategy[s]["total_fees"] += t.get("fees", 0.0) or 0.0
             if t["pnl_r"] > 0:
                 by_strategy[s]["wins"] += 1
 
         for s, d in by_strategy.items():
-            d["win_rate"] = round(d["wins"] / d["total"] * 100, 1) if d["total"] else 0
-            d["avg_r"]    = round(d["total_r"] / d["total"], 2) if d["total"] else 0
+            d["win_rate"]   = round(d["wins"] / d["total"] * 100, 1) if d["total"] else 0
+            d["avg_r"]      = round(d["total_r"] / d["total"], 2) if d["total"] else 0
+            d["total_fees"] = round(d["total_fees"], 2)
 
-        all_r = [t["pnl_r"] for t in trades]
+        all_r     = [t["pnl_r"] for t in trades]
+        total_fees = round(sum(t.get("fees", 0.0) or 0.0 for t in trades), 2)
         return {
             "total_closed":  len(trades),
             "total_open":    len(self.get_trades(status="OPEN")),
@@ -521,6 +626,7 @@ class LearningEngine:
             "total_r":       round(sum(all_r), 2),
             "best_trade_r":  round(max(all_r), 2),
             "worst_trade_r": round(min(all_r), 2),
+            "total_fees":    total_fees,
             "by_strategy":   by_strategy,
             "exit_reasons":  _count_field(trades, "exit_reason"),
             "directions":    _count_field(trades, "direction"),
