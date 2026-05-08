@@ -608,7 +608,15 @@ const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltp
   const winRateF   = closedF.length ? Math.round(winnersF.length / closedF.length * 100) : null;
   const avgRF      = closedF.length ? closedF.reduce((s,t)=>s+(t.pnl_r||0),0)/closedF.length : null;
   const totalRF    = closedF.reduce((s,t)=>s+(t.pnl_r||0), 0);
-  const totalPnlInr = closedF.reduce((s,t)=>s+(t.pnl_approx||0), 0);
+  const closedPnlInr = closedF.reduce((s,t)=>s+(t.pnl_approx||0), 0);
+  const openPnlInr   = openF.reduce((s,t) => {
+    const ltp       = ltps ? (ltps[t.symbol]||null) : null;
+    const spotEntry = t.spot_at_entry || 0;
+    const spotMove  = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
+    const estPnlLot = spotMove != null ? round2(round2(spotMove * 0.35) * (t.lot_size||1)) : 0;
+    return s + estPnlLot;
+  }, 0);
+  const totalPnlInr = closedPnlInr + openPnlInr;
   const isFiltered = !!(filterSym || filterStrat!=="all" || filterStatus!=="all" || filterDate);
 
   const inputStyle = {
@@ -890,9 +898,9 @@ const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltp
           <div className={`val ${totalRF>=0?"up":"down"}`}>{closedF.length?`${totalRF>=0?"+":""}${totalRF.toFixed(1)}R`:"—"}</div>
         </div>
         <div className="metric">
-          <div className="lbl">Overall P&L</div>
+          <div className="lbl">Overall P&L{openF.length>0?" (incl. live)":""}</div>
           <div className={`val ${totalPnlInr>=0?"up":"down"}`}>
-            {closedF.length?`${totalPnlInr>=0?"+":""}₹${Math.abs(totalPnlInr).toFixed(0)}`:"—"}
+            {(closedF.length||openF.length)?`${totalPnlInr>=0?"+":""}₹${Math.abs(totalPnlInr).toFixed(0)}`:"—"}
           </div>
         </div>
       </div>
