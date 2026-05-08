@@ -44,7 +44,8 @@ class SimpleRSIStrategy:
     Paper-only learning strategy. Returns a LearningSignal dict or None.
     """
 
-    name = "SimpleRSI"
+    name      = "SimpleRSI"
+    hold_type = "intraday"
 
     def evaluate(self, symbol: str) -> Optional[dict]:
         if "-INDEX" in symbol:

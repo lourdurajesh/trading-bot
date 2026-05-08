@@ -48,6 +48,7 @@ class MeanReversionStrategy(BaseStrategy):
     def __init__(self):
         super().__init__()
         self.name       = "MeanReversion"
+        self.hold_type  = "intraday"
         self.timeframe  = "15m"
         self.confirm_tf = "1H"
 

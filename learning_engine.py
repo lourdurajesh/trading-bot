@@ -45,7 +45,7 @@ FEES_OPTIONS_FLAT  = 40.0   # ₹40 per options round trip (₹20 × 2 orders, f
 # ── Swing vs intraday hold classification ─────────────────────────
 # Swing strategies are NOT forced to close at EOD; they run until
 # stop/target hit or SWING_MAX_HOLD_DAYS trading days have elapsed.
-_SWING_STRATEGIES = {"TrendFollow", "MeanReversion"}
+_SWING_STRATEGIES = {"TrendFollow"}
 SWING_MAX_HOLD_DAYS = 5
 
 
@@ -101,15 +101,21 @@ class LearningEngine:
                     logger.debug(f"[Learning] {strat.name}/{symbol} error: {exc}")
                     continue
                 if signal:
-                    self._open_trade(self._sig_to_learning_dict(signal, strat.name))
+                    self._open_trade(self._sig_to_learning_dict(signal, strat.name, strat))
 
         # ── 3. Index options entries ──────────────────────────────
         self._run_index_options_learning(LEARNING_NSE_INDICES)
 
-    def _sig_to_learning_dict(self, sig, strategy_name: str) -> dict:
+    def _sig_to_learning_dict(self, sig, strategy_name: str, strat=None) -> dict:
         """Convert a Signal object or legacy dict to the learning trade dict format."""
-        base_name = strategy_name.replace("_LRN", "")
-        hold_type = "swing" if base_name in _SWING_STRATEGIES else "intraday"
+        # Read hold_type from the strategy object itself — each strategy declares
+        # its own type. Fall back to _SWING_STRATEGIES list for any strategy that
+        # hasn't been updated yet.
+        if strat is not None and hasattr(strat, "hold_type"):
+            hold_type = strat.hold_type
+        else:
+            base_name = strategy_name.replace("_LRN", "")
+            hold_type = "swing" if base_name in _SWING_STRATEGIES else "intraday"
 
         if isinstance(sig, dict):
             # SimpleRSI / SimpleMomentum return dicts — just inject hold_type

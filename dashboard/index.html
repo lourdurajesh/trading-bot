@@ -367,6 +367,676 @@ const LearningReviewView = React.memo(function LearningReviewView({trades}) {
   );
 });
 
+/* ─────────────────────────────────────────────────────────────
+   Helpers used by both tab components
+───────────────────────────────────────────────────────────── */
+function round2(v) { return Math.round(v*100)/100; }
+
+const STRAT_COLOR = {
+  "TrendSpread":          "#3b82f6",
+  "RSIReversalSpread":    "#a855f7",
+  "BreakoutSpread":       "#f97316",
+  "CommodityDebitSpread": "#64748b",
+};
+function StratBadge({name}) {
+  const c = STRAT_COLOR[name] || "#64748b";
+  return <span style={{background:c+"22",color:c,border:`1px solid ${c}44`,borderRadius:3,padding:"1px 5px",fontSize:9,fontWeight:600,whiteSpace:"nowrap"}}>{name||"—"}</span>;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   LearningTabContent — owns filter state; stats widgets update
+   with the active filter. React.memo shields from 2 s WS ticks.
+───────────────────────────────────────────────────────────── */
+const LearningTabContent = React.memo(function LearningTabContent({trades, ltps, learnStats}) {
+  const [filterSym,    setFilterSym]    = React.useState("");
+  const [filterStrat,  setFilterStrat]  = React.useState("all");
+  const [filterDir,    setFilterDir]    = React.useState("all");
+  const [filterStatus, setFilterStatus] = React.useState("all");
+  const [filterDate,   setFilterDate]   = React.useState("");
+  const [subTab,       setSubTab]       = React.useState("trades");
+
+  const allTrades  = trades || [];
+  const strategies = ["all", ...Array.from(new Set(allTrades.map(t=>t.strategy).filter(Boolean)))];
+
+  const filtered = allTrades.filter(t => {
+    const sym = (t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","");
+    if (filterSym    && !sym.toLowerCase().includes(filterSym.toLowerCase())) return false;
+    if (filterStrat  !== "all" && t.strategy  !== filterStrat)  return false;
+    if (filterDir    !== "all" && t.direction  !== filterDir)    return false;
+    if (filterStatus !== "all" && t.status     !== filterStatus) return false;
+    if (filterDate   && (t.entry_time||"").slice(0,10) !== filterDate) return false;
+    return true;
+  });
+
+  const closedF  = filtered.filter(t => t.status === "CLOSED");
+  const winnersF = closedF.filter(t => (t.pnl_r||0) > 0);
+  const winRateF = closedF.length ? Math.round(winnersF.length / closedF.length * 100) : null;
+  const avgRF    = closedF.length ? closedF.reduce((s,t)=>s+(t.pnl_r||0),0)/closedF.length : null;
+  const totalRF  = closedF.reduce((s,t)=>s+(t.pnl_r||0), 0);
+  const isFiltered = !!(filterSym || filterStrat!=="all" || filterDir!=="all" || filterStatus!=="all" || filterDate);
+
+  const inputStyle = {
+    background:"#0f1623", border:"1px solid #1e2433", borderRadius:4,
+    color:"#e2e8f0", padding:"3px 7px", fontSize:11
+  };
+
+  return (
+    <div>
+      <div className="paper-banner">
+        🎓 Learning paper trades — SimpleRSI &amp; SimpleMomentum on NSE stocks &amp; indices. No real money.
+      </div>
+
+      {/* filter bar */}
+      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:12,alignItems:"center"}}>
+        <input type="text" placeholder="Symbol…" value={filterSym}
+          onChange={e=>setFilterSym(e.target.value)} style={{...inputStyle,width:110}}/>
+        <select value={filterStrat} onChange={e=>setFilterStrat(e.target.value)} style={inputStyle}>
+          {strategies.map(s=><option key={s} value={s}>{s==="all"?"All strategies":s}</option>)}
+        </select>
+        <select value={filterDir} onChange={e=>setFilterDir(e.target.value)} style={inputStyle}>
+          <option value="all">All dirs</option>
+          <option value="LONG">LONG</option>
+          <option value="SHORT">SHORT</option>
+        </select>
+        <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={inputStyle}>
+          <option value="all">All status</option>
+          <option value="OPEN">OPEN</option>
+          <option value="CLOSED">CLOSED</option>
+        </select>
+        <input type="date" value={filterDate} onChange={e=>setFilterDate(e.target.value)}
+          style={{...inputStyle,colorScheme:"dark"}}/>
+        {isFiltered && (
+          <button style={{...inputStyle,cursor:"pointer",color:"#f59e0b"}}
+            onClick={()=>{setFilterSym("");setFilterStrat("all");setFilterDir("all");setFilterStatus("all");setFilterDate("");}}>
+            ✕ Clear
+          </button>
+        )}
+        <span style={{marginLeft:"auto",color:"#475569",fontSize:11}}>
+          {isFiltered ? `${filtered.length} / ${allTrades.length} rows` : `${allTrades.length} trades`}
+        </span>
+      </div>
+
+      {/* stats widgets — live from filtered rows */}
+      <div className="grid4" style={{marginBottom:16}}>
+        <div className="metric">
+          <div className="lbl">Closed{isFiltered?" · filtered":""}</div>
+          <div className="val neutral">{closedF.length}</div>
+        </div>
+        <div className="metric">
+          <div className="lbl">Win rate</div>
+          <div className={`val ${(winRateF||0)>=50?"up":"down"}`}>{winRateF!==null?winRateF+"%":"—"}</div>
+        </div>
+        <div className="metric">
+          <div className="lbl">Avg R</div>
+          <div className={`val ${(avgRF||0)>=0?"up":"down"}`}>
+            {avgRF!==null?`${avgRF>=0?"+":""}${avgRF.toFixed(2)}R`:"—"}
+          </div>
+        </div>
+        <div className="metric">
+          <div className="lbl">Total R</div>
+          <div className={`val ${totalRF>=0?"up":"down"}`}>
+            {closedF.length?`${totalRF>=0?"+":""}${totalRF.toFixed(1)}R`:"—"}
+          </div>
+        </div>
+      </div>
+
+      {/* per-strategy breakdown — all-time from server; hidden when filter active */}
+      {learnStats?.by_strategy && !isFiltered && (
+        <div className="grid2" style={{marginBottom:16}}>
+          {Object.entries(learnStats.by_strategy).map(([name, s])=>(
+            <div key={name} className="card">
+              <h2>{name}</h2>
+              <div style={{display:"grid",gap:8}}>
+                {[["Trades", s.total, "neutral"],
+                  ["Win rate", `${s.win_rate}%`, s.win_rate>=50?"up":"down"],
+                  ["Avg R", `${s.avg_r>=0?"+":""}${s.avg_r}R`, s.avg_r>=0?"up":"down"],
+                  ["Wins / Losses", `${s.wins} / ${s.total-s.wins}`, "neutral"],
+                ].map(([lbl,val,cls])=>(
+                  <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                    <span style={{color:"#64748b"}}>{lbl}</span>
+                    <span className={cls}>{val}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* sub-tabs */}
+      <div className="sub-tabs">
+        {[["trades","All Trades"],["review","Review by Outcome"],["meta","Exit Breakdown"]].map(([id,lbl])=>(
+          <button key={id} className={`sub-tab ${subTab===id?"active":""}`} onClick={()=>setSubTab(id)}>{lbl}</button>
+        ))}
+      </div>
+
+      {subTab==="trades" && (
+        <div className="card">
+          <h2>
+            Trades
+            {isFiltered && <span style={{marginLeft:6,fontWeight:400,color:"#f59e0b",fontSize:10,textTransform:"none",letterSpacing:0}}>· filter active</span>}
+          </h2>
+          <LearningTradesTable trades={filtered} ltps={ltps} showControls={false}/>
+        </div>
+      )}
+
+      {subTab==="review" && (
+        <div className="card">
+          <h2>Trades by outcome bucket</h2>
+          <LearningReviewView trades={filtered}/>
+        </div>
+      )}
+
+      {subTab==="meta" && learnStats && (
+        <div className="grid2">
+          <div className="card">
+            <h2>Exit reasons</h2>
+            {learnStats.exit_reasons ? Object.entries(learnStats.exit_reasons).sort((a,b)=>b[1]-a[1]).map(([r,n])=>(
+              <div key={r} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827",fontSize:12}}>
+                <span style={{color:"#94a3b8"}}>{r}</span>
+                <span className={r==="TARGET"?"up":r==="STOP"?"down":"neutral"}>{n}</span>
+              </div>
+            )) : <div className="empty">No data</div>}
+          </div>
+          <div className="card">
+            <h2>Direction split</h2>
+            {learnStats.directions ? Object.entries(learnStats.directions).map(([d,n])=>(
+              <div key={d} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827",fontSize:12}}>
+                <span className={`badge ${d.toLowerCase()}`}>{d}</span>
+                <span className="neutral">{n} trades</span>
+              </div>
+            )) : <div className="empty">No data</div>}
+            {learnStats.best_trade_r !== undefined && (
+              <div style={{marginTop:12,display:"grid",gap:6}}>
+                {[["Best trade",`+${learnStats.best_trade_r}R`,"up"],
+                  ["Worst trade",`${learnStats.worst_trade_r}R`,"down"],
+                ].map(([lbl,val,cls])=>(
+                  <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                    <span style={{color:"#64748b"}}>{lbl}</span>
+                    <span className={cls} style={{fontFamily:"monospace"}}>{val}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+/* ─────────────────────────────────────────────────────────────
+   CommodityTabContent — owns filter state + options chain state.
+   Stats widgets and table rows both update with the active filter.
+───────────────────────────────────────────────────────────── */
+const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltps, commStats}) {
+  const [filterSym,    setFilterSym]    = React.useState("");
+  const [filterStrat,  setFilterStrat]  = React.useState("all");
+  const [filterStatus, setFilterStatus] = React.useState("all");
+  const [filterDate,   setFilterDate]   = React.useState("");
+  const [subTab,       setSubTab]       = React.useState("trades");
+
+  const [commChain,       setCommChain]       = React.useState(null);
+  const [commChainSym,    setCommChainSym]    = React.useState("CRUDEOIL");
+  const [commChainExpIdx, setCommChainExpIdx] = React.useState(0);
+  const [commChainBusy,   setCommChainBusy]   = React.useState(false);
+
+  React.useEffect(() => {
+    if (subTab !== "chain") return;
+    setCommChainBusy(true);
+    fetch(`${API}/commodity/chain-full/${commChainSym}?expiry_idx=${commChainExpIdx}`)
+      .then(r => r.json())
+      .then(d => { setCommChain(d); setCommChainBusy(false); })
+      .catch(() => setCommChainBusy(false));
+  }, [subTab, commChainSym, commChainExpIdx]);
+
+  const allTrades  = trades || [];
+  const strategies = ["all", ...Array.from(new Set(allTrades.map(t=>t.strategy).filter(Boolean)))];
+
+  const filtered = allTrades.filter(t => {
+    const sym = (t.instrument||t.symbol||"").replace("MCX:","");
+    if (filterSym    && !sym.toLowerCase().includes(filterSym.toLowerCase())) return false;
+    if (filterStrat  !== "all" && t.strategy !== filterStrat)  return false;
+    if (filterStatus !== "all" && t.status   !== filterStatus) return false;
+    if (filterDate   && (t.entry_time||"").slice(0,10) !== filterDate) return false;
+    return true;
+  });
+
+  const closedF    = filtered.filter(t => t.status === "CLOSED");
+  const openF      = filtered.filter(t => t.status === "OPEN");
+  const winnersF   = closedF.filter(t => (t.pnl_r||0) > 0);
+  const winRateF   = closedF.length ? Math.round(winnersF.length / closedF.length * 100) : null;
+  const avgRF      = closedF.length ? closedF.reduce((s,t)=>s+(t.pnl_r||0),0)/closedF.length : null;
+  const totalRF    = closedF.reduce((s,t)=>s+(t.pnl_r||0), 0);
+  const totalPnlInr = closedF.reduce((s,t)=>s+(t.pnl_approx||0), 0);
+  const isFiltered = !!(filterSym || filterStrat!=="all" || filterStatus!=="all" || filterDate);
+
+  const inputStyle = {
+    background:"#0f1623", border:"1px solid #1e2433", borderRadius:4,
+    color:"#e2e8f0", padding:"3px 7px", fontSize:11
+  };
+
+  function CommodityTradesTable({trades: tds, ltps: lps}) {
+    if (!tds || !tds.length) return <div className="empty">No commodity option trades yet — engine runs during MCX hours (09:00–23:30 IST)</div>;
+    const EST_DELTA = 0.35;
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Instrument</th>
+              <th>Dir</th>
+              <th>Entry Spot</th>
+              <th style={{color:"#f59e0b"}}>Live LTP</th>
+              <th style={{color:"#60a5fa"}}>ATM/OTM</th>
+              <th>Debit</th><th>MaxP</th><th>RR</th>
+              <th style={{color:"#94a3b8"}}>RSI</th>
+              <th style={{color:"#94a3b8"}}>IV%</th>
+              <th>Time</th>
+              <th style={{color:"#475569",maxWidth:160}}>Signal Reason</th>
+              <th style={{color:"#f59e0b"}}>Live P&L</th>
+              <th>P&L (R)</th>
+              <th>Exit</th>
+              <th>Src</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tds.map(t=>{
+              const r          = t.pnl_r||0;
+              const isOpen     = t.status==="OPEN";
+              const spotEntry  = t.spot_at_entry||0;
+              const ltp        = lps ? (lps[t.symbol]||null) : null;
+              const spotMove   = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
+              const estPnl     = spotMove != null ? round2(spotMove * EST_DELTA) : null;
+              const estPnlLot  = estPnl != null ? round2(estPnl * (t.lot_size||1)) : null;
+              const pnlColor   = estPnl == null ? "#64748b" : estPnl > 0 ? "#22c55e" : estPnl < 0 ? "#ef4444" : "#94a3b8";
+              const meta       = t.metadata || {};
+              const entryHHMM  = t.entry_time ? t.entry_time.substring(11,16) : "—";
+              const signal     = (meta.signal_reason || "").substring(0, 44);
+              const rsiColor   = meta.rsi > 60 ? "#f59e0b" : meta.rsi < 40 ? "#93c5fd" : "#94a3b8";
+              const optSuffix  = t.opt_type==="call" ? "CE" : "PE";
+              const atmLabel   = meta.atm_symbol
+                ? meta.atm_symbol.replace("MCX:","")
+                : `${(t.instrument||"").replace("MCX:","")}${t.atm_strike||""}${optSuffix}`;
+              const otmLabel   = meta.otm_symbol
+                ? meta.otm_symbol.replace("MCX:","")
+                : (t.otm_strike ? `${(t.instrument||"").replace("MCX:","")}${t.otm_strike}${optSuffix}` : null);
+              return (
+                <tr key={t.id}>
+                  <td className="sym">
+                    {(t.instrument||"").replace("MCX:","")}
+                    <div style={{fontSize:9,color:"#60a5fa",fontFamily:"monospace",marginTop:2,whiteSpace:"nowrap"}}>
+                      <span title="Buy leg">▲ {atmLabel}</span>
+                      {otmLabel && <span style={{color:"#f87171",marginLeft:4}} title="Sell leg">▼ {otmLabel}</span>}
+                    </div>
+                    <div style={{marginTop:3}}><StratBadge name={t.strategy}/></div>
+                  </td>
+                  <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
+                  <td style={{fontFamily:"monospace",color:"#94a3b8"}}>{spotEntry ? spotEntry.toFixed(0) : "—"}</td>
+                  <td style={{fontFamily:"monospace",color:"#f59e0b",fontWeight:isOpen?"600":"400"}}>
+                    {ltp != null ? ltp.toFixed(0) : "—"}
+                    {spotMove != null && <div style={{fontSize:9,color:pnlColor}}>{spotMove>=0?"+":""}{spotMove.toFixed(0)}</div>}
+                  </td>
+                  <td style={{fontFamily:"monospace",fontSize:10,color:"#60a5fa"}}>
+                    {t.atm_strike||"—"}
+                    {t.otm_strike ? <span style={{color:"#475569"}}>/{t.otm_strike}</span> : null}
+                  </td>
+                  <td style={{fontFamily:"monospace",color:"#fca5a5"}}>
+                    {(t.net_debit||0).toFixed(2)}
+                    <div style={{fontSize:9,color:"#9f1239"}}>SL: {(t.net_debit*0.60).toFixed(2)} (-60%)</div>
+                  </td>
+                  <td style={{fontFamily:"monospace",color:"#86efac"}}>
+                    {(t.max_profit||0).toFixed(2)}
+                    {t.net_debit?<div style={{fontSize:9,color:"#166534"}}>+{((t.max_profit/t.net_debit)*100).toFixed(0)}%</div>:null}
+                  </td>
+                  <td style={{fontFamily:"monospace"}}>{(t.rr||t.rr_planned||0).toFixed(1)}</td>
+                  <td style={{fontFamily:"monospace",color:rsiColor,fontSize:10}}>{meta.rsi ? Number(meta.rsi).toFixed(1) : "—"}</td>
+                  <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{meta.iv_pct ? meta.iv_pct+"%" : "—"}</td>
+                  <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{entryHHMM}</td>
+                  <td style={{color:"#475569",fontSize:9,maxWidth:160,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={meta.signal_reason||""}>{signal||"—"}</td>
+                  <td style={{fontFamily:"monospace",fontWeight:600,color:pnlColor}}>
+                    {isOpen && estPnlLot != null
+                      ? `${estPnlLot>=0?"+":""}₹${Math.abs(estPnlLot).toFixed(0)}`
+                      : !isOpen && (t.pnl_approx!=null)
+                        ? <span className={t.pnl_approx>=0?"good":"bad"}>{t.pnl_approx>=0?"+":""}₹{Math.abs(t.pnl_approx).toFixed(0)}</span>
+                        : "—"}
+                  </td>
+                  <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{isOpen?"open":fmtR(r)}</td>
+                  <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
+                  <td><span className={t.data_source==="live_chain"?"source-live":"source-sim"}>{t.data_source==="live_chain"?"●":"◌"}</span></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  function OptionsChainView() {
+    const SYMS = ["CRUDEOIL","GOLD","SILVER","COPPER","NATURALGAS"];
+    const chain = commChain;
+
+    function fetchChain(sym, idx) {
+      setCommChainBusy(true);
+      fetch(`${API}/commodity/chain-full/${sym}?expiry_idx=${idx}`)
+        .then(r => r.json())
+        .then(d => { setCommChain(d); setCommChainBusy(false); })
+        .catch(() => setCommChainBusy(false));
+    }
+
+    return (
+      <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+        <div style={{flexShrink:0,width:130,background:"#0f1623",border:"1px solid #1e2433",borderRadius:8,overflow:"hidden"}}>
+          <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",letterSpacing:".08em",padding:"8px 12px 6px",borderBottom:"1px solid #1e2433"}}>Commodity</div>
+          {SYMS.map(s => (
+            <div key={s}
+              onClick={() => { setCommChainSym(s); setCommChainExpIdx(0); setCommChain(null); fetchChain(s, 0); }}
+              style={{padding:"9px 12px",cursor:"pointer",fontSize:12,fontFamily:"monospace",
+                background: commChainSym===s ? "#1e3a5f" : "transparent",
+                color: commChainSym===s ? "#93c5fd" : "#64748b",
+                borderLeft: commChainSym===s ? "2px solid #3b82f6" : "2px solid transparent",
+                transition:"all .1s"
+              }}>
+              {s}
+            </div>
+          ))}
+        </div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",flexWrap:"wrap",gap:12,marginBottom:14,alignItems:"center"}}>
+            {chain?.expiries?.length > 1 && (
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em"}}>Expiry</span>
+                <select value={commChainExpIdx}
+                  onChange={e => { const i=Number(e.target.value); setCommChainExpIdx(i); fetchChain(commChainSym,i); }}
+                  style={{background:"#0f1623",border:"1px solid #1e2433",borderRadius:4,color:"#e2e8f0",padding:"3px 7px",fontSize:11,colorScheme:"dark"}}>
+                  {chain.expiries.map((exp,i) => <option key={exp} value={i}>{exp}</option>)}
+                </select>
+              </div>
+            )}
+            <button className="mode-btn" style={{marginLeft:"auto"}}
+              onClick={() => fetchChain(commChainSym, commChainExpIdx)}>
+              ↻ Refresh
+            </button>
+          </div>
+          {chain && (
+            <div style={{display:"flex",gap:14,marginBottom:12,fontSize:11,flexWrap:"wrap",alignItems:"center",padding:"8px 12px",background:"#151a28",borderRadius:8,border:"1px solid #1e2433"}}>
+              <span style={{color:"#64748b"}}>Spot</span>
+              <span style={{fontFamily:"monospace",fontWeight:700,color:"#f1f5f9",fontSize:16}}>
+                {chain.spot ? chain.spot.toLocaleString("en-IN",{maximumFractionDigits:2}) : "—"}
+              </span>
+              <span style={{color:"#64748b",marginLeft:6}}>ATM</span>
+              <span style={{fontFamily:"monospace",fontWeight:600,color:"#f59e0b"}}>
+                {chain.atm_strike ? chain.atm_strike.toLocaleString("en-IN") : "—"}
+              </span>
+              {chain.source && (
+                <span style={{marginLeft:"auto",fontSize:9,color:"#475569",fontStyle:"italic"}}>
+                  {chain.source==="live_chain" ? "● live chain" : "◌ bs estimate"}
+                </span>
+              )}
+            </div>
+          )}
+          {commChainBusy && <div className="empty">Loading chain data...</div>}
+          {!commChainBusy && !chain && (
+            <div className="empty">Select a commodity from the list to load the options chain</div>
+          )}
+          {!commChainBusy && chain?.strikes?.length > 0 && (
+            <div className="chain-wrap">
+              <table className="chain-table">
+                <thead>
+                  <tr>
+                    <th style={{color:"#86efac"}}>CE OI</th>
+                    <th style={{color:"#86efac"}}>CE Vol</th>
+                    <th style={{color:"#86efac"}}>IV%</th>
+                    <th style={{color:"#86efac"}}>Δ</th>
+                    <th style={{color:"#86efac"}}>θ</th>
+                    <th style={{color:"#86efac",fontSize:11}}>LTP</th>
+                    <th className="ctr" style={{color:"#94a3b8",minWidth:72}}>Strike</th>
+                    <th style={{textAlign:"left",color:"#fca5a5",fontSize:11}}>LTP</th>
+                    <th style={{textAlign:"left",color:"#fca5a5"}}>θ</th>
+                    <th style={{textAlign:"left",color:"#fca5a5"}}>Δ</th>
+                    <th style={{textAlign:"left",color:"#fca5a5"}}>IV%</th>
+                    <th style={{textAlign:"left",color:"#fca5a5"}}>PE Vol</th>
+                    <th style={{textAlign:"left",color:"#fca5a5"}}>PE OI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {chain.strikes.map(row => {
+                    const atm = row.is_atm;
+                    return (
+                      <tr key={row.strike} className={atm?"atm":""}>
+                        <td style={{color:row.ce_oi>0?"#94a3b8":"#334155"}}>{row.ce_oi>0?row.ce_oi.toLocaleString("en-IN"):"—"}</td>
+                        <td style={{color:row.ce_vol>0?"#94a3b8":"#334155"}}>{row.ce_vol>0?row.ce_vol.toLocaleString("en-IN"):"—"}</td>
+                        <td style={{color:row.ce_iv>0?"#94a3b8":"#334155"}}>{row.ce_iv>0?row.ce_iv.toFixed(1)+"%":"—"}</td>
+                        <td style={{color:"#86efac"}}>{row.ce_delta.toFixed(3)}</td>
+                        <td style={{color:"#f59e0b"}}>{row.ce_theta.toFixed(2)}</td>
+                        <td style={{fontWeight:700,color:"#86efac",fontSize:12}}>{row.ce_ltp>0?row.ce_ltp.toFixed(2):"—"}</td>
+                        <td className="ctr">
+                          {Number.isInteger(row.strike) ? row.strike : row.strike.toFixed(0)}
+                          {atm && <span style={{fontSize:7,color:"#60a5fa",marginLeft:3,verticalAlign:"middle",letterSpacing:0}}>▲ATM</span>}
+                        </td>
+                        <td style={{textAlign:"left",fontWeight:700,color:"#fca5a5",fontSize:12}}>{row.pe_ltp>0?row.pe_ltp.toFixed(2):"—"}</td>
+                        <td style={{textAlign:"left",color:"#f59e0b"}}>{row.pe_theta.toFixed(2)}</td>
+                        <td style={{textAlign:"left",color:"#fca5a5"}}>{row.pe_delta.toFixed(3)}</td>
+                        <td style={{textAlign:"left",color:row.pe_iv>0?"#94a3b8":"#334155"}}>{row.pe_iv>0?row.pe_iv.toFixed(1)+"%":"—"}</td>
+                        <td style={{textAlign:"left",color:row.pe_vol>0?"#94a3b8":"#334155"}}>{row.pe_vol>0?row.pe_vol.toLocaleString("en-IN"):"—"}</td>
+                        <td style={{textAlign:"left",color:row.pe_oi>0?"#94a3b8":"#334155"}}>{row.pe_oi>0?row.pe_oi.toLocaleString("en-IN"):"—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {!commChainBusy && chain && chain.strikes?.length === 0 && (
+            <div className="empty">
+              {chain.source==="bs_estimate" && !chain.spot
+                ? "No spot price available. Start the bot during MCX hours (09:00–23:30 IST)."
+                : "No strikes returned from chain."}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="paper-banner" style={{background:"#0d1f35",borderColor:"#1e3a5f44",color:"#93c5fd"}}>
+        MCX commodity options paper trades — <strong>TrendSpread · RSIReversalSpread · BreakoutSpread</strong> · Live chain + Black-Scholes fallback · 09:00–23:30 IST
+      </div>
+
+      {/* filter bar */}
+      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:12,alignItems:"center"}}>
+        <input type="text" placeholder="Instrument…" value={filterSym}
+          onChange={e=>setFilterSym(e.target.value)} style={{...inputStyle,width:120}}/>
+        <select value={filterStrat} onChange={e=>setFilterStrat(e.target.value)} style={inputStyle}>
+          {strategies.map(s=><option key={s} value={s}>{s==="all"?"All strategies":s}</option>)}
+        </select>
+        <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={inputStyle}>
+          <option value="all">All status</option>
+          <option value="OPEN">OPEN</option>
+          <option value="CLOSED">CLOSED</option>
+        </select>
+        <input type="date" value={filterDate} onChange={e=>setFilterDate(e.target.value)}
+          style={{...inputStyle,colorScheme:"dark"}}/>
+        {isFiltered && (
+          <button style={{...inputStyle,cursor:"pointer",color:"#f59e0b"}}
+            onClick={()=>{setFilterSym("");setFilterStrat("all");setFilterStatus("all");setFilterDate("");}}>
+            ✕ Clear
+          </button>
+        )}
+        <span style={{marginLeft:"auto",color:"#475569",fontSize:11}}>
+          {isFiltered ? `${filtered.length} / ${allTrades.length} rows` : `${allTrades.length} trades`}
+        </span>
+      </div>
+
+      {/* stats widgets — live from filtered rows */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:16}}>
+        <div className="metric">
+          <div className="lbl">Closed{isFiltered?" · filtered":""}</div>
+          <div className="val neutral">{closedF.length}</div>
+        </div>
+        <div className="metric">
+          <div className="lbl">Open now</div>
+          <div className="val neutral">{openF.length}</div>
+        </div>
+        <div className="metric">
+          <div className="lbl">Win rate</div>
+          <div className={`val ${(winRateF||0)>=50?"up":"down"}`}>{winRateF!==null?winRateF+"%":"—"}</div>
+        </div>
+        <div className="metric">
+          <div className="lbl">Total R</div>
+          <div className={`val ${totalRF>=0?"up":"down"}`}>{closedF.length?`${totalRF>=0?"+":""}${totalRF.toFixed(1)}R`:"—"}</div>
+        </div>
+        <div className="metric">
+          <div className="lbl">Overall P&L</div>
+          <div className={`val ${totalPnlInr>=0?"up":"down"}`}>
+            {closedF.length?`${totalPnlInr>=0?"+":""}₹${Math.abs(totalPnlInr).toFixed(0)}`:"—"}
+          </div>
+        </div>
+      </div>
+
+      {/* by-strategy P&L attribution — all-time from server; hidden when filter active */}
+      {commStats?.by_strategy && Object.keys(commStats.by_strategy).length > 0 && !isFiltered && (
+        <div className="card" style={{marginBottom:16}}>
+          <h2>Strategy P&L attribution
+            <span style={{marginLeft:8,fontWeight:400,color:"#475569",fontSize:10,textTransform:"none",letterSpacing:0}}>
+              identify which strategy is losing
+            </span>
+          </h2>
+          {Object.entries(commStats.by_strategy)
+            .filter(([,s])=>s.avg_r<-0.3&&s.total>=3)
+            .map(([strat,s])=>(
+              <div key={strat} style={{background:"#1c0a0a",border:"1px solid #7f1d1d",borderRadius:6,padding:"8px 12px",marginBottom:8,fontSize:11,color:"#fca5a5"}}>
+                ⚠ <strong>{strat}</strong> is losing — avg {s.avg_r}R across {s.total} trades ({s.win_rate}% win rate). Review entry conditions or disable.
+              </div>
+          ))}
+          <table className="data-table">
+            <thead>
+              <tr><th>Strategy</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th><th>Best</th><th>Worst</th></tr>
+            </thead>
+            <tbody>
+              {Object.entries(commStats.by_strategy).sort((a,b)=>b[1].total-a[1].total).map(([strat,s])=>(
+                <tr key={strat}>
+                  <td><StratBadge name={strat}/></td>
+                  <td>{s.total}</td>
+                  <td className={s.win_rate>=50?"good":"bad"}>{s.win_rate}%</td>
+                  <td className={s.avg_r>=0?"good":"bad"} style={{fontFamily:"monospace",fontWeight:600}}>{s.avg_r>=0?"+":""}{s.avg_r}R</td>
+                  <td className={s.total_r>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{s.total_r>=0?"+":""}{s.total_r}R</td>
+                  <td className="good" style={{fontFamily:"monospace",fontSize:10}}>+{s.best_r}R</td>
+                  <td className="bad" style={{fontFamily:"monospace",fontSize:10}}>{s.worst_r}R</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* per-instrument breakdown — all-time; hidden when filter active */}
+      {commStats?.by_instrument && Object.keys(commStats.by_instrument).length > 0 && !isFiltered && (
+        <div className="card" style={{marginBottom:16}}>
+          <h2>By instrument</h2>
+          <table className="data-table">
+            <thead>
+              <tr><th>Instrument</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th><th>Wins</th></tr>
+            </thead>
+            <tbody>
+              {Object.entries(commStats.by_instrument).sort((a,b)=>b[1].total-a[1].total).map(([ins,s])=>(
+                <tr key={ins}>
+                  <td className="sym">{ins.replace("MCX:","")}</td>
+                  <td>{s.total}</td>
+                  <td className={s.win_rate>=50?"good":"bad"}>{s.win_rate}%</td>
+                  <td className={s.avg_r>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{s.avg_r>=0?"+":""}{s.avg_r}R</td>
+                  <td className={s.total_r>=0?"good":"bad"} style={{fontFamily:"monospace",fontSize:10}}>{s.total_r>=0?"+":""}{(s.total_r||0).toFixed(1)}R</td>
+                  <td className="neutral-cell">{s.wins}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* data source note */}
+      {commStats?.data_sources && !isFiltered && (
+        <div style={{display:"flex",gap:16,marginBottom:12,fontSize:11}}>
+          {commStats.data_sources.live_chain && <span><span className="source-live">●</span> Live chain: {commStats.data_sources.live_chain} trades</span>}
+          {commStats.data_sources.black_scholes && <span><span className="source-sim">◌</span> Black-Scholes sim: {commStats.data_sources.black_scholes} trades</span>}
+        </div>
+      )}
+
+      {/* sub-tabs */}
+      <div className="sub-tabs">
+        {[["trades","All Trades"],["open","Open Positions"],["exits","Exit Breakdown"],["chain","Options Chain"]].map(([id,lbl])=>(
+          <button key={id} className={`sub-tab ${subTab===id?"active":""}`} onClick={()=>setSubTab(id)}>{lbl}</button>
+        ))}
+      </div>
+
+      {subTab==="trades" && (
+        <div className="card">
+          <h2>
+            Trades
+            {isFiltered && <span style={{marginLeft:6,fontWeight:400,color:"#f59e0b",fontSize:10,textTransform:"none",letterSpacing:0}}>· filter active</span>}
+          </h2>
+          <CommodityTradesTable trades={filtered} ltps={ltps}/>
+        </div>
+      )}
+
+      {subTab==="open" && (
+        <div className="card">
+          <h2>Open positions ({openF.length})</h2>
+          {openF.length ? (
+            <CommodityTradesTable trades={openF} ltps={ltps}/>
+          ) : <div className="empty">No open commodity option positions</div>}
+        </div>
+      )}
+
+      {subTab==="exits" && (
+        <div className="grid2">
+          <div className="card">
+            <h2>Exit reasons</h2>
+            {commStats?.exit_reasons ? Object.entries(commStats.exit_reasons).sort((a,b)=>b[1]-a[1]).map(([r,n])=>(
+              <div key={r} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827",fontSize:12}}>
+                <span style={{color:"#94a3b8"}}>{r}</span>
+                <span className={r==="TARGET_50PCT"?"up":r.includes("LOSS")||r==="STOP_60PCT"||r==="EOD_MCX"?"down":"neutral"}>{n}</span>
+              </div>
+            )) : <div className="empty">No data</div>}
+          </div>
+          <div className="card">
+            <h2>P&L summary</h2>
+            {commStats?.total_closed>0 && (
+              <div style={{display:"grid",gap:8}}>
+                {[["Avg R", `${(commStats.avg_r||0)>=0?"+":""}${(commStats.avg_r||0).toFixed(2)}R`, (commStats.avg_r||0)>=0?"up":"down"],
+                  ["Best trade", `+${commStats.best_trade_r||0}R`, "up"],
+                  ["Worst trade", `${commStats.worst_trade_r||0}R`, "down"],
+                  ["Total R", `${(commStats.total_r||0)>=0?"+":""}${(commStats.total_r||0).toFixed(1)}R`, (commStats.total_r||0)>=0?"up":"down"],
+                ].map(([lbl,val,cls])=>(
+                  <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                    <span style={{color:"#64748b"}}>{lbl}</span>
+                    <span className={cls} style={{fontFamily:"monospace"}}>{val}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!commStats?.total_closed && <div className="empty">No closed trades yet</div>}
+          </div>
+        </div>
+      )}
+
+      {subTab==="chain" && (
+        <div className="card">
+          <h2>Live Options Chain
+            <span style={{marginLeft:8,fontWeight:400,color:"#475569",fontSize:10,textTransform:"none",letterSpacing:0}}>
+              CE (calls) ← Strike → PE (puts) · Green=CE · Red=PE · Blue highlight=ATM
+            </span>
+          </h2>
+          <OptionsChainView/>
+        </div>
+      )}
+    </div>
+  );
+});
+
 function App() {
   const [data, setData]               = React.useState(null);
   const [wsOk, setWsOk]               = React.useState(false);
@@ -384,23 +1054,15 @@ function App() {
   /* signal health */
   const [drought, setDrought]         = React.useState(null);
 
-  /* learning — data pushed via WS when trades change; filters live inside LearningTradesTable */
+  /* learning — data pushed via WS when trades change */
   const [learnStats,   setLearnStats]   = React.useState(null);
   const [learnTrades,  setLearnTrades]  = React.useState([]);
   const [learnLtps,    setLearnLtps]    = React.useState({});
-  const [learnSubTab,  setLearnSubTab]  = React.useState("trades");
 
   /* commodity */
   const [commStats, setCommStats]     = React.useState(null);
   const [commTrades, setCommTrades]   = React.useState([]);
   const [commLtps,  setCommLtps]      = React.useState({});
-  const [commSubTab, setCommSubTab]   = React.useState("trades");
-
-  /* options chain */
-  const [commChain,       setCommChain]       = React.useState(null);
-  const [commChainSym,    setCommChainSym]    = React.useState("CRUDEOIL");
-  const [commChainExpIdx, setCommChainExpIdx] = React.useState(0);
-  const [commChainBusy,   setCommChainBusy]   = React.useState(false);
 
   const logRef = React.useRef(null);
 
@@ -477,15 +1139,6 @@ function App() {
     return () => [t1,t2,t3,t5].forEach(clearInterval);
   }, []);
 
-  /* ── options chain fetch (on-demand when chain sub-tab is visible) ── */
-  React.useEffect(() => {
-    if (tab !== "commodity" || commSubTab !== "chain") return;
-    setCommChainBusy(true);
-    fetch(`${API}/commodity/chain-full/${commChainSym}?expiry_idx=${commChainExpIdx}`)
-      .then(r => r.json())
-      .then(d => { setCommChain(d); setCommChainBusy(false); })
-      .catch(() => setCommChainBusy(false));
-  }, [tab, commSubTab, commChainSym, commChainExpIdx]);
 
   const switchMode = m => fetch(`${API}/mode/${m}`, {method:"POST"});
   const confirm    = id => fetch(`${API}/signals/${id}/confirm`, {method:"POST"});
@@ -542,279 +1195,6 @@ function App() {
               <div className="hint">{b.hint}</div>
             </div>
           ))}
-        </div>
-      </div>
-    );
-  }
-
-  /* ── commodity trades table ── */
-  const STRAT_COLOR = {
-    "TrendSpread":          "#3b82f6",
-    "RSIReversalSpread":    "#a855f7",
-    "BreakoutSpread":       "#f97316",
-    "CommodityDebitSpread": "#64748b",
-  };
-  function StratBadge({name}) {
-    const c = STRAT_COLOR[name] || "#64748b";
-    return <span style={{background:c+"22",color:c,border:`1px solid ${c}44`,borderRadius:3,padding:"1px 5px",fontSize:9,fontWeight:600,whiteSpace:"nowrap"}}>{name||"—"}</span>;
-  }
-  function CommodityTradesTable({trades, ltps}) {
-    if (!trades.length) return <div className="empty">No commodity option trades yet — engine runs during MCX hours (09:00–23:30 IST)</div>;
-    const EST_DELTA = 0.35;
-    const closed  = trades.filter(t=>t.status==="CLOSED");
-    const open    = trades.filter(t=>t.status==="OPEN");
-    const winners = closed.filter(t=>(t.pnl_r||0)>0);
-    const winRate = closed.length ? Math.round(winners.length/closed.length*100) : null;
-    const avgR    = closed.length ? closed.reduce((s,t)=>s+(t.pnl_r||0),0)/closed.length : null;
-    const totalR  = closed.reduce((s,t)=>s+(t.pnl_r||0),0);
-    return (
-      <div>
-        {closed.length > 0 && (
-          <div style={{display:"flex",gap:16,flexWrap:"wrap",marginBottom:10,padding:"8px 12px",background:"#0f1623",borderRadius:6,border:"1px solid #1e2433",fontSize:11,alignItems:"center"}}>
-            <span style={{color:"#64748b"}}>Showing {trades.length} trade{trades.length!==1?"s":""}</span>
-            <span style={{color:"#64748b"}}>·</span>
-            <span style={{color:"#64748b"}}>Closed <strong style={{color:"#cbd5e1"}}>{closed.length}</strong></span>
-            {open.length>0 && <span style={{color:"#64748b"}}>Open <strong style={{color:"#f59e0b"}}>{open.length}</strong></span>}
-            {winRate!==null && <span style={{color:"#64748b"}}>Win rate <strong className={winRate>=50?"good":"bad"}>{winRate}%</strong></span>}
-            {avgR!==null && <span style={{color:"#64748b"}}>Avg R <strong className={avgR>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{avgR>=0?"+":""}{avgR.toFixed(2)}R</strong></span>}
-            <span style={{color:"#64748b"}}>Total R <strong className={totalR>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{totalR>=0?"+":""}{totalR.toFixed(1)}R</strong></span>
-          </div>
-        )}
-      <div style={{overflowX:"auto"}}>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Instrument</th>
-              <th>Dir</th>
-              <th>Entry Spot</th>
-              <th style={{color:"#f59e0b"}}>Live LTP</th>
-              <th style={{color:"#60a5fa"}}>ATM/OTM</th>
-              <th>Debit</th><th>MaxP</th><th>RR</th>
-              <th style={{color:"#94a3b8"}}>RSI</th>
-              <th style={{color:"#94a3b8"}}>IV%</th>
-              <th>Time</th>
-              <th style={{color:"#475569",maxWidth:160}}>Signal Reason</th>
-              <th style={{color:"#f59e0b"}}>Live P&L</th>
-              <th>P&L (R)</th>
-              <th>Exit</th>
-              <th>Src</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trades.map(t=>{
-              const r          = t.pnl_r||0;
-              const isOpen     = t.status==="OPEN";
-              const spotEntry  = t.spot_at_entry||0;
-              const ltp        = ltps ? (ltps[t.symbol]||null) : null;
-              const spotMove   = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
-              const estPnl     = spotMove != null ? round2(spotMove * EST_DELTA) : null;
-              const estPnlLot  = estPnl != null ? round2(estPnl * (t.lot_size||1)) : null;
-              const pnlColor   = estPnl == null ? "#64748b" : estPnl > 0 ? "#22c55e" : estPnl < 0 ? "#ef4444" : "#94a3b8";
-              const meta       = t.metadata || {};
-              const entryHHMM  = t.entry_time ? t.entry_time.substring(11,16) : "—";
-              const signal     = (meta.signal_reason || "").substring(0, 44);
-              const rsiColor   = meta.rsi > 60 ? "#f59e0b" : meta.rsi < 40 ? "#93c5fd" : "#94a3b8";
-              const optSuffix  = t.opt_type==="call" ? "CE" : "PE";
-              const atmLabel   = meta.atm_symbol
-                ? meta.atm_symbol.replace("MCX:","")
-                : `${(t.instrument||"").replace("MCX:","")}${t.atm_strike||""}${optSuffix}`;
-              const otmLabel   = meta.otm_symbol
-                ? meta.otm_symbol.replace("MCX:","")
-                : (t.otm_strike ? `${(t.instrument||"").replace("MCX:","")}${t.otm_strike}${optSuffix}` : null);
-              return (
-                <tr key={t.id}>
-                  <td className="sym">
-                    {(t.instrument||"").replace("MCX:","")}
-                    <div style={{fontSize:9,color:"#60a5fa",fontFamily:"monospace",marginTop:2,whiteSpace:"nowrap"}}>
-                      <span title="Buy leg">▲ {atmLabel}</span>
-                      {otmLabel && <span style={{color:"#f87171",marginLeft:4}} title="Sell leg">▼ {otmLabel}</span>}
-                    </div>
-                    <div style={{marginTop:3}}><StratBadge name={t.strategy}/></div>
-                  </td>
-                  <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
-                  <td style={{fontFamily:"monospace",color:"#94a3b8"}}>{spotEntry ? spotEntry.toFixed(0) : "—"}</td>
-                  <td style={{fontFamily:"monospace",color:"#f59e0b",fontWeight:isOpen?"600":"400"}}>
-                    {ltp != null ? ltp.toFixed(0) : "—"}
-                    {spotMove != null && <div style={{fontSize:9,color:pnlColor}}>{spotMove>=0?"+":""}{spotMove.toFixed(0)}</div>}
-                  </td>
-                  <td style={{fontFamily:"monospace",fontSize:10,color:"#60a5fa"}}>
-                    {t.atm_strike||"—"}
-                    {t.otm_strike ? <span style={{color:"#475569"}}>/{t.otm_strike}</span> : null}
-                  </td>
-                  <td style={{fontFamily:"monospace",color:"#fca5a5"}}>
-                    {(t.net_debit||0).toFixed(2)}
-                    <div style={{fontSize:9,color:"#9f1239"}}>SL: {(t.net_debit*0.60).toFixed(2)} (-60%)</div>
-                  </td>
-                  <td style={{fontFamily:"monospace",color:"#86efac"}}>
-                    {(t.max_profit||0).toFixed(2)}
-                    {t.net_debit?<div style={{fontSize:9,color:"#166534"}}>+{((t.max_profit/t.net_debit)*100).toFixed(0)}%</div>:null}
-                  </td>
-                  <td style={{fontFamily:"monospace"}}>{(t.rr||t.rr_planned||0).toFixed(1)}</td>
-                  <td style={{fontFamily:"monospace",color:rsiColor,fontSize:10}}>{meta.rsi ? Number(meta.rsi).toFixed(1) : "—"}</td>
-                  <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{meta.iv_pct ? meta.iv_pct+"%" : "—"}</td>
-                  <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{entryHHMM}</td>
-                  <td style={{color:"#475569",fontSize:9,maxWidth:160,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={meta.signal_reason||""}>{signal||"—"}</td>
-                  <td style={{fontFamily:"monospace",fontWeight:600,color:pnlColor}}>
-                    {isOpen && estPnlLot != null
-                      ? `${estPnlLot>=0?"+":""}₹${Math.abs(estPnlLot).toFixed(0)}`
-                      : "—"}
-                  </td>
-                  <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{isOpen?"open":fmtR(r)}</td>
-                  <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
-                  <td><span className={t.data_source==="live_chain"?"source-live":"source-sim"}>{t.data_source==="live_chain"?"●":"◌"}</span></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      </div>
-    );
-  }
-  function round2(v) { return Math.round(v*100)/100; }
-
-  /* ── options chain view ── */
-  function OptionsChainView() {
-    const SYMS = ["CRUDEOIL","GOLD","SILVER","COPPER","NATURALGAS"];
-    const chain = commChain;
-
-    function fetchChain(sym, idx) {
-      setCommChainBusy(true);
-      fetch(`${API}/commodity/chain-full/${sym}?expiry_idx=${idx}`)
-        .then(r => r.json())
-        .then(d => { setCommChain(d); setCommChainBusy(false); })
-        .catch(() => setCommChainBusy(false));
-    }
-
-    return (
-      <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
-        {/* sidebar symbol list */}
-        <div style={{flexShrink:0,width:130,background:"#0f1623",border:"1px solid #1e2433",borderRadius:8,overflow:"hidden"}}>
-          <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",letterSpacing:".08em",padding:"8px 12px 6px",borderBottom:"1px solid #1e2433"}}>Commodity</div>
-          {SYMS.map(s => (
-            <div key={s}
-              onClick={() => { setCommChainSym(s); setCommChainExpIdx(0); setCommChain(null); fetchChain(s, 0); }}
-              style={{padding:"9px 12px",cursor:"pointer",fontSize:12,fontFamily:"monospace",
-                background: commChainSym===s ? "#1e3a5f" : "transparent",
-                color: commChainSym===s ? "#93c5fd" : "#64748b",
-                borderLeft: commChainSym===s ? "2px solid #3b82f6" : "2px solid transparent",
-                transition:"all .1s"
-              }}>
-              {s}
-            </div>
-          ))}
-        </div>
-
-        {/* right panel */}
-        <div style={{flex:1,minWidth:0}}>
-        {/* expiry + refresh row */}
-        <div style={{display:"flex",flexWrap:"wrap",gap:12,marginBottom:14,alignItems:"center"}}>
-          {chain?.expiries?.length > 1 && (
-            <div style={{display:"flex",alignItems:"center",gap:6}}>
-              <span style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em"}}>Expiry</span>
-              <select value={commChainExpIdx}
-                onChange={e => { const i=Number(e.target.value); setCommChainExpIdx(i); fetchChain(commChainSym,i); }}
-                style={{background:"#0f1623",border:"1px solid #1e2433",borderRadius:4,color:"#e2e8f0",padding:"3px 7px",fontSize:11,colorScheme:"dark"}}>
-                {chain.expiries.map((exp,i) => <option key={exp} value={i}>{exp}</option>)}
-              </select>
-            </div>
-          )}
-          <button className="mode-btn" style={{marginLeft:"auto"}}
-            onClick={() => fetchChain(commChainSym, commChainExpIdx)}>
-            ↻ Refresh
-          </button>
-        </div>
-
-        {/* meta bar */}
-        {chain && (
-          <div style={{display:"flex",gap:14,marginBottom:12,fontSize:11,flexWrap:"wrap",alignItems:"center",padding:"8px 12px",background:"#151a28",borderRadius:8,border:"1px solid #1e2433"}}>
-            <span style={{color:"#64748b"}}>Spot</span>
-            <span style={{fontFamily:"monospace",fontWeight:700,color:"#f1f5f9",fontSize:16}}>
-              {chain.spot ? chain.spot.toLocaleString("en-IN",{maximumFractionDigits:2}) : "—"}
-            </span>
-            <span style={{color:"#64748b",marginLeft:6}}>ATM</span>
-            <span style={{fontFamily:"monospace",fontWeight:700,color:"#60a5fa",fontSize:15}}>{chain.atm ?? "—"}</span>
-            {chain.expiry && <>
-              <span style={{color:"#64748b",marginLeft:6}}>Expiry</span>
-              <span style={{fontFamily:"monospace",color:"#94a3b8"}}>{chain.expiry}</span>
-            </>}
-            {chain.dte && <>
-              <span style={{color:"#64748b"}}>DTE</span>
-              <span style={{fontFamily:"monospace",color:"#fcd34d",fontWeight:600}}>{chain.dte}d</span>
-            </>}
-            <span style={{marginLeft:6}} className={chain.source==="live_chain"?"source-live":"source-sim"}>
-              {chain.source==="live_chain"?"● Live Chain":"◌ BS Estimate"}
-            </span>
-            {chain.note && <span style={{color:"#f59e0b",fontSize:10,marginLeft:4}}>{chain.note}</span>}
-          </div>
-        )}
-
-        {commChainBusy && <div className="empty">Loading chain data...</div>}
-
-        {!commChainBusy && !chain && (
-          <div className="empty">Select a commodity from the list to load the options chain</div>
-        )}
-
-        {/* chain table */}
-        {!commChainBusy && chain?.strikes?.length > 0 && (
-          <div className="chain-wrap">
-            <table className="chain-table">
-              <thead>
-                <tr>
-                  <th style={{color:"#86efac"}}>CE OI</th>
-                  <th style={{color:"#86efac"}}>CE Vol</th>
-                  <th style={{color:"#86efac"}}>IV%</th>
-                  <th style={{color:"#86efac"}}>Δ</th>
-                  <th style={{color:"#86efac"}}>θ</th>
-                  <th style={{color:"#86efac",fontSize:11}}>LTP</th>
-                  <th className="ctr" style={{color:"#94a3b8",minWidth:72}}>Strike</th>
-                  <th style={{textAlign:"left",color:"#fca5a5",fontSize:11}}>LTP</th>
-                  <th style={{textAlign:"left",color:"#fca5a5"}}>θ</th>
-                  <th style={{textAlign:"left",color:"#fca5a5"}}>Δ</th>
-                  <th style={{textAlign:"left",color:"#fca5a5"}}>IV%</th>
-                  <th style={{textAlign:"left",color:"#fca5a5"}}>PE Vol</th>
-                  <th style={{textAlign:"left",color:"#fca5a5"}}>PE OI</th>
-                </tr>
-              </thead>
-              <tbody>
-                {chain.strikes.map(row => {
-                  const atm = row.is_atm;
-                  return (
-                    <tr key={row.strike} className={atm?"atm":""}>
-                      {/* CE side */}
-                      <td style={{color:row.ce_oi>0?"#94a3b8":"#334155"}}>{row.ce_oi>0?row.ce_oi.toLocaleString("en-IN"):"—"}</td>
-                      <td style={{color:row.ce_vol>0?"#94a3b8":"#334155"}}>{row.ce_vol>0?row.ce_vol.toLocaleString("en-IN"):"—"}</td>
-                      <td style={{color:row.ce_iv>0?"#94a3b8":"#334155"}}>{row.ce_iv>0?row.ce_iv.toFixed(1)+"%":"—"}</td>
-                      <td style={{color:"#86efac"}}>{row.ce_delta.toFixed(3)}</td>
-                      <td style={{color:"#f59e0b"}}>{row.ce_theta.toFixed(2)}</td>
-                      <td style={{fontWeight:700,color:"#86efac",fontSize:12}}>{row.ce_ltp>0?row.ce_ltp.toFixed(2):"—"}</td>
-                      {/* strike center */}
-                      <td className="ctr">
-                        {Number.isInteger(row.strike) ? row.strike : row.strike.toFixed(0)}
-                        {atm && <span style={{fontSize:7,color:"#60a5fa",marginLeft:3,verticalAlign:"middle",letterSpacing:0}}>▲ATM</span>}
-                      </td>
-                      {/* PE side */}
-                      <td style={{textAlign:"left",fontWeight:700,color:"#fca5a5",fontSize:12}}>{row.pe_ltp>0?row.pe_ltp.toFixed(2):"—"}</td>
-                      <td style={{textAlign:"left",color:"#f59e0b"}}>{row.pe_theta.toFixed(2)}</td>
-                      <td style={{textAlign:"left",color:"#fca5a5"}}>{row.pe_delta.toFixed(3)}</td>
-                      <td style={{textAlign:"left",color:row.pe_iv>0?"#94a3b8":"#334155"}}>{row.pe_iv>0?row.pe_iv.toFixed(1)+"%":"—"}</td>
-                      <td style={{textAlign:"left",color:row.pe_vol>0?"#94a3b8":"#334155"}}>{row.pe_vol>0?row.pe_vol.toLocaleString("en-IN"):"—"}</td>
-                      <td style={{textAlign:"left",color:row.pe_oi>0?"#94a3b8":"#334155"}}>{row.pe_oi>0?row.pe_oi.toLocaleString("en-IN"):"—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {!commChainBusy && chain && chain.strikes?.length === 0 && (
-          <div className="empty">
-            {chain.source==="bs_estimate" && !chain.spot
-              ? "No spot price available. Start the bot during MCX hours (09:00–23:30 IST)."
-              : "No strikes returned from chain."}
-          </div>
-        )}
         </div>
       </div>
     );
@@ -1095,268 +1475,14 @@ function App() {
           LEARNING TAB
       ════════════════════════════════════════ */}
       {tab==="learning" && (
-        <div>
-          <div className="paper-banner">
-            🎓 Learning paper trades — SimpleRSI &amp; SimpleMomentum on NSE stocks &amp; indices. No real money.
-          </div>
-
-          {/* stats row */}
-          {learnStats && !learnStats.message ? (
-            <div className="grid4" style={{marginBottom:16}}>
-              <div className="metric"><div className="lbl">Closed trades</div>
-                <div className="val neutral">{learnStats.total_closed||0}</div></div>
-              <div className="metric"><div className="lbl">Win rate</div>
-                <div className={`val ${(learnStats.win_rate_pct||0)>=50?"up":"down"}`}>{learnStats.win_rate_pct||0}%</div></div>
-              <div className="metric"><div className="lbl">Avg R</div>
-                <div className={`val ${(learnStats.avg_r||0)>=0?"up":"down"}`}>{(learnStats.avg_r||0)>=0?"+":""}{(learnStats.avg_r||0).toFixed(2)}R</div></div>
-              <div className="metric"><div className="lbl">Total R</div>
-                <div className={`val ${(learnStats.total_r||0)>=0?"up":"down"}`}>{(learnStats.total_r||0)>=0?"+":""}{(learnStats.total_r||0).toFixed(1)}R</div></div>
-            </div>
-          ) : (
-            <div className="card"><div className="empty">{learnStats?.message||"Loading stats..."}</div></div>
-          )}
-
-          {/* per-strategy breakdown */}
-          {learnStats?.by_strategy && (
-            <div className="grid2" style={{marginBottom:16}}>
-              {Object.entries(learnStats.by_strategy).map(([name, s])=>(
-                <div key={name} className="card">
-                  <h2>{name}</h2>
-                  <div style={{display:"grid",gap:8}}>
-                    {[["Trades", s.total, "neutral"],
-                      ["Win rate", `${s.win_rate}%`, s.win_rate>=50?"up":"down"],
-                      ["Avg R", `${s.avg_r>=0?"+":""}${s.avg_r}R`, s.avg_r>=0?"up":"down"],
-                      ["Wins / Losses", `${s.wins} / ${s.total-s.wins}`, "neutral"],
-                    ].map(([lbl,val,cls])=>(
-                      <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-                        <span style={{color:"#64748b"}}>{lbl}</span>
-                        <span className={cls}>{val}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* sub-tabs */}
-          <div className="sub-tabs">
-            {[["trades","All Trades"],["review","Review by Outcome"],["meta","Exit Breakdown"]].map(([id,lbl])=>(
-              <button key={id} className={`sub-tab ${learnSubTab===id?"active":""}`} onClick={()=>setLearnSubTab(id)}>{lbl}</button>
-            ))}
-          </div>
-
-          {learnSubTab==="trades" && (
-            <div className="card">
-              <h2>Recent trades</h2>
-              <LearningTradesTable trades={learnTrades} ltps={learnLtps} showControls={true}/>
-            </div>
-          )}
-
-          {learnSubTab==="review" && (
-            <div className="card">
-              <h2>Trades by outcome bucket</h2>
-              <LearningReviewView trades={learnTrades}/>
-            </div>
-          )}
-
-          {learnSubTab==="meta" && learnStats && (
-            <div className="grid2">
-              <div className="card">
-                <h2>Exit reasons</h2>
-                {learnStats.exit_reasons ? Object.entries(learnStats.exit_reasons).sort((a,b)=>b[1]-a[1]).map(([r,n])=>(
-                  <div key={r} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827",fontSize:12}}>
-                    <span style={{color:"#94a3b8"}}>{r}</span>
-                    <span className={r==="TARGET"?"up":r==="STOP"?"down":"neutral"}>{n}</span>
-                  </div>
-                )) : <div className="empty">No data</div>}
-              </div>
-              <div className="card">
-                <h2>Direction split</h2>
-                {learnStats.directions ? Object.entries(learnStats.directions).map(([d,n])=>(
-                  <div key={d} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827",fontSize:12}}>
-                    <span className={`badge ${d.toLowerCase()}`}>{d}</span>
-                    <span className="neutral">{n} trades</span>
-                  </div>
-                )) : <div className="empty">No data</div>}
-                {learnStats.best_trade_r !== undefined && (
-                  <div style={{marginTop:12,display:"grid",gap:6}}>
-                    {[["Best trade",`+${learnStats.best_trade_r}R`,"up"],
-                      ["Worst trade",`${learnStats.worst_trade_r}R`,"down"],
-                    ].map(([lbl,val,cls])=>(
-                      <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-                        <span style={{color:"#64748b"}}>{lbl}</span>
-                        <span className={cls} style={{fontFamily:"monospace"}}>{val}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+        <LearningTabContent trades={learnTrades} ltps={learnLtps} learnStats={learnStats}/>
       )}
 
       {/* ════════════════════════════════════════
           MCX COMMODITY OPTIONS TAB
       ════════════════════════════════════════ */}
       {tab==="commodity" && (
-        <div>
-          <div className="paper-banner" style={{background:"#0d1f35",borderColor:"#1e3a5f44",color:"#93c5fd"}}>
-            MCX commodity options paper trades — <strong>TrendSpread · RSIReversalSpread · BreakoutSpread</strong> · Live chain + Black-Scholes fallback · 09:00–23:30 IST
-          </div>
-
-          {/* stats row */}
-          {commStats && !commStats.message ? (
-            <div className="grid4" style={{marginBottom:16}}>
-              <div className="metric"><div className="lbl">Closed trades</div>
-                <div className="val neutral">{commStats.total_closed||0}</div></div>
-              <div className="metric"><div className="lbl">Open now</div>
-                <div className="val neutral">{commStats.total_open||0}</div></div>
-              <div className="metric"><div className="lbl">Win rate</div>
-                <div className={`val ${(commStats.win_rate_pct||0)>=50?"up":"down"}`}>{commStats.win_rate_pct||0}%</div></div>
-              <div className="metric"><div className="lbl">Total R</div>
-                <div className={`val ${(commStats.total_r||0)>=0?"up":"down"}`}>{(commStats.total_r||0)>=0?"+":""}{(commStats.total_r||0).toFixed(1)}R</div></div>
-            </div>
-          ) : (
-            <div className="card"><div className="empty">{commStats?.message||"Loading stats... Engine runs during MCX hours."}</div></div>
-          )}
-
-          {/* by-strategy P&L attribution */}
-          {commStats?.by_strategy && Object.keys(commStats.by_strategy).length > 0 && (
-            <div className="card" style={{marginBottom:16}}>
-              <h2>Strategy P&L attribution
-                <span style={{marginLeft:8,fontWeight:400,color:"#475569",fontSize:10,textTransform:"none",letterSpacing:0}}>
-                  identify which strategy is losing
-                </span>
-              </h2>
-              {/* warning alerts for losing strategies */}
-              {Object.entries(commStats.by_strategy)
-                .filter(([,s])=>s.avg_r<-0.3&&s.total>=3)
-                .map(([strat,s])=>(
-                  <div key={strat} style={{background:"#1c0a0a",border:"1px solid #7f1d1d",borderRadius:6,padding:"8px 12px",marginBottom:8,fontSize:11,color:"#fca5a5"}}>
-                    ⚠ <strong>{strat}</strong> is losing — avg {s.avg_r}R across {s.total} trades ({s.win_rate}% win rate). Review entry conditions or disable.
-                  </div>
-              ))}
-              <table className="data-table">
-                <thead>
-                  <tr><th>Strategy</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th><th>Best</th><th>Worst</th></tr>
-                </thead>
-                <tbody>
-                  {Object.entries(commStats.by_strategy).sort((a,b)=>b[1].total-a[1].total).map(([strat,s])=>(
-                    <tr key={strat}>
-                      <td><StratBadge name={strat}/></td>
-                      <td>{s.total}</td>
-                      <td className={s.win_rate>=50?"good":"bad"}>{s.win_rate}%</td>
-                      <td className={s.avg_r>=0?"good":"bad"} style={{fontFamily:"monospace",fontWeight:600}}>{s.avg_r>=0?"+":""}{s.avg_r}R</td>
-                      <td className={s.total_r>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{s.total_r>=0?"+":""}{s.total_r}R</td>
-                      <td className="good" style={{fontFamily:"monospace",fontSize:10}}>+{s.best_r}R</td>
-                      <td className="bad" style={{fontFamily:"monospace",fontSize:10}}>{s.worst_r}R</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* per-instrument breakdown */}
-          {commStats?.by_instrument && Object.keys(commStats.by_instrument).length > 0 && (
-            <div className="card" style={{marginBottom:16}}>
-              <h2>By instrument</h2>
-              <table className="data-table">
-                <thead>
-                  <tr><th>Instrument</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th><th>Wins</th></tr>
-                </thead>
-                <tbody>
-                  {Object.entries(commStats.by_instrument).sort((a,b)=>b[1].total-a[1].total).map(([ins,s])=>(
-                    <tr key={ins}>
-                      <td className="sym">{ins.replace("MCX:","")}</td>
-                      <td>{s.total}</td>
-                      <td className={s.win_rate>=50?"good":"bad"}>{s.win_rate}%</td>
-                      <td className={s.avg_r>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{s.avg_r>=0?"+":""}{s.avg_r}R</td>
-                      <td className={s.total_r>=0?"good":"bad"} style={{fontFamily:"monospace",fontSize:10}}>{s.total_r>=0?"+":""}{(s.total_r||0).toFixed(1)}R</td>
-                      <td className="neutral-cell">{s.wins}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* data source note */}
-          {commStats?.data_sources && (
-            <div style={{display:"flex",gap:16,marginBottom:12,fontSize:11}}>
-              {commStats.data_sources.live_chain && <span><span className="source-live">●</span> Live chain: {commStats.data_sources.live_chain} trades</span>}
-              {commStats.data_sources.black_scholes && <span><span className="source-sim">◌</span> Black-Scholes sim: {commStats.data_sources.black_scholes} trades</span>}
-            </div>
-          )}
-
-          {/* sub-tabs */}
-          <div className="sub-tabs">
-            {[["trades","All Trades"],["open","Open Positions"],["exits","Exit Breakdown"],["chain","Options Chain"]].map(([id,lbl])=>(
-              <button key={id} className={`sub-tab ${commSubTab===id?"active":""}`} onClick={()=>setCommSubTab(id)}>{lbl}</button>
-            ))}
-          </div>
-
-          {commSubTab==="trades" && (
-            <div className="card">
-              <h2>Recent trades ({commTrades.length})</h2>
-              <CommodityTradesTable trades={commTrades} ltps={commLtps}/>
-            </div>
-          )}
-
-          {commSubTab==="open" && (
-            <div className="card">
-              <h2>Open positions ({commStats?.open_positions?.length||0})</h2>
-              {commStats?.open_positions?.length ? (
-                <CommodityTradesTable trades={commStats.open_positions} ltps={commLtps}/>
-              ) : <div className="empty">No open commodity option positions</div>}
-            </div>
-          )}
-
-          {commSubTab==="exits" && commStats && (
-            <div className="grid2">
-              <div className="card">
-                <h2>Exit reasons</h2>
-                {commStats.exit_reasons ? Object.entries(commStats.exit_reasons).sort((a,b)=>b[1]-a[1]).map(([r,n])=>(
-                  <div key={r} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827",fontSize:12}}>
-                    <span style={{color:"#94a3b8"}}>{r}</span>
-                    <span className={r==="TARGET_50PCT"?"up":r.includes("LOSS")||r==="STOP_60PCT"||r==="EOD_MCX"?"down":"neutral"}>{n}</span>
-                  </div>
-                )) : <div className="empty">No data</div>}
-              </div>
-              <div className="card">
-                <h2>P&L summary</h2>
-                {commStats.total_closed>0 && (
-                  <div style={{display:"grid",gap:8}}>
-                    {[["Avg R", `${(commStats.avg_r||0)>=0?"+":""}${(commStats.avg_r||0).toFixed(2)}R`, (commStats.avg_r||0)>=0?"up":"down"],
-                      ["Best trade", `+${commStats.best_trade_r||0}R`, "up"],
-                      ["Worst trade", `${commStats.worst_trade_r||0}R`, "down"],
-                      ["Total R", `${(commStats.total_r||0)>=0?"+":""}${(commStats.total_r||0).toFixed(1)}R`, (commStats.total_r||0)>=0?"up":"down"],
-                    ].map(([lbl,val,cls])=>(
-                      <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-                        <span style={{color:"#64748b"}}>{lbl}</span>
-                        <span className={cls} style={{fontFamily:"monospace"}}>{val}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {!commStats.total_closed && <div className="empty">No closed trades yet</div>}
-              </div>
-            </div>
-          )}
-
-          {commSubTab==="chain" && (
-            <div className="card">
-              <h2>Live Options Chain
-                <span style={{marginLeft:8,fontWeight:400,color:"#475569",fontSize:10,textTransform:"none",letterSpacing:0}}>
-                  CE (calls) ← Strike → PE (puts) · Green=CE · Red=PE · Blue highlight=ATM
-                </span>
-              </h2>
-              <OptionsChainView/>
-            </div>
-          )}
-        </div>
+        <CommodityTabContent trades={commTrades} ltps={commLtps} commStats={commStats}/>
       )}
 
       {/* ════════════════════════════════════════

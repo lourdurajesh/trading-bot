@@ -39,7 +39,8 @@ class SimpleMomentumStrategy:
     Paper-only EMA crossover strategy. Returns LearningSignal dict or None.
     """
 
-    name = "SimpleMomentum"
+    name      = "SimpleMomentum"
+    hold_type = "intraday"
 
     def evaluate(self, symbol: str) -> Optional[dict]:
         if "-INDEX" in symbol:

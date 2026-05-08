@@ -40,6 +40,7 @@ class TrendFollowStrategy(BaseStrategy):
     def __init__(self):
         super().__init__()
         self.name       = "TrendFollow"
+        self.hold_type  = "swing"
         self.timeframe  = "1H"
         self.confirm_tf = "1D"
 
