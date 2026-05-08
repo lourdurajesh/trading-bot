@@ -85,6 +85,8 @@ class LearningEngine:
 
         # ── 2. Equity + commodity entries — 1 trade per symbol per strategy ──
         for symbol in LEARNING_NSE_EQUITIES + LEARNING_MCX_COMMODITIES:
+            if "-INDEX" in symbol:
+                continue  # safety: indices must never go through equity strategies
             if self._is_on_cooldown(symbol):
                 continue
             if self._is_earnings_blocked(symbol):

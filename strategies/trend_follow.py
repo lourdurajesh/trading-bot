@@ -51,6 +51,9 @@ class TrendFollowStrategy(BaseStrategy):
         if not self.enabled:
             return None
 
+        if "-INDEX" in symbol:
+            return None  # indices need options strategies, not equity trend follow
+
         # ── 1. Regime check ───────────────────────────────────────
         regime_result = regime_detector.get_regime(symbol, self.timeframe)
         if regime_result.regime not in (Regime.TRENDING, Regime.BREAKOUT):

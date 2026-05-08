@@ -251,19 +251,29 @@ class PaperTradingEngine:
                 symbol       = row["symbol"]
                 nfo_sym      = row["nfo_symbol"] if row["nfo_symbol"] else None
                 instr_type   = row["instrument_type"] if row["instrument_type"] else ""
-                ltp_sym      = nfo_sym if (instr_type == "nse_options" and nfo_sym) else symbol
-                ltp          = store.get_ltp(ltp_sym) or row["entry_price"]
                 entry        = row["entry_price"]
                 size         = row["position_size"]
                 direction    = row["direction"]
 
-                # Options debit spreads: always long the premium regardless of market direction
+                # Infer options trade from strategy name for old rows lacking instrument_type
+                if not instr_type and any(s in (row["strategy"] or "") for s in ["Options", "Institutional"]):
+                    instr_type = "nse_options"
+
+                # Options: use nfo_symbol for LTP. If none stored (old stuck trade), show zero P&L
                 if instr_type == "nse_options":
-                    unrealised = (ltp - entry) * size
-                elif direction == "LONG":
-                    unrealised = (ltp - entry) * size
+                    ltp = store.get_ltp(nfo_sym) if nfo_sym else None
+                    if ltp is None:
+                        # Stuck trade — no contract symbol, cannot get real LTP
+                        unrealised = 0.0
+                        ltp        = entry
+                    else:
+                        unrealised = (ltp - entry) * size
                 else:
-                    unrealised = (entry - ltp) * size
+                    raw_ltp = store.get_ltp(symbol) or entry
+                    # Safety: if LTP is 20× the entry, it's an index being used instead of
+                    # an option premium (old stuck mirror trade) — show zero P&L
+                    ltp        = raw_ltp if raw_ltp <= entry * 20 else entry
+                    unrealised = (ltp - entry) * size if direction == "LONG" else (entry - ltp) * size
 
                 # Deduct brokerage
                 brokerage  = entry * size * BROKERAGE_PCT / 100

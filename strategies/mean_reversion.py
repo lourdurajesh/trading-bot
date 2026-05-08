@@ -58,6 +58,9 @@ class MeanReversionStrategy(BaseStrategy):
         if not self.enabled:
             return None
 
+        if "-INDEX" in symbol:
+            return None  # indices need options strategies, not equity mean reversion
+
         # ── 0. Opening blackout (09:15 – 09:44 IST) ──────────────
         # Gap opens push RSI/BB into extreme readings that mimic reversion
         # setups but are actually gap-continuation moves. Wait for the

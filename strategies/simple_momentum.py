@@ -42,6 +42,9 @@ class SimpleMomentumStrategy:
     name = "SimpleMomentum"
 
     def evaluate(self, symbol: str) -> Optional[dict]:
+        if "-INDEX" in symbol:
+            return None  # indices need options strategies, not equity momentum
+
         now = datetime.now(tz=IST).time()
         if not (_MARKET_OPEN <= now <= _MARKET_CLOSE):
             return None
