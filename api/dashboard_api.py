@@ -877,6 +877,8 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
             ltp = store.get_ltp(nfo_sym or sym)
             if ltp:
                 learning_ltps[sym] = ltp
+                if nfo_sym:
+                    learning_ltps[nfo_sym] = ltp  # keyed by contract so frontend can look up directly
     except Exception:
         pass
 

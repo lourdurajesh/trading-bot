@@ -267,21 +267,29 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
           </thead>
           <tbody>
             {rows.map(t=>{
-              const r       = t.pnl_r||0;
-              const pts     = t.pnl_pts||0;
-              const open    = t.status==="OPEN";
-              const dateStr = (t.entry_time||"").slice(0,10);
-              const ltp     = open ? (ltps[t.symbol] || null) : null;
-              const livePts = ltp != null
-                ? (t.direction==="LONG" ? ltp - t.entry_price : t.entry_price - ltp)
+              const r        = t.pnl_r||0;
+              const pts      = t.pnl_pts||0;
+              const open     = t.status==="OPEN";
+              const dateStr  = (t.entry_time||"").slice(0,10);
+              const meta     = t.metadata || {};
+              const nfoSym   = meta.nfo_symbol || null;
+              const isOpts   = meta.instrument_type === "nse_options";
+              const ltp      = open ? (ltps[nfoSym] || ltps[t.symbol] || null) : null;
+              const livePts  = ltp != null
+                ? (isOpts || t.direction==="LONG" ? ltp - t.entry_price : t.entry_price - ltp)
                 : null;
               const ltpColor = ltp == null ? "#64748b"
                 : livePts > 0 ? "#22c55e"
                 : livePts < 0 ? "#ef4444"
                 : "#94a3b8";
+              const dispSym  = (nfoSym || t.symbol || "").replace("NSE:","").replace("-EQ","").replace("MCX:","");
+              const idxLabel = nfoSym ? (t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","") : null;
               return (
                 <tr key={t.id}>
-                  <td className="sym">{(t.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","")}</td>
+                  <td className="sym">
+                    <span>{dispSym}</span>
+                    {idxLabel && <div style={{fontSize:9,color:"#64748b",marginTop:1}}>{idxLabel}</div>}
+                  </td>
                   <td style={{color:"#93c5fd",fontSize:10}}>{t.strategy}</td>
                   <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
                   <td style={{color:"#64748b",fontSize:10}}>{dateStr}</td>
