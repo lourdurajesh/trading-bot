@@ -113,8 +113,11 @@ class InstitutionalMomentumStrategy(BaseStrategy):
             self.log_skip(symbol, f"Invalid spot price: {spot}")
             return None
 
-        # Fetch ATM option from live chain
+        # Fetch ATM option from live chain — no simulation fallback allowed
         premium, lot_size, dte, nfo_symbol, iv = self._get_atm_option(symbol, option_type)
+        if not nfo_symbol:
+            self.log_skip(symbol, "No live option chain data — skipping (no simulation fallback)")
+            return None
         if not premium or premium < 5.0:
             self.log_skip(symbol, f"ATM premium ₹{premium} too low or unavailable")
             return None
@@ -209,8 +212,7 @@ class InstitutionalMomentumStrategy(BaseStrategy):
         except Exception as e:
             logger.warning(f"[InstitutionalMomentum] options_executor error: {e}")
 
-        # Simulation fallback
-        return self._simulate_atm(symbol)
+        return None, 0, 0, None, 0.0
 
     def _simulate_atm(self, symbol: str) -> tuple[float, int, int, None, float]:
         """Fallback ATM estimates when live chain unavailable."""

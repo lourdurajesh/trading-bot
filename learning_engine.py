@@ -186,6 +186,11 @@ class LearningEngine:
         direction        = signal["direction"]
         instrument_type  = meta.get("instrument_type", "")
 
+        # Refuse to open an options trade without a real contract symbol — it cannot be monitored
+        if instrument_type == "nse_options" and not meta.get("nfo_symbol"):
+            logger.warning(f"[Learning] Skipping {strategy} {symbol} — options trade has no nfo_symbol (no chain data)")
+            return
+
         # Apply entry slippage: buyer pays more, seller receives less
         slip     = SLIPPAGE_OPTIONS if instrument_type == "nse_options" else SLIPPAGE_EQUITY
         raw_entry = float(signal["entry_price"])
@@ -241,11 +246,24 @@ class LearningEngine:
             nfo_symbol      = metadata.get("nfo_symbol")
             lot_size        = int(metadata.get("lot_size", 1)) or 1
 
-            # Gap 2: options must use nfo_symbol LTP — never fall back to index LTP
+            # Options trades without a real contract symbol can't be monitored —
+            # force EOD-close them rather than leaving them open forever
+            if instrument_type == "nse_options" and not nfo_symbol:
+                now_time = datetime.now(tz=IST).time()
+                if now_time >= dtime(15, 20):
+                    self._db_close(trade["id"], trade["entry_price"], "EOD_NO_CONTRACT", 0.0, 0.0, 0.0, 0.0)
+                    closed_keys.append(key)
+                    logger.warning(f"[Learning] EOD-closed {trade['id']} — options trade had no nfo_symbol")
+                    try:
+                        from paper_trading import paper_trading_engine
+                        paper_trading_engine.mirror_learning_close(trade["id"], trade["entry_price"], "EOD_NO_CONTRACT")
+                    except Exception:
+                        pass
+                continue
+
+            # Options must use nfo_symbol LTP — never fall back to index LTP
             # (index at 25,000 against premium stop at ₹100 would never trigger)
             if instrument_type == "nse_options":
-                if not nfo_symbol:
-                    continue  # no contract symbol recorded — skip this cycle
                 ltp = store.get_ltp(nfo_symbol)
                 if not ltp or ltp <= 0:
                     continue  # chain data unavailable this cycle — wait for next

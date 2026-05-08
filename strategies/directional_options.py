@@ -117,27 +117,18 @@ class DirectionalOptionsStrategy(BaseStrategy):
             max_dte      = MAX_DTE,
         )
 
-        if opt:
-            # Live data available — use real premium and IV
-            iv         = opt.iv if opt.iv > 0 else 0.15
-            atm_strike = opt.strike
-            # OTM leg for the spread (0.5 delta difference)
-            otm_strike = options_engine.get_otm_strike(spot, option_type, 0.5, iv, opt.dte)
-            # ATM leg LTP is the debit; OTM leg credit reduces it ~30-40%
-            # Net debit ≈ 65% of ATM premium (spread structure)
-            debit_cost = round(opt.ltp * 0.65, 2)
-            max_profit = round(abs(atm_strike - otm_strike) * 0.35, 2)
-            lot_size   = opt.lot_size
-            nfo_symbol = opt.symbol
-        else:
-            # Simulation fallback
-            iv         = 0.15
-            atm_strike = round(spot / 50) * 50
-            otm_strike = options_engine.get_otm_strike(spot, option_type, 0.5, iv, 14)
-            debit_cost = spot * iv * 0.015
-            max_profit = spot * iv * 0.025
-            lot_size   = options_executor.get_lot_size(symbol)
-            nfo_symbol = None
+        if not opt:
+            self.log_skip(symbol, "No live option chain data — skipping (no simulation fallback)")
+            return None
+
+        # Live data — use real premium and contract symbol
+        iv         = opt.iv if opt.iv > 0 else 0.15
+        atm_strike = opt.strike
+        otm_strike = options_engine.get_otm_strike(spot, option_type, 0.5, iv, opt.dte)
+        debit_cost = round(opt.ltp * 0.65, 2)
+        max_profit = round(abs(atm_strike - otm_strike) * 0.35, 2)
+        lot_size   = opt.lot_size
+        nfo_symbol = opt.symbol
 
         logger.debug(f"[DirectionalOptions] spot={spot}, iv={iv:.2f}, debit={debit_cost:.2f}")
         if debit_cost <= 0 or debit_cost > spot * 0.05:
