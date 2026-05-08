@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 MCX_MARKET_OPEN  = dtime(9, 0)
 MCX_MARKET_CLOSE = dtime(23, 30)
 # Stop taking new entries 30 min before close (spread widens)
-MCX_ENTRY_CUTOFF = dtime(23, 0)
+MCX_ENTRY_CUTOFF = dtime(20, 0)   # stop new entries at 8 PM — spreads widen after that
 
 # Keyed by short commodity name.  Full Fyers symbol is built dynamically
 # via _fyers_sym() so contracts never expire silently.
@@ -272,7 +272,7 @@ class CommodityOptionsLearning:
     # ─────────────────────────────────────────────────────────────
 
     def _check_trend_spread(self, df, spot: float):
-        """TrendSpread: EMA5/EMA20 crossover with RSI 50-75 confirmation."""
+        """TrendSpread: EMA5/EMA20 crossover with RSI 55-68 and minimum EMA gap."""
         try:
             from analysis.indicators import rsi as calc_rsi, ema as calc_ema
             close   = df["close"]
@@ -280,13 +280,20 @@ class CommodityOptionsLearning:
             ema20   = calc_ema(close, 20).iloc[-1]
             ema5    = calc_ema(close, 5).iloc[-1]
 
-            if ema5 > ema20 and spot > ema20 and 50 < rsi_val < 75:
+            # Require at least 0.3% gap between EMAs — pure crossover noise is excluded
+            ema_gap_pct = abs(ema5 - ema20) / ema20 * 100
+
+            if (ema5 > ema20 and spot > ema20
+                    and 55 < rsi_val < 68        # tightened: avoid weak(51) and near-OB(74) entries
+                    and ema_gap_pct >= 0.3):      # confirmed trend, not a flat crossover
                 return ("LONG", "TrendSpread",
-                        f"EMA5={ema5:.0f}>EMA20={ema20:.0f}, RSI={rsi_val:.1f}",
+                        f"EMA5={ema5:.0f}>EMA20={ema20:.0f}(+{ema_gap_pct:.1f}%), RSI={rsi_val:.1f}",
                         round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
-            if ema5 < ema20 and spot < ema20 and 25 < rsi_val < 50:
+            if (ema5 < ema20 and spot < ema20
+                    and 32 < rsi_val < 45        # tightened: avoid weak(49) and near-OS(26) entries
+                    and ema_gap_pct >= 0.3):
                 return ("SHORT", "TrendSpread",
-                        f"EMA5={ema5:.0f}<EMA20={ema20:.0f}, RSI={rsi_val:.1f}",
+                        f"EMA5={ema5:.0f}<EMA20={ema20:.0f}(-{ema_gap_pct:.1f}%), RSI={rsi_val:.1f}",
                         round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
         except Exception as exc:
             logger.debug(f"[CommOpts] TrendSpread error: {exc}")
@@ -450,13 +457,13 @@ class CommodityOptionsLearning:
             est_delta = 0.35
             est_pnl   = round(spot_move * est_delta, 2)  # per unit, not per lot
 
-            # Exit at 50% profit or 100% loss (max loss = debit paid)
+            # Exit at 50% profit or 60% loss (stop early — don't let every loser go to -1R)
             if est_pnl >= max_profit * 0.50:
                 exit_reason = "TARGET_50PCT"
                 pnl_approx  = round(net_debit * 0.50, 2)
-            elif est_pnl <= -net_debit:
-                exit_reason = "MAX_LOSS"
-                pnl_approx  = round(-net_debit, 2)
+            elif est_pnl <= -net_debit * 0.60:
+                exit_reason = "STOP_60PCT"
+                pnl_approx  = round(-net_debit * 0.60, 2)
             elif now.time() >= dtime(23, 15):
                 exit_reason = "EOD_MCX"
                 pnl_approx  = round(est_pnl, 2)

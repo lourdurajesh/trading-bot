@@ -1268,7 +1268,7 @@ function App() {
                 {commStats.exit_reasons ? Object.entries(commStats.exit_reasons).sort((a,b)=>b[1]-a[1]).map(([r,n])=>(
                   <div key={r} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827",fontSize:12}}>
                     <span style={{color:"#94a3b8"}}>{r}</span>
-                    <span className={r==="TARGET_50PCT"?"up":r.includes("LOSS")||r==="EOD_MCX"?"down":"neutral"}>{n}</span>
+                    <span className={r==="TARGET_50PCT"?"up":r.includes("LOSS")||r==="STOP_60PCT"||r==="EOD_MCX"?"down":"neutral"}>{n}</span>
                   </div>
                 )) : <div className="empty">No data</div>}
               </div>
