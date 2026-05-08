@@ -99,6 +99,16 @@ class StrategySelector:
                 continue
 
             signal = self._evaluate_symbol(symbol)
+            if signal is not None and self._is_conflicting_direction(symbol, signal.direction.value):
+                # Conflict gate: another strategy already holds this symbol in the
+                # opposite direction. Allowed in learning (independent strategy eval)
+                # but blocked here — real capital never holds both sides of a trade.
+                logger.warning(
+                    f"[StrategySelector] CONFLICT BLOCKED: {signal.strategy} wants "
+                    f"{signal.direction.value} {symbol} but an opposite position is already open"
+                )
+                signal = None
+
             if signal is None:
                 # Distinguish no-data from no-setup by checking data availability
                 from data.data_store import store
@@ -371,6 +381,18 @@ class StrategySelector:
         except Exception as e:
             logger.error(f"[StrategySelector] Strategy {strategy.name} error on {symbol}: {e}")
         return None
+
+    def _is_conflicting_direction(self, symbol: str, direction: str) -> bool:
+        """
+        Returns True if an open position already exists for this symbol in the
+        OPPOSITE direction — prevents two strategies from holding both sides of
+        the same stock simultaneously with real capital.
+        """
+        pos = portfolio_tracker.get_position(symbol)
+        if pos is None:
+            return False
+        opposite = "SHORT" if direction == "LONG" else "LONG"
+        return pos.direction == opposite
 
     def _is_on_cooldown(self, symbol: str) -> bool:
         """Check if a symbol is currently in cooldown period."""

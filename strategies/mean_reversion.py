@@ -126,7 +126,9 @@ class MeanReversionStrategy(BaseStrategy):
         near_lower = ltp <= lower_val * (1 + BB_PROXIMITY_PCT)
         oversold   = rsi_val < RSI_OVERSOLD
 
-        if near_lower and oversold and ema50_direction in ("up", "neutral"):
+        # Require EMA50 to be pointing UP — only buy dips in established uptrends.
+        # "neutral" removed: mean reversion against an unclear trend has poor edge.
+        if near_lower and oversold and ema50_direction == "up":
             return self._build_long_signal(symbol, df_15m, ltp, rsi_val,
                                            lower_val, middle_val, regime_result)
 
@@ -134,7 +136,8 @@ class MeanReversionStrategy(BaseStrategy):
         near_upper  = ltp >= upper_val * (1 - BB_PROXIMITY_PCT)
         overbought  = rsi_val > RSI_OVERBOUGHT
 
-        if near_upper and overbought and ema50_direction in ("down", "neutral"):
+        # Require EMA50 to be pointing DOWN — only short rallies in established downtrends.
+        if near_upper and overbought and ema50_direction == "down":
             return self._build_short_signal(symbol, df_15m, ltp, rsi_val,
                                             upper_val, middle_val, regime_result)
 
