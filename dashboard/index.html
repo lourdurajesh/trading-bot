@@ -388,6 +388,7 @@ function App() {
   /* commodity */
   const [commStats, setCommStats]     = React.useState(null);
   const [commTrades, setCommTrades]   = React.useState([]);
+  const [commLtps,  setCommLtps]      = React.useState({});
   const [commSubTab, setCommSubTab]   = React.useState("trades");
 
   /* options chain */
@@ -418,6 +419,8 @@ function App() {
           }
           // Learning LTPs: sent every tick for open positions
           if (d.learning_ltps) setLearnLtps(d.learning_ltps);
+          // Commodity spot LTPs: sent every tick for open MCX positions
+          if (d.commodity_ltps) setCommLtps(d.commodity_ltps);
         } catch{}
       };
     }
@@ -540,34 +543,52 @@ function App() {
   }
 
   /* ── commodity trades table ── */
-  function CommodityTradesTable({trades}) {
+  function CommodityTradesTable({trades, ltps}) {
     if (!trades.length) return <div className="empty">No commodity option trades yet — engine runs during MCX hours (09:00–23:30 IST)</div>;
+    const EST_DELTA = 0.35;
     return (
       <div style={{overflowX:"auto"}}>
         <table className="data-table">
           <thead>
             <tr>
-              <th>Instrument</th><th>Dir</th><th>ATM Strike</th>
+              <th>Instrument</th><th>Dir</th><th>Entry Spot</th>
+              <th style={{color:"#f59e0b"}}>Spot LTP</th>
               <th>Net Debit</th><th>Max Profit</th><th>RR</th>
+              <th style={{color:"#f59e0b"}}>Live P&L</th>
               <th>P&L (R)</th><th>Reason</th><th>Source</th><th>Status</th>
             </tr>
           </thead>
           <tbody>
             {trades.map(t=>{
-              const r = t.pnl_r||0;
-              const meta = t.metadata||{};
+              const r          = t.pnl_r||0;
+              const isOpen     = t.status==="OPEN";
+              const spotEntry  = t.spot_at_entry||0;
+              const ltp        = ltps ? (ltps[t.symbol]||null) : null;
+              const spotMove   = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
+              const estPnl     = spotMove != null ? round2(spotMove * EST_DELTA) : null;
+              const estPnlLot  = estPnl != null ? round2(estPnl * (t.lot_size||1)) : null;
+              const pnlColor   = estPnl == null ? "#64748b" : estPnl > 0 ? "#22c55e" : estPnl < 0 ? "#ef4444" : "#94a3b8";
               return (
                 <tr key={t.id}>
                   <td className="sym">{(t.instrument||"").replace("MCX:","")}</td>
                   <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
-                  <td style={{fontFamily:"monospace"}}>{meta.atm_strike||"—"}</td>
+                  <td style={{fontFamily:"monospace",color:"#94a3b8"}}>{spotEntry ? spotEntry.toFixed(0) : "—"}</td>
+                  <td style={{fontFamily:"monospace",color:"#f59e0b",fontWeight:isOpen?"600":"400"}}>
+                    {ltp != null ? ltp.toFixed(0) : "—"}
+                    {spotMove != null && <div style={{fontSize:9,color:pnlColor}}>{spotMove>=0?"+":""}{spotMove.toFixed(0)}</div>}
+                  </td>
                   <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.net_debit||0).toFixed(2)}</td>
                   <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.max_profit||0).toFixed(2)}</td>
-                  <td style={{fontFamily:"monospace"}}>{(t.rr_planned||0).toFixed(1)}</td>
-                  <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{t.status==="OPEN"?"open":fmtR(r)}</td>
+                  <td style={{fontFamily:"monospace"}}>{(t.rr||t.rr_planned||0).toFixed(1)}</td>
+                  <td style={{fontFamily:"monospace",fontWeight:600,color:pnlColor}}>
+                    {isOpen && estPnlLot != null
+                      ? `${estPnlLot>=0?"+":""}₹${Math.abs(estPnlLot).toFixed(0)}`
+                      : "—"}
+                  </td>
+                  <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{isOpen?"open":fmtR(r)}</td>
                   <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
                   <td><span className={t.data_source==="live_chain"?"source-live":"source-sim"}>{t.data_source==="live_chain"?"● Live":"◌ Sim"}</span></td>
-                  <td><span className={`badge ${t.status==="OPEN"?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
+                  <td><span className={`badge ${isOpen?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
                 </tr>
               );
             })}
@@ -576,6 +597,7 @@ function App() {
       </div>
     );
   }
+  function round2(v) { return Math.round(v*100)/100; }
 
   /* ── options chain view ── */
   function OptionsChainView() {
@@ -1136,7 +1158,7 @@ function App() {
           {commSubTab==="trades" && (
             <div className="card">
               <h2>Recent trades ({commTrades.length})</h2>
-              <CommodityTradesTable trades={commTrades}/>
+              <CommodityTradesTable trades={commTrades} ltps={commLtps}/>
             </div>
           )}
 
@@ -1144,7 +1166,7 @@ function App() {
             <div className="card">
               <h2>Open positions ({commStats?.open_positions?.length||0})</h2>
               {commStats?.open_positions?.length ? (
-                <CommodityTradesTable trades={commStats.open_positions}/>
+                <CommodityTradesTable trades={commStats.open_positions} ltps={commLtps}/>
               ) : <div className="empty">No open commodity option positions</div>}
             </div>
           )}

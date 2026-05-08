@@ -918,6 +918,20 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
     except Exception:
         pass
 
+    # Live spot LTPs for open commodity option positions (keyed by futures symbol)
+    commodity_ltps: dict = {}
+    try:
+        from commodity_options_learning import commodity_options
+        open_comm = commodity_options.get_trades(status="OPEN")
+        for t in open_comm:
+            sym = t.get("symbol")
+            if sym:
+                ltp = store.get_ltp(sym)
+                if ltp:
+                    commodity_ltps[sym] = ltp
+    except Exception:
+        pass
+
     # Learning trades+stats — only when changed (per-connection hash)
     learning, new_hash = _get_learning_payload(conn_learning_hash)
 
@@ -930,6 +944,7 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
         "pending_signals": pending,
         "ltps":            ltps,
         "learning_ltps":   learning_ltps,
+        "commodity_ltps":  commodity_ltps,
         "paper_wallet":    paper_wallet,
         "system_alerts":   system_alerts,
         "token_status":    token_status,
