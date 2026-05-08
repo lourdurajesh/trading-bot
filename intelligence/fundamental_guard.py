@@ -89,8 +89,10 @@ class FundamentalGuard:
     def check(self, symbol: str) -> FundamentalRisk:
         """Run all fundamental checks for a symbol."""
         ticker = self._to_ticker(symbol)
-        if "INDEX" in symbol or "NIFTY" in ticker:
-            return FundamentalRisk(symbol=symbol, notes="Index — no fundamental check")
+        # Only NSE equity symbols are meaningful to check — skip everything else:
+        # MCX commodities, index symbols, options/futures contracts
+        if not symbol.startswith("NSE:") or not symbol.endswith("-EQ"):
+            return FundamentalRisk(symbol=symbol, notes="Non-equity — no fundamental check")
         risk   = FundamentalRisk(symbol=symbol)
 
         self._check_earnings(ticker, risk)
@@ -215,7 +217,7 @@ class FundamentalGuard:
 
     @staticmethod
     def _to_ticker(symbol: str) -> str:
-        return symbol.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "")
+        return symbol.replace("NSE:", "").replace("MCX:", "").replace("-EQ", "").replace("-INDEX", "")
 
     def update_earnings_calendar(self, ticker: str, date: str) -> None:
         """Manually update earnings date. Format: YYYY-MM-DD."""
