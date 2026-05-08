@@ -871,14 +871,21 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
         from learning_engine import learning_engine
         open_learning = learning_engine.get_trades(status="OPEN")
         for t in open_learning:
-            sym = t["symbol"]
+            sym  = t["symbol"]
             meta = t.get("metadata") or {}
-            nfo_sym = meta.get("nfo_symbol") if meta.get("instrument_type") == "nse_options" else None
-            ltp = store.get_ltp(nfo_sym or sym)
-            if ltp:
-                learning_ltps[sym] = ltp
+            is_opts = meta.get("instrument_type") == "nse_options"
+            nfo_sym = meta.get("nfo_symbol") if is_opts else None
+
+            if is_opts:
+                # Options: only emit if we have a real contract symbol — never emit index LTP
                 if nfo_sym:
-                    learning_ltps[nfo_sym] = ltp  # keyed by contract so frontend can look up directly
+                    ltp = store.get_ltp(nfo_sym)
+                    if ltp:
+                        learning_ltps[nfo_sym] = ltp  # frontend keys by nfo_symbol
+            else:
+                ltp = store.get_ltp(sym)
+                if ltp:
+                    learning_ltps[sym] = ltp
     except Exception:
         pass
 

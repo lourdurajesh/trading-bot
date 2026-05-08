@@ -274,7 +274,8 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
               const meta     = t.metadata || {};
               const nfoSym   = meta.nfo_symbol || null;
               const isOpts   = meta.instrument_type === "nse_options";
-              const ltp      = open ? (ltps[nfoSym] || ltps[t.symbol] || null) : null;
+              // Options: ONLY use nfo_symbol key — never fall back to index symbol (avoids index LTP)
+              const ltp      = open ? (isOpts ? (nfoSym ? (ltps[nfoSym] || null) : null) : (ltps[t.symbol] || null)) : null;
               const livePts  = ltp != null
                 ? (isOpts || t.direction==="LONG" ? ltp - t.entry_price : t.entry_price - ltp)
                 : null;
