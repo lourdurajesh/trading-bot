@@ -561,7 +561,25 @@ function App() {
   function CommodityTradesTable({trades, ltps}) {
     if (!trades.length) return <div className="empty">No commodity option trades yet — engine runs during MCX hours (09:00–23:30 IST)</div>;
     const EST_DELTA = 0.35;
+    const closed  = trades.filter(t=>t.status==="CLOSED");
+    const open    = trades.filter(t=>t.status==="OPEN");
+    const winners = closed.filter(t=>(t.pnl_r||0)>0);
+    const winRate = closed.length ? Math.round(winners.length/closed.length*100) : null;
+    const avgR    = closed.length ? closed.reduce((s,t)=>s+(t.pnl_r||0),0)/closed.length : null;
+    const totalR  = closed.reduce((s,t)=>s+(t.pnl_r||0),0);
     return (
+      <div>
+        {closed.length > 0 && (
+          <div style={{display:"flex",gap:16,flexWrap:"wrap",marginBottom:10,padding:"8px 12px",background:"#0f1623",borderRadius:6,border:"1px solid #1e2433",fontSize:11,alignItems:"center"}}>
+            <span style={{color:"#64748b"}}>Showing {trades.length} trade{trades.length!==1?"s":""}</span>
+            <span style={{color:"#64748b"}}>·</span>
+            <span style={{color:"#64748b"}}>Closed <strong style={{color:"#cbd5e1"}}>{closed.length}</strong></span>
+            {open.length>0 && <span style={{color:"#64748b"}}>Open <strong style={{color:"#f59e0b"}}>{open.length}</strong></span>}
+            {winRate!==null && <span style={{color:"#64748b"}}>Win rate <strong className={winRate>=50?"good":"bad"}>{winRate}%</strong></span>}
+            {avgR!==null && <span style={{color:"#64748b"}}>Avg R <strong className={avgR>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{avgR>=0?"+":""}{avgR.toFixed(2)}R</strong></span>}
+            <span style={{color:"#64748b"}}>Total R <strong className={totalR>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{totalR>=0?"+":""}{totalR.toFixed(1)}R</strong></span>
+          </div>
+        )}
       <div style={{overflowX:"auto"}}>
         <table className="data-table">
           <thead>
@@ -596,10 +614,21 @@ function App() {
               const entryHHMM  = t.entry_time ? t.entry_time.substring(11,16) : "—";
               const signal     = (meta.signal_reason || "").substring(0, 44);
               const rsiColor   = meta.rsi > 60 ? "#f59e0b" : meta.rsi < 40 ? "#93c5fd" : "#94a3b8";
+              const optSuffix  = t.opt_type==="call" ? "CE" : "PE";
+              const atmLabel   = meta.atm_symbol
+                ? meta.atm_symbol.replace("MCX:","")
+                : `${(t.instrument||"").replace("MCX:","")}${t.atm_strike||""}${optSuffix}`;
+              const otmLabel   = meta.otm_symbol
+                ? meta.otm_symbol.replace("MCX:","")
+                : (t.otm_strike ? `${(t.instrument||"").replace("MCX:","")}${t.otm_strike}${optSuffix}` : null);
               return (
                 <tr key={t.id}>
                   <td className="sym">
                     {(t.instrument||"").replace("MCX:","")}
+                    <div style={{fontSize:9,color:"#60a5fa",fontFamily:"monospace",marginTop:2,whiteSpace:"nowrap"}}>
+                      <span title="Buy leg">▲ {atmLabel}</span>
+                      {otmLabel && <span style={{color:"#f87171",marginLeft:4}} title="Sell leg">▼ {otmLabel}</span>}
+                    </div>
                     <div style={{marginTop:3}}><StratBadge name={t.strategy}/></div>
                   </td>
                   <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
@@ -639,6 +668,7 @@ function App() {
           </tbody>
         </table>
       </div>
+      </div>
     );
   }
   function round2(v) { return Math.round(v*100)/100; }
@@ -657,24 +687,34 @@ function App() {
     }
 
     return (
-      <div>
-        {/* symbol + expiry selectors */}
+      <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+        {/* sidebar symbol list */}
+        <div style={{flexShrink:0,width:130,background:"#0f1623",border:"1px solid #1e2433",borderRadius:8,overflow:"hidden"}}>
+          <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",letterSpacing:".08em",padding:"8px 12px 6px",borderBottom:"1px solid #1e2433"}}>Commodity</div>
+          {SYMS.map(s => (
+            <div key={s}
+              onClick={() => { setCommChainSym(s); setCommChainExpIdx(0); setCommChain(null); fetchChain(s, 0); }}
+              style={{padding:"9px 12px",cursor:"pointer",fontSize:12,fontFamily:"monospace",
+                background: commChainSym===s ? "#1e3a5f" : "transparent",
+                color: commChainSym===s ? "#93c5fd" : "#64748b",
+                borderLeft: commChainSym===s ? "2px solid #3b82f6" : "2px solid transparent",
+                transition:"all .1s"
+              }}>
+              {s}
+            </div>
+          ))}
+        </div>
+
+        {/* right panel */}
+        <div style={{flex:1,minWidth:0}}>
+        {/* expiry + refresh row */}
         <div style={{display:"flex",flexWrap:"wrap",gap:12,marginBottom:14,alignItems:"center"}}>
-          <div style={{display:"flex",gap:2,alignItems:"center"}}>
-            <span style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em",marginRight:6}}>Symbol</span>
-            {SYMS.map(s => (
-              <button key={s}
-                className={`chain-sym-btn${commChainSym===s?" active":""}`}
-                onClick={() => { setCommChainSym(s); setCommChainExpIdx(0); setCommChain(null); }}
-              >{s}</button>
-            ))}
-          </div>
           {chain?.expiries?.length > 1 && (
             <div style={{display:"flex",alignItems:"center",gap:6}}>
               <span style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em"}}>Expiry</span>
               <select value={commChainExpIdx}
                 onChange={e => { const i=Number(e.target.value); setCommChainExpIdx(i); fetchChain(commChainSym,i); }}
-                style={{background:"#0f1623",border:"1px solid #1e2433",borderRadius:4,color:"#e2e8f0",padding:"3px 7px",fontSize:11}}>
+                style={{background:"#0f1623",border:"1px solid #1e2433",borderRadius:4,color:"#e2e8f0",padding:"3px 7px",fontSize:11,colorScheme:"dark"}}>
                 {chain.expiries.map((exp,i) => <option key={exp} value={i}>{exp}</option>)}
               </select>
             </div>
@@ -712,7 +752,7 @@ function App() {
         {commChainBusy && <div className="empty">Loading chain data...</div>}
 
         {!commChainBusy && !chain && (
-          <div className="empty">Click a symbol above to load the options chain</div>
+          <div className="empty">Select a commodity from the list to load the options chain</div>
         )}
 
         {/* chain table */}
@@ -775,7 +815,8 @@ function App() {
               : "No strikes returned from chain."}
           </div>
         )}
-      </div>
+        </div>{/* end right panel */}
+      </div>{/* end flex wrapper */}
     );
   }
 

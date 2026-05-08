@@ -367,13 +367,18 @@ class CommodityOptionsLearning:
         # Try to read real prices from chain; fall back to BS
         atm_premium = otm_premium = None
 
+        atm_sym = otm_sym = ""
         if chain:
             atm_premium, real_iv, nfo_sym = self._chain_lookup(
                 chain, atm, opt_type, dte
             )
             if real_iv and real_iv > 0:
                 iv = real_iv
-            otm_premium, _, _ = self._chain_lookup(chain, otm, opt_type, dte)
+            if nfo_sym:
+                atm_sym = nfo_sym
+            otm_premium, _, otm_nfo = self._chain_lookup(chain, otm, opt_type, dte)
+            if otm_nfo:
+                otm_sym = otm_nfo
 
         if atm_premium is None or atm_premium <= 0:
             atm_premium = _bs_price(spot, atm, iv, dte, opt_type)
@@ -429,6 +434,8 @@ class CommodityOptionsLearning:
                 "otm_prem":      round(otm_premium, 2),
                 "price_unit":    meta["price_unit"],
                 "signal_reason": signal_reason,
+                "atm_symbol":    atm_sym,
+                "otm_symbol":    otm_sym,
             },
         }
 
