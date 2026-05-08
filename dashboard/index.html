@@ -1419,7 +1419,7 @@ function App() {
                 </div>
                 <div className="metric">
                   <div className="lbl">Wallet %</div>
-                  <div className={`val ${(paperStats.balance_pct||100)>=90?"up":(paperStats.balance_pct||100)>=70?"neutral":"down"}`}>
+                  <div className={`val ${(paperStats.balance_pct||100)>=100?"up":(paperStats.balance_pct||100)>=70?"neutral":"down"}`}>
                     {paperStats.balance_pct||100}%
                   </div>
                 </div>
