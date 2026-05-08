@@ -798,12 +798,16 @@ function App() {
             <div className="card">
               <h2>Open positions ({positions?.length||0})</h2>
               {!positions?.length ? <div className="empty">No open positions</div>
-              : positions.map(p=>(
+              : positions.map(p=>{
+                const dispSym = ((p.options_meta||{}).nfo_symbol || p.symbol || "").replace("NSE:","").replace("-EQ","").replace("MCX:","");
+                const idxSym  = (p.options_meta||{}).nfo_symbol ? (p.symbol||"").replace("NSE:","").replace("-EQ","") : null;
+                return (
                 <div key={p.id} className="pos-row">
                   <div>
-                    <span style={{fontWeight:600,fontFamily:"monospace",color:"#f1f5f9"}}>{p.symbol.replace("NSE:","").replace("-EQ","")}</span>
+                    <span style={{fontWeight:600,fontFamily:"monospace",color:"#f1f5f9"}}>{dispSym}</span>
+                    {idxSym && <span style={{fontSize:9,color:"#64748b",marginLeft:4}}>{idxSym}</span>}
                     <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
-                    <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{p.strategy} · {p.position_size} shares</div>
+                    <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{p.strategy} · {p.position_size} {p.signal_type==="OPTIONS"?"units":"shares"}</div>
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div className={p.unrealised_pnl>=0?"up":"down"} style={{fontSize:15,fontWeight:600}}>
@@ -812,7 +816,7 @@ function App() {
                     <div style={{fontSize:10,color:"#64748b"}}>₹{p.entry_price} → ₹{p.ltp}</div>
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
             <div className="card">
               <h2>Risk metrics</h2>
@@ -933,10 +937,14 @@ function App() {
                 <div className="card">
                   <h2>Open paper positions ({paperPos.length})</h2>
                   {!paperPos.length ? <div className="empty">No open paper positions</div>
-                  : paperPos.map(p=>(
+                  : paperPos.map(p=>{
+                    const dispSym = (p.nfo_symbol || p.symbol || "").replace("NSE:","").replace("-EQ","").replace("MCX:","");
+                    const idxSym  = p.nfo_symbol ? (p.symbol||"").replace("NSE:","").replace("-EQ","") : null;
+                    return (
                     <div key={p.id} className="pos-row">
                       <div>
-                        <span style={{fontWeight:600,fontFamily:"monospace"}}>{p.symbol.replace("NSE:","").replace("-EQ","")}</span>
+                        <span style={{fontWeight:600,fontFamily:"monospace"}}>{dispSym}</span>
+                        {idxSym && <span style={{fontSize:9,color:"#64748b",marginLeft:4}}>{idxSym}</span>}
                         <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
                         <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{p.strategy}</div>
                       </div>
@@ -947,7 +955,7 @@ function App() {
                         <div style={{fontSize:10,color:"#64748b"}}>₹{p.entry_price} → ₹{p.ltp}</div>
                       </div>
                     </div>
-                  ))}
+                  )})}
                 </div>
               </div>
             </div>

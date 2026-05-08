@@ -248,13 +248,19 @@ class PaperTradingEngine:
 
             positions = []
             for row in rows:
-                symbol    = row["symbol"]
-                ltp       = store.get_ltp(symbol) or row["entry_price"]
-                entry     = row["entry_price"]
-                size      = row["position_size"]
-                direction = row["direction"]
+                symbol       = row["symbol"]
+                nfo_sym      = row["nfo_symbol"] if row["nfo_symbol"] else None
+                instr_type   = row["instrument_type"] if row["instrument_type"] else ""
+                ltp_sym      = nfo_sym if (instr_type == "nse_options" and nfo_sym) else symbol
+                ltp          = store.get_ltp(ltp_sym) or row["entry_price"]
+                entry        = row["entry_price"]
+                size         = row["position_size"]
+                direction    = row["direction"]
 
-                if direction == "LONG":
+                # Options debit spreads: always long the premium regardless of market direction
+                if instr_type == "nse_options":
+                    unrealised = (ltp - entry) * size
+                elif direction == "LONG":
                     unrealised = (ltp - entry) * size
                 else:
                     unrealised = (entry - ltp) * size
@@ -266,6 +272,8 @@ class PaperTradingEngine:
                 positions.append({
                     "id":               row["id"],
                     "symbol":           symbol,
+                    "nfo_symbol":       nfo_sym,
+                    "instrument_type":  instr_type,
                     "strategy":         row["strategy"],
                     "direction":        direction,
                     "entry_price":      entry,
@@ -353,6 +361,8 @@ class PaperTradingEngine:
                 CREATE TABLE IF NOT EXISTS paper_trades (
                     id               TEXT PRIMARY KEY,
                     symbol           TEXT,
+                    nfo_symbol       TEXT DEFAULT '',
+                    instrument_type  TEXT DEFAULT '',
                     strategy         TEXT,
                     direction        TEXT,
                     entry_price      REAL,
@@ -370,12 +380,15 @@ class PaperTradingEngine:
                 )
             """)
             # Safe migration for pre-existing tables
-            try:
-                conn.execute(
-                    "ALTER TABLE paper_trades ADD COLUMN capital_deployed REAL DEFAULT 0"
-                )
-            except Exception:
-                pass
+            for col, defval in [
+                ("capital_deployed", "REAL DEFAULT 0"),
+                ("nfo_symbol",       "TEXT DEFAULT ''"),
+                ("instrument_type",  "TEXT DEFAULT ''"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {defval}")
+                except Exception:
+                    pass
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS paper_wallet (
@@ -488,12 +501,13 @@ class PaperTradingEngine:
           capital_deployed = qty * entry * 0.25   (25% intraday margin)
         """
 
-        symbol    = trade.get("symbol", "")
-        direction = trade.get("direction", "LONG")
-        entry     = float(trade.get("entry_price", 0))
-        stop      = float(trade.get("stop_loss", 0))
-        metadata  = trade.get("metadata") or {}
+        symbol          = trade.get("symbol", "")
+        direction       = trade.get("direction", "LONG")
+        entry           = float(trade.get("entry_price", 0))
+        stop            = float(trade.get("stop_loss", 0))
+        metadata        = trade.get("metadata") or {}
         instrument_type = metadata.get("instrument_type", "")
+        nfo_symbol      = metadata.get("nfo_symbol") or ""
 
         if entry <= 0 or stop <= 0:
             return None
@@ -536,13 +550,15 @@ class PaperTradingEngine:
             with sqlite3.connect(DB_PATH) as conn:
                 conn.execute("""
                     INSERT OR IGNORE INTO paper_trades
-                    (id, symbol, strategy, direction, entry_price, stop_loss,
-                     target_1, position_size, capital_at_risk, capital_deployed,
-                     status, entry_time)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    (id, symbol, nfo_symbol, instrument_type, strategy, direction,
+                     entry_price, stop_loss, target_1, position_size,
+                     capital_at_risk, capital_deployed, status, entry_time)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     order_id,
                     symbol,
+                    nfo_symbol,
+                    instrument_type,
                     trade.get("strategy", "Learning"),
                     direction,
                     entry,
@@ -591,8 +607,10 @@ class PaperTradingEngine:
                 size             = int(row["position_size"])
                 capital_deployed = float(row["capital_deployed"] or 0)
                 direction        = row["direction"]
+                instr_type       = row["instrument_type"] if row["instrument_type"] else ""
 
-                if direction == "LONG":
+                # Options debit spreads: always long the premium regardless of market direction
+                if instr_type == "nse_options" or direction == "LONG":
                     gross_pnl = (exit_price - entry) * size
                 else:
                     gross_pnl = (entry - exit_price) * size
