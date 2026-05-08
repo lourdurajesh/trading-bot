@@ -1405,7 +1405,8 @@ function App() {
               <div className="grid4" style={{marginBottom:10}}>
                 <div className="metric">
                   <div className="lbl">Wallet balance</div>
-                  <div className={`val ${(paperStats.available_balance||0)>=(paperStats.starting_capital||500000)*0.9?"up":(paperStats.available_balance||0)>=(paperStats.starting_capital||500000)*0.7?"neutral":"down"}`}>
+                  /*<div className={`val ${(paperStats.available_balance||0)>=(paperStats.starting_capital||500000)*0.9?"up":(paperStats.available_balance||0)>=(paperStats.starting_capital||500000)*0.7?"neutral":"down"}`}>*/
+                  <div className={`val ${(paperStats.total_pnl||0)>=0?"up":"down"}`}>
                     ₹{fmt(paperStats.available_balance||0)}
                   </div>
                 </div>
@@ -1427,7 +1428,7 @@ function App() {
               <div className="grid4" style={{marginBottom:16}}>
                 <div className="metric"><div className="lbl">Total P&L</div>
                   <div className={`val ${(paperStats.total_pnl||0)>=0?"up":"down"}`}>
-                    {(paperStats.total_pnl||0)>=0?"+":""}₹{fmt(Math.abs(paperStats.total_pnl||0))}
+                    {(paperStats.total_pnl||0)>=0?"+":""}₹{fmt(paperStats.total_pnl||0)}
                   </div></div>
                 <div className="metric"><div className="lbl">Win rate</div>
                   <div className={`val ${(paperStats.win_rate||0)>=50?"up":"down"}`}>{paperStats.win_rate||0}%</div></div>
