@@ -675,6 +675,8 @@ const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltp
                     {(t.instrument||"").replace("MCX:","")}
                     <div style={{fontSize:9,color:"#60a5fa",fontFamily:"monospace",marginTop:2,whiteSpace:"nowrap"}}>
                       <span title="Buy leg">▲ {atmLabel}</span>
+                    </div>
+                    <div style={{fontSize:9,color:"#60a5fa",fontFamily:"monospace",marginTop:2,whiteSpace:"nowrap"}}>
                       {otmLabel && <span style={{color:"#f87171",marginLeft:4}} title="Sell leg">▼ {otmLabel}</span>}
                     </div>
                     <div style={{marginTop:3}}><StratBadge name={t.strategy}/></div>
