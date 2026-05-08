@@ -1405,7 +1405,6 @@ function App() {
               <div className="grid4" style={{marginBottom:10}}>
                 <div className="metric">
                   <div className="lbl">Wallet balance</div>
-                  /*<div className={`val ${(paperStats.available_balance||0)>=(paperStats.starting_capital||500000)*0.9?"up":(paperStats.available_balance||0)>=(paperStats.starting_capital||500000)*0.7?"neutral":"down"}`}>*/
                   <div className={`val ${(paperStats.total_pnl||0)>=0?"up":"down"}`}>
                     ₹{fmt(paperStats.available_balance||0)}
                   </div>
