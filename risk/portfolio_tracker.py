@@ -181,7 +181,9 @@ class PortfolioTracker:
         """Returns all open positions with live unrealised P&L."""
         result = []
         for symbol, pos in self._open_positions.items():
-            ltp = store.get_ltp(symbol) or pos.entry_price
+            options_meta = pos.options_meta or {}
+            nfo_sym = options_meta.get("nfo_symbol") if pos.signal_type == "OPTIONS" else None
+            ltp = store.get_ltp(nfo_sym or symbol) or pos.entry_price
             if pos.direction == "LONG":
                 unrealised = (ltp - pos.entry_price) * pos.position_size
             else:
@@ -201,6 +203,7 @@ class PortfolioTracker:
                 "capital_at_risk": pos.capital_at_risk,
                 "unrealised_pnl":  round(unrealised, 2),
                 "entry_time":      pos.entry_time.isoformat(),
+                "options_meta":    options_meta,
             })
         return result
 

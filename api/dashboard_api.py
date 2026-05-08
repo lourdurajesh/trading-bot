@@ -860,10 +860,10 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
     pending   = order_manager.get_pending_signals()
 
     # Live LTPs for production open positions
-    ltps = {
-        pos["symbol"]: store.get_ltp(pos["symbol"])
-        for pos in positions
-    }
+    ltps = {}
+    for pos in positions:
+        nfo_sym = pos.get("options_meta", {}).get("nfo_symbol") if pos.get("signal_type") == "OPTIONS" else None
+        ltps[pos["symbol"]] = store.get_ltp(nfo_sym or pos["symbol"])
 
     # Live LTPs for open learning trades (separate dict, sent every tick)
     learning_ltps: dict = {}
@@ -872,7 +872,9 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
         open_learning = learning_engine.get_trades(status="OPEN")
         for t in open_learning:
             sym = t["symbol"]
-            ltp = store.get_ltp(sym)
+            meta = t.get("metadata") or {}
+            nfo_sym = meta.get("nfo_symbol") if meta.get("instrument_type") == "nse_options" else None
+            ltp = store.get_ltp(nfo_sym or sym)
             if ltp:
                 learning_ltps[sym] = ltp
     except Exception:
