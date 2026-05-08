@@ -194,6 +194,32 @@ class CommodityOptionsLearning:
         self._open_positions: dict[str, dict] = {}  # key → trade
         self._chain_cache:    dict[str, tuple] = {}  # symbol → (data, fetched_at)
         self._init_db()
+        self._reload_open_positions()
+
+    def _reload_open_positions(self) -> None:
+        """Re-populate _open_positions from DB on startup so SL/TP monitoring
+        survives a process restart."""
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM commodity_learning_trades WHERE status='OPEN'"
+                ).fetchall()
+            count = 0
+            for r in rows:
+                trade = dict(r)
+                try:
+                    trade["metadata"] = json.loads(trade.get("metadata") or "{}")
+                except Exception:
+                    trade["metadata"] = {}
+                key = f"{trade['instrument']}:{trade['direction']}"
+                if key not in self._open_positions:
+                    self._open_positions[key] = trade
+                    count += 1
+            if count:
+                logger.info(f"[CommOpts] Reloaded {count} open position(s) from DB — SL monitoring resumed")
+        except Exception as exc:
+            logger.error(f"[CommOpts] Failed to reload open positions: {exc}")
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
