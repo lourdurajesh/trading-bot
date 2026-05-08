@@ -543,6 +543,16 @@ function App() {
   }
 
   /* ── commodity trades table ── */
+  const STRAT_COLOR = {
+    "TrendSpread":          "#3b82f6",
+    "RSIReversalSpread":    "#a855f7",
+    "BreakoutSpread":       "#f97316",
+    "CommodityDebitSpread": "#64748b",
+  };
+  function StratBadge({name}) {
+    const c = STRAT_COLOR[name] || "#64748b";
+    return <span style={{background:c+"22",color:c,border:`1px solid ${c}44`,borderRadius:3,padding:"1px 5px",fontSize:9,fontWeight:600,whiteSpace:"nowrap"}}>{name||"—"}</span>;
+  }
   function CommodityTradesTable({trades, ltps}) {
     if (!trades.length) return <div className="empty">No commodity option trades yet — engine runs during MCX hours (09:00–23:30 IST)</div>;
     const EST_DELTA = 0.35;
@@ -551,11 +561,21 @@ function App() {
         <table className="data-table">
           <thead>
             <tr>
-              <th>Instrument</th><th>Dir</th><th>Entry Spot</th>
-              <th style={{color:"#f59e0b"}}>Spot LTP</th>
-              <th>Net Debit</th><th>Max Profit</th><th>RR</th>
+              <th>Instrument</th>
+              <th style={{color:"#93c5fd"}}>Strategy</th>
+              <th>Dir</th>
+              <th>Entry Spot</th>
+              <th style={{color:"#f59e0b"}}>Live LTP</th>
+              <th style={{color:"#60a5fa"}}>ATM/OTM</th>
+              <th>Debit</th><th>MaxP</th><th>RR</th>
+              <th style={{color:"#94a3b8"}}>RSI</th>
+              <th style={{color:"#94a3b8"}}>IV%</th>
+              <th>Time</th>
+              <th style={{color:"#475569",maxWidth:160}}>Signal Reason</th>
               <th style={{color:"#f59e0b"}}>Live P&L</th>
-              <th>P&L (R)</th><th>Reason</th><th>Source</th><th>Status</th>
+              <th>P&L (R)</th>
+              <th>Exit</th>
+              <th>Src</th>
             </tr>
           </thead>
           <tbody>
@@ -568,18 +588,31 @@ function App() {
               const estPnl     = spotMove != null ? round2(spotMove * EST_DELTA) : null;
               const estPnlLot  = estPnl != null ? round2(estPnl * (t.lot_size||1)) : null;
               const pnlColor   = estPnl == null ? "#64748b" : estPnl > 0 ? "#22c55e" : estPnl < 0 ? "#ef4444" : "#94a3b8";
+              const meta       = t.metadata || {};
+              const entryHHMM  = t.entry_time ? t.entry_time.substring(11,16) : "—";
+              const signal     = (meta.signal_reason || "").substring(0, 44);
+              const rsiColor   = meta.rsi > 60 ? "#f59e0b" : meta.rsi < 40 ? "#93c5fd" : "#94a3b8";
               return (
                 <tr key={t.id}>
                   <td className="sym">{(t.instrument||"").replace("MCX:","")}</td>
+                  <td><StratBadge name={t.strategy}/></td>
                   <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
                   <td style={{fontFamily:"monospace",color:"#94a3b8"}}>{spotEntry ? spotEntry.toFixed(0) : "—"}</td>
                   <td style={{fontFamily:"monospace",color:"#f59e0b",fontWeight:isOpen?"600":"400"}}>
                     {ltp != null ? ltp.toFixed(0) : "—"}
                     {spotMove != null && <div style={{fontSize:9,color:pnlColor}}>{spotMove>=0?"+":""}{spotMove.toFixed(0)}</div>}
                   </td>
+                  <td style={{fontFamily:"monospace",fontSize:10,color:"#60a5fa"}}>
+                    {t.atm_strike||"—"}
+                    {t.otm_strike ? <span style={{color:"#475569"}}>/{t.otm_strike}</span> : null}
+                  </td>
                   <td style={{fontFamily:"monospace",color:"#fca5a5"}}>{(t.net_debit||0).toFixed(2)}</td>
                   <td style={{fontFamily:"monospace",color:"#86efac"}}>{(t.max_profit||0).toFixed(2)}</td>
                   <td style={{fontFamily:"monospace"}}>{(t.rr||t.rr_planned||0).toFixed(1)}</td>
+                  <td style={{fontFamily:"monospace",color:rsiColor,fontSize:10}}>{meta.rsi ? Number(meta.rsi).toFixed(1) : "—"}</td>
+                  <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{meta.iv_pct ? meta.iv_pct+"%" : "—"}</td>
+                  <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{entryHHMM}</td>
+                  <td style={{color:"#475569",fontSize:9,maxWidth:160,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={meta.signal_reason||""}>{signal||"—"}</td>
                   <td style={{fontFamily:"monospace",fontWeight:600,color:pnlColor}}>
                     {isOpen && estPnlLot != null
                       ? `${estPnlLot>=0?"+":""}₹${Math.abs(estPnlLot).toFixed(0)}`
@@ -587,8 +620,7 @@ function App() {
                   </td>
                   <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{isOpen?"open":fmtR(r)}</td>
                   <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
-                  <td><span className={t.data_source==="live_chain"?"source-live":"source-sim"}>{t.data_source==="live_chain"?"● Live":"◌ Sim"}</span></td>
-                  <td><span className={`badge ${isOpen?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
+                  <td><span className={t.data_source==="live_chain"?"source-live":"source-sim"}>{t.data_source==="live_chain"?"●":"◌"}</span></td>
                 </tr>
               );
             })}
@@ -824,6 +856,20 @@ function App() {
               : positions.map(p=>{
                 const dispSym = ((p.options_meta||{}).nfo_symbol || p.symbol || "").replace("NSE:","").replace("-EQ","").replace("MCX:","");
                 const idxSym  = (p.options_meta||{}).nfo_symbol ? (p.symbol||"").replace("NSE:","").replace("-EQ","") : null;
+                const forceClose = () => {
+                  if (!window.confirm(`Mark "${dispSym}" as closed?\n\nUse only if the broker already closed this position and the dashboard is showing stale data.`)) return;
+                  fetch(`${API}/positions/force-close`, {
+                    method: "POST",
+                    headers: {"Content-Type":"application/json"},
+                    body: JSON.stringify({symbol: p.symbol, reason: "BROKER_CLOSED"}),
+                  })
+                    .then(r=>r.json())
+                    .then(d=>{
+                      if (d.success) setPositions(prev => prev.filter(x=>x.symbol!==p.symbol));
+                      else alert("Force close failed: " + (d.error||"unknown error"));
+                    })
+                    .catch(()=>alert("Request failed"));
+                };
                 return (
                 <div key={p.id} className="pos-row">
                   <div>
@@ -832,11 +878,17 @@ function App() {
                     <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
                     <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{p.strategy} · {p.position_size} {p.signal_type==="OPTIONS"?"units":"shares"}</div>
                   </div>
-                  <div style={{textAlign:"right"}}>
+                  <div style={{textAlign:"right",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
                     <div className={p.unrealised_pnl>=0?"up":"down"} style={{fontSize:15,fontWeight:600}}>
                       {p.unrealised_pnl>=0?"+":""}₹{fmt(Math.abs(p.unrealised_pnl))}
                     </div>
                     <div style={{fontSize:10,color:"#64748b"}}>₹{p.entry_price} → ₹{p.ltp}</div>
+                    <button
+                      onClick={forceClose}
+                      title="Mark as closed — use when broker already closed this but dashboard shows stale data"
+                      style={{background:"transparent",border:"1px solid #7f1d1d",color:"#f87171",borderRadius:3,fontSize:9,padding:"2px 7px",cursor:"pointer",lineHeight:"1.4",marginTop:2}}>
+                      × Mark Closed
+                    </button>
                   </div>
                 </div>
               )})}
@@ -1098,7 +1150,7 @@ function App() {
       {tab==="commodity" && (
         <div>
           <div className="paper-banner" style={{background:"#0d1f35",borderColor:"#1e3a5f44",color:"#93c5fd"}}>
-            🛢 MCX commodity options paper trades — ATM debit spreads · Live chain + Black-Scholes fallback · 09:00–23:30 IST
+            MCX commodity options paper trades — <strong>TrendSpread · RSIReversalSpread · BreakoutSpread</strong> · Live chain + Black-Scholes fallback · 09:00–23:30 IST
           </div>
 
           {/* stats row */}
@@ -1117,13 +1169,50 @@ function App() {
             <div className="card"><div className="empty">{commStats?.message||"Loading stats... Engine runs during MCX hours."}</div></div>
           )}
 
+          {/* by-strategy P&L attribution */}
+          {commStats?.by_strategy && Object.keys(commStats.by_strategy).length > 0 && (
+            <div className="card" style={{marginBottom:16}}>
+              <h2>Strategy P&L attribution
+                <span style={{marginLeft:8,fontWeight:400,color:"#475569",fontSize:10,textTransform:"none",letterSpacing:0}}>
+                  identify which strategy is losing
+                </span>
+              </h2>
+              {/* warning alerts for losing strategies */}
+              {Object.entries(commStats.by_strategy)
+                .filter(([,s])=>s.avg_r<-0.3&&s.total>=3)
+                .map(([strat,s])=>(
+                  <div key={strat} style={{background:"#1c0a0a",border:"1px solid #7f1d1d",borderRadius:6,padding:"8px 12px",marginBottom:8,fontSize:11,color:"#fca5a5"}}>
+                    ⚠ <strong>{strat}</strong> is losing — avg {s.avg_r}R across {s.total} trades ({s.win_rate}% win rate). Review entry conditions or disable.
+                  </div>
+              ))}
+              <table className="data-table">
+                <thead>
+                  <tr><th>Strategy</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th><th>Best</th><th>Worst</th></tr>
+                </thead>
+                <tbody>
+                  {Object.entries(commStats.by_strategy).sort((a,b)=>b[1].total-a[1].total).map(([strat,s])=>(
+                    <tr key={strat}>
+                      <td><StratBadge name={strat}/></td>
+                      <td>{s.total}</td>
+                      <td className={s.win_rate>=50?"good":"bad"}>{s.win_rate}%</td>
+                      <td className={s.avg_r>=0?"good":"bad"} style={{fontFamily:"monospace",fontWeight:600}}>{s.avg_r>=0?"+":""}{s.avg_r}R</td>
+                      <td className={s.total_r>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{s.total_r>=0?"+":""}{s.total_r}R</td>
+                      <td className="good" style={{fontFamily:"monospace",fontSize:10}}>+{s.best_r}R</td>
+                      <td className="bad" style={{fontFamily:"monospace",fontSize:10}}>{s.worst_r}R</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {/* per-instrument breakdown */}
           {commStats?.by_instrument && Object.keys(commStats.by_instrument).length > 0 && (
             <div className="card" style={{marginBottom:16}}>
               <h2>By instrument</h2>
               <table className="data-table">
                 <thead>
-                  <tr><th>Instrument</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Wins</th></tr>
+                  <tr><th>Instrument</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>Total R</th><th>Wins</th></tr>
                 </thead>
                 <tbody>
                   {Object.entries(commStats.by_instrument).sort((a,b)=>b[1].total-a[1].total).map(([ins,s])=>(
@@ -1132,6 +1221,7 @@ function App() {
                       <td>{s.total}</td>
                       <td className={s.win_rate>=50?"good":"bad"}>{s.win_rate}%</td>
                       <td className={s.avg_r>=0?"good":"bad"} style={{fontFamily:"monospace"}}>{s.avg_r>=0?"+":""}{s.avg_r}R</td>
+                      <td className={s.total_r>=0?"good":"bad"} style={{fontFamily:"monospace",fontSize:10}}>{s.total_r>=0?"+":""}{(s.total_r||0).toFixed(1)}R</td>
                       <td className="neutral-cell">{s.wins}</td>
                     </tr>
                   ))}

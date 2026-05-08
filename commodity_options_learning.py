@@ -236,51 +236,115 @@ class CommodityOptionsLearning:
             logger.info(f"[CommOpts] {short} no valid spot (got {spot}, sym={symbol})")
             return
 
-        # 1H trend check
+        # 1H data
         df = store.get_ohlcv(symbol, "1H", n=50)
         if df is None or len(df) < 20:
             logger.info(f"[CommOpts] {short} insufficient 1H bars (got {len(df) if df is not None else 0})")
             return
 
-        direction, rsi_val, ema20_val = self._get_direction(df, spot)
-        if not direction:
-            logger.info(f"[CommOpts] {short} no trend — spot={spot:.2f} RSI={rsi_val:.1f} EMA20={ema20_val:.2f}")
+        # Try strategies in priority order — first match wins
+        result = (
+            self._check_trend_spread(df, spot) or
+            self._check_reversal_spread(df, spot) or
+            self._check_breakout_spread(df, spot)
+        )
+        if not result:
+            logger.info(f"[CommOpts] {short} no strategy signal — spot={spot:.2f}")
             return
 
-        # Fetch options chain (or simulate)
+        direction, strategy_name, signal_reason, rsi_val, ema5_val, ema20_val = result
+        logger.info(f"[CommOpts] {short} → {strategy_name} {direction} | {signal_reason}")
+
         chain    = self._get_chain(symbol)
         opt_type = "call" if direction == "LONG" else "put"
 
         trade = self._build_trade(
-            symbol=symbol, short=short, meta=meta, spot=spot, direction=direction,
-            opt_type=opt_type, chain=chain, rsi_val=rsi_val,
-            ema20_val=ema20_val, now=now,
+            symbol=symbol, short=short, meta=meta, spot=spot,
+            direction=direction, strategy_name=strategy_name, signal_reason=signal_reason,
+            opt_type=opt_type, chain=chain,
+            rsi_val=rsi_val, ema5_val=ema5_val, ema20_val=ema20_val, now=now,
         )
         if trade:
             self._open_trade(trade)
 
-    def _get_direction(self, df, spot: float):
-        """Returns (direction, rsi_val, ema20_val) or (None, _, _)."""
+    # ─────────────────────────────────────────────────────────────
+    # STRATEGY EVALUATORS
+    # ─────────────────────────────────────────────────────────────
+
+    def _check_trend_spread(self, df, spot: float):
+        """TrendSpread: EMA5/EMA20 crossover with RSI 50-75 confirmation."""
         try:
             from analysis.indicators import rsi as calc_rsi, ema as calc_ema
-            close    = df["close"]
-            rsi_val  = calc_rsi(close).iloc[-1]
-            ema20    = calc_ema(close, 20).iloc[-1]
-            ema5     = calc_ema(close, 5).iloc[-1]
+            close   = df["close"]
+            rsi_val = calc_rsi(close).iloc[-1]
+            ema20   = calc_ema(close, 20).iloc[-1]
+            ema5    = calc_ema(close, 5).iloc[-1]
 
-            # Bullish: price above EMA20, short EMA above long EMA, RSI 50-75
             if ema5 > ema20 and spot > ema20 and 50 < rsi_val < 75:
-                return "LONG", round(rsi_val, 1), round(ema20, 2)
-            # Bearish: price below EMA20, short EMA below long EMA, RSI 25-50
+                return ("LONG", "TrendSpread",
+                        f"EMA5={ema5:.0f}>EMA20={ema20:.0f}, RSI={rsi_val:.1f}",
+                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
             if ema5 < ema20 and spot < ema20 and 25 < rsi_val < 50:
-                return "SHORT", round(rsi_val, 1), round(ema20, 2)
+                return ("SHORT", "TrendSpread",
+                        f"EMA5={ema5:.0f}<EMA20={ema20:.0f}, RSI={rsi_val:.1f}",
+                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
         except Exception as exc:
-            logger.debug(f"[CommOpts] Indicator error: {exc}")
-        return None, 0, 0
+            logger.debug(f"[CommOpts] TrendSpread error: {exc}")
+        return None
+
+    def _check_reversal_spread(self, df, spot: float):
+        """RSIReversalSpread: Buy oversold dip in uptrend; sell overbought high in downtrend."""
+        try:
+            from analysis.indicators import rsi as calc_rsi, ema as calc_ema
+            close   = df["close"]
+            rsi_val = calc_rsi(close).iloc[-1]
+            ema20   = calc_ema(close, 20).iloc[-1]
+            ema5    = calc_ema(close, 5).iloc[-1]
+
+            # Oversold in higher-timeframe uptrend → reversal long
+            if rsi_val < 32 and ema5 >= ema20 * 0.995:
+                return ("LONG", "RSIReversalSpread",
+                        f"RSI={rsi_val:.1f} oversold, EMA20={ema20:.0f}",
+                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
+            # Overbought in higher-timeframe downtrend → reversal short
+            if rsi_val > 68 and ema5 <= ema20 * 1.005:
+                return ("SHORT", "RSIReversalSpread",
+                        f"RSI={rsi_val:.1f} overbought, EMA20={ema20:.0f}",
+                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
+        except Exception as exc:
+            logger.debug(f"[CommOpts] RSIReversalSpread error: {exc}")
+        return None
+
+    def _check_breakout_spread(self, df, spot: float):
+        """BreakoutSpread: 5-bar price breakout above/below recent range with RSI confirmation."""
+        try:
+            from analysis.indicators import rsi as calc_rsi, ema as calc_ema
+            close   = df["close"]
+            rsi_val = calc_rsi(close).iloc[-1]
+            ema20   = calc_ema(close, 20).iloc[-1]
+            ema5    = calc_ema(close, 5).iloc[-1]
+
+            if len(close) < 6:
+                return None
+
+            prev_high = close.iloc[-6:-1].max()
+            prev_low  = close.iloc[-6:-1].min()
+
+            if spot > prev_high and rsi_val > 52:
+                return ("LONG", "BreakoutSpread",
+                        f"Breakout above {prev_high:.0f}, RSI={rsi_val:.1f}",
+                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
+            if spot < prev_low and rsi_val < 48:
+                return ("SHORT", "BreakoutSpread",
+                        f"Breakdown below {prev_low:.0f}, RSI={rsi_val:.1f}",
+                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
+        except Exception as exc:
+            logger.debug(f"[CommOpts] BreakoutSpread error: {exc}")
+        return None
 
     def _build_trade(
-        self, symbol, short, meta, spot, direction, opt_type, chain,
-        rsi_val, ema20_val, now,
+        self, symbol, short, meta, spot, direction, strategy_name, signal_reason,
+        opt_type, chain, rsi_val, ema5_val, ema20_val, now,
     ) -> Optional[dict]:
         """Build a debit spread trade (buy ATM + sell OTM)."""
         step    = meta["strike_step"]
@@ -333,7 +397,7 @@ class CommodityOptionsLearning:
             "instrument":   short,
             "direction":    direction,
             "opt_type":     opt_type,
-            "strategy":     "CommodityDebitSpread",
+            "strategy":     strategy_name,
             "entry_time":   now.isoformat(),
             "status":       "OPEN",
             "spot_at_entry": round(spot, 2),
@@ -349,13 +413,15 @@ class CommodityOptionsLearning:
             "dte":          dte,
             "data_source":  "live_chain" if chain else "bs_estimate",
             "metadata": {
-                "rsi":       rsi_val,
-                "ema20":     ema20_val,
-                "spot":      round(spot, 2),
-                "iv_pct":    round(iv * 100, 1),
-                "atm_prem":  round(atm_premium, 2),
-                "otm_prem":  round(otm_premium, 2),
-                "price_unit": meta["price_unit"],
+                "rsi":           rsi_val,
+                "ema5":          ema5_val,
+                "ema20":         ema20_val,
+                "spot":          round(spot, 2),
+                "iv_pct":        round(iv * 100, 1),
+                "atm_prem":      round(atm_premium, 2),
+                "otm_prem":      round(otm_premium, 2),
+                "price_unit":    meta["price_unit"],
+                "signal_reason": signal_reason,
             },
         }
 
@@ -631,6 +697,32 @@ class CommodityOptionsLearning:
             d["win_rate"] = round(d["wins"] / d["total"] * 100, 1)
             d["avg_r"]    = round(d["total_r"] / d["total"], 2)
 
+        by_strategy: dict = {}
+        for t in trades:
+            strat = t.get("strategy") or "Unknown"
+            if strat not in by_strategy:
+                by_strategy[strat] = {
+                    "total": 0, "wins": 0, "total_r": 0.0,
+                    "best_r": None, "worst_r": None,
+                }
+            by_strategy[strat]["total"]   += 1
+            by_strategy[strat]["total_r"] += t["pnl_r"]
+            if t["pnl_r"] > 0:
+                by_strategy[strat]["wins"] += 1
+            r = t["pnl_r"]
+            d = by_strategy[strat]
+            if d["best_r"] is None or r > d["best_r"]:
+                d["best_r"] = r
+            if d["worst_r"] is None or r < d["worst_r"]:
+                d["worst_r"] = r
+
+        for strat, d in by_strategy.items():
+            d["win_rate"] = round(d["wins"] / d["total"] * 100, 1)
+            d["avg_r"]    = round(d["total_r"] / d["total"], 2)
+            d["total_r"]  = round(d["total_r"], 2)
+            d["best_r"]   = round(d["best_r"] or 0, 2)
+            d["worst_r"]  = round(d["worst_r"] or 0, 2)
+
         return {
             "total_closed":   len(trades),
             "total_open":     len(open_t),
@@ -640,6 +732,7 @@ class CommodityOptionsLearning:
             "best_trade_r":   round(max(all_r), 2),
             "worst_trade_r":  round(min(all_r), 2),
             "by_instrument":  by_instrument,
+            "by_strategy":    by_strategy,
             "data_sources":   _count_field(trades, "data_source"),
             "exit_reasons":   _count_field(trades, "exit_reason"),
             "open_positions": [

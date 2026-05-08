@@ -663,6 +663,32 @@ def reset_kill_switch():
     return {"kill_switch_active": False}
 
 
+@app.post("/positions/force-close")
+def force_close_position(body: dict):
+    """
+    Manually dismiss a stale open position.
+    Use when the broker already closed the position but the bot missed the fill
+    (crash during exit, manual broker close, option expiry, EOD auto-squareoff).
+    Body: {"symbol": "NSE:NIFTYBANK-INDEX", "reason": "BROKER_CLOSED"}
+    """
+    symbol = (body.get("symbol") or "").strip()
+    reason = (body.get("reason") or "MANUAL_CLOSE").strip()
+    if not symbol:
+        return {"success": False, "error": "symbol is required"}
+    try:
+        ok = portfolio_tracker.force_close(symbol, reason=reason)
+        if ok:
+            try:
+                from audit_log import audit_log
+                audit_log.bot_event("MANUAL_FORCE_CLOSE", f"Dashboard force-close: {symbol} ({reason})")
+            except Exception:
+                pass
+        return {"success": ok, "symbol": symbol,
+                "error": None if ok else f"No open position found for {symbol}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/ltp/{symbol:path}")
 def get_ltp(symbol: str):
     ltp = store.get_ltp(symbol)

@@ -246,6 +246,43 @@ class PortfolioTracker:
             "open_positions":      open_pos,
         }
 
+    def force_close(self, symbol: str, reason: str = "MANUAL_CLOSE") -> bool:
+        """
+        Manually remove a stale open position.
+        Use when the broker already closed the position but the bot missed the fill
+        (e.g., crash during exit, manual broker close, option expiry).
+        Returns True if a position was found and closed.
+        """
+        pos = self._open_positions.pop(symbol, None)
+        if pos:
+            nfo = (pos.options_meta or {}).get("nfo_symbol")
+            ltp = store.get_ltp(nfo or symbol)
+            exit_price = ltp or pos.entry_price
+            pos.status      = "CLOSED"
+            pos.exit_time   = datetime.now(tz=IST)
+            pos.exit_reason = reason
+            pos.exit_price  = exit_price
+            if pos.direction == "LONG":
+                pos.realised_pnl = (exit_price - pos.entry_price) * pos.position_size
+            else:
+                pos.realised_pnl = (pos.entry_price - exit_price) * pos.position_size
+            self._closed_trades.append(pos)
+            self._update_position_db(pos)
+            logger.warning(f"[Portfolio] FORCE CLOSED {symbol} reason={reason} est_pnl={pos.realised_pnl:+.0f}")
+            return True
+
+        # Position not in memory — update DB directly (restored-but-not-in-memory edge case)
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "UPDATE trades SET status='CLOSED', exit_reason=?, exit_time=? "
+                "WHERE symbol=? AND status='OPEN'",
+                (reason, datetime.now(tz=IST).isoformat(), symbol),
+            )
+            if cur.rowcount > 0:
+                logger.warning(f"[Portfolio] FORCE CLOSED from DB only: {symbol}")
+                return True
+        return False
+
     def has_open_position(self, symbol: str) -> bool:
         return symbol in self._open_positions
 
