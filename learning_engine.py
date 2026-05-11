@@ -50,7 +50,7 @@ SWING_MAX_HOLD_DAYS  = 5
 CHANDELIER_MULT      = 2.5   # ATR multiplier for Chandelier trailing stop
 EOD_TIGHT_HOUR       = 14    # after 2pm, tighten stop to protect 50% of intraday gain
 EOD_TIGHT_MINUTE     = 0
-MAX_BARS_INTRADAY    = 16    # 16 × 15min = 4hr max; dead-money trades recycled after this
+MAX_BARS_INTRADAY    = 10    # 10 × 15min = 2.5hr max; RSI bounces resolve or fail within 2hr
 VOLATILITY_CONTRACTION = 0.50  # exit if current ATR < 50% of entry ATR (momentum gone)
 
 
@@ -349,9 +349,15 @@ class LearningEngine:
                 elif ltp <= final_target:
                     exit_reason, exit_price = final_reason, ltp
 
-            # Signal reversal exit — entry condition gone, take profit or limit loss now
+            # Signal reversal exit — only when profitable; let stop handle losses.
+            # Firing on an unprofitable trade exits at a tiny gain while the stop was
+            # still 1.5×ATR away — terrible risk/reward.
             if exit_reason is None and instrument_type != "nse_options":
-                if self._check_signal_reversal(trade, store):
+                is_profitable = (
+                    (direction == "LONG"  and ltp > entry) or
+                    (direction == "SHORT" and ltp < entry)
+                )
+                if is_profitable and self._check_signal_reversal(trade, store):
                     exit_reason = "SIGNAL_REVERSAL"
                     exit_price  = ltp
 
@@ -473,24 +479,28 @@ class LearningEngine:
             mfe = trade.get("mfe_pts", 0)
             trade["peak_ltp"] = (entry + mfe) if direction == "LONG" else (entry - mfe)
 
+        # Mean-reversion strategies (SimpleRSI) need a tight 1×ATR trail so the
+        # SL ratchets up quickly. Trend-following strategies keep the loose 2.5× trail.
+        mult = 1.0 if trade.get("strategy") == "SimpleRSI" else CHANDELIER_MULT
+
         current_stop = trade["stop_loss"]
 
         if direction == "LONG":
             trade["peak_ltp"] = max(trade["peak_ltp"], ltp)
-            chandelier = round(trade["peak_ltp"] - CHANDELIER_MULT * atr_val, 2)
+            chandelier = round(trade["peak_ltp"] - mult * atr_val, 2)
             if chandelier <= current_stop:
                 return  # don't loosen the stop
             trade["stop_loss"] = chandelier
         else:  # SHORT
             trade["peak_ltp"] = min(trade["peak_ltp"], ltp)
-            chandelier = round(trade["peak_ltp"] + CHANDELIER_MULT * atr_val, 2)
+            chandelier = round(trade["peak_ltp"] + mult * atr_val, 2)
             if chandelier >= current_stop:
                 return  # don't loosen the stop
             trade["stop_loss"] = chandelier
 
         logger.info(
             f"[Learning] CHANDELIER {trade['id']} | "
-            f"peak {trade['peak_ltp']:.2f} ± {CHANDELIER_MULT}×ATR({atr_val:.2f}) "
+            f"peak {trade['peak_ltp']:.2f} ± {mult}×ATR({atr_val:.2f}) "
             f"= stop {current_stop:.2f} → {trade['stop_loss']:.2f}"
         )
         self._db_update_stop(trade["id"], trade["stop_loss"])
@@ -561,6 +571,18 @@ class LearningEngine:
         )
         self._db_update_metadata(trade["id"], metadata)
 
+        # Move SL to breakeven — remaining 50% rides for free.
+        # Only tighten: if Chandelier already pushed SL above entry, don't move it back.
+        current_sl = trade.get("stop_loss", entry)
+        if direction == "LONG" and current_sl < entry:
+            trade["stop_loss"] = entry
+            self._db_update_stop(trade["id"], entry)
+            logger.info(f"[Learning] BREAKEVEN {trade['id']} | SL → ₹{entry:.2f} (partial booked)")
+        elif direction == "SHORT" and current_sl > entry:
+            trade["stop_loss"] = entry
+            self._db_update_stop(trade["id"], entry)
+            logger.info(f"[Learning] BREAKEVEN {trade['id']} | SL → ₹{entry:.2f} (partial booked)")
+
     def _check_signal_reversal(self, trade: dict, store) -> bool:
         """Return True when the condition that triggered entry has reversed.
 
@@ -587,7 +609,9 @@ class LearningEngine:
                 if df is None or len(df) < 5:
                     return False
                 rsi_val = rsi(df["close"]).iloc[-1]
-                return (direction == "LONG" and rsi_val > 50) or (direction == "SHORT" and rsi_val < 50)
+                # 50 is too close to the midline — RSI oscillates through it on every normal
+                # candle. Use 55/45 to confirm momentum is genuinely lost, not just a wobble.
+                return (direction == "LONG" and rsi_val > 55) or (direction == "SHORT" and rsi_val < 45)
 
         except Exception as e:
             logger.debug(f"[Learning] Signal reversal check error for {trade['id']}: {e}")
@@ -595,13 +619,17 @@ class LearningEngine:
 
     def _check_bb_middle_exit(self, trade: dict, ltp: float, store) -> Optional[str]:
         """
-        Exit when price crosses back through BB middle — indicates the RSI bounce failed
-        and price is reverting to the mean (against our position).
-        Only applied to SimpleRSI trades where BB was part of the entry filter.
+        Exit when price crosses BACK through the BB middle after having crossed it first.
+
+        At entry, oversold LONG is below BB mid and overbought SHORT is above BB mid.
+        Firing immediately would exit every trade on the first cycle — so we guard with
+        mfe_pts: the trade must have moved past the BB midline before the exit can fire.
         """
         if trade.get("strategy") != "SimpleRSI":
             return None
         direction = trade["direction"]
+        entry     = trade["entry_price"]
+        metadata  = trade.get("metadata") or {}
         try:
             from analysis.indicators import bollinger_bands
             df = store.get_ohlcv(trade["symbol"], "15m", n=30)
@@ -609,6 +637,15 @@ class LearningEngine:
                 return None
             _, middle, _ = bollinger_bands(df["close"])
             bb_mid = middle.iloc[-1]
+
+            # Guard: price must have crossed the BB midline from entry before we use this exit.
+            # bb_middle stored at entry tells us how far price needed to travel.
+            bb_mid_at_entry = float(metadata.get("bb_middle", 0))
+            if bb_mid_at_entry > 0:
+                required_mfe = abs(entry - bb_mid_at_entry)
+                if trade.get("mfe_pts", 0) < required_mfe:
+                    return None  # price never crossed BB midline — not a valid reversal
+
             if direction == "LONG" and ltp < bb_mid:
                 return "BB_MID_CROSS"
             if direction == "SHORT" and ltp > bb_mid:
