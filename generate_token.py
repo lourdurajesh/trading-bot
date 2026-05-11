@@ -29,9 +29,13 @@ load_dotenv(override=True)
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config.logging_ist import setup_logging
-setup_logging(level=logging.INFO, fmt="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("generate_token")
+
+# Only configure logging when run directly — importing this module (e.g. from
+# token_manager) must NOT reconfigure the bot's existing logging setup.
+if __name__ == "__main__":
+    from config.logging_ist import setup_logging
+    setup_logging(level=logging.INFO, fmt="%(asctime)s [%(levelname)s] %(message)s")
 
 APP_ID       = os.getenv("FYERS_APP_ID", "")
 SECRET_KEY   = os.getenv("FYERS_SECRET_KEY", "")

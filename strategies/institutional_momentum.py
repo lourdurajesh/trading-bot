@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 _ALLOWED = {
     "NSE:NIFTYBANK-INDEX": "BANKNIFTY",
     "NSE:NIFTY50-INDEX":   "NIFTY",
+    "NSE:FINNIFTY-INDEX":  "FINNIFTY",
 }
 
 _ENTRY_OPEN  = dtime(9, 30)    # wait 15 min after market open
@@ -169,7 +170,7 @@ class InstitutionalMomentumStrategy(BaseStrategy):
                 "strategy":            "institutional_momentum",
                 "option_type":         option_type,
                 "short_name":          short_name,
-                "atm_strike":          round(spot / (100 if "BANK" in symbol else 50)) * (100 if "BANK" in symbol else 50),
+                "atm_strike":          round(spot / (100 if "BANK" in symbol else 50)) * (100 if "BANK" in symbol else 50),  # BANKNIFTY=100pt intervals, NIFTY/FINNIFTY=50pt
                 "dte":                 dte,
                 "iv":                  round(iv, 4) if iv else 0.15,
                 "lot_size":            lot_size,

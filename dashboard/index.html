@@ -1047,6 +1047,119 @@ const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltp
   );
 });
 
+// ── Strategy Config components ───────────────────────────────────────────
+function ParamField({ strategy, param, entry, onUpdate }) {
+  const [editing, setEditing] = React.useState(false);
+  const [val, setVal] = React.useState(String(entry.value));
+
+  React.useEffect(() => { setVal(String(entry.value)); }, [entry.value]);
+
+  const commit = () => {
+    setEditing(false);
+    const parsed = entry.type === "float" ? parseFloat(val) : parseInt(val, 10);
+    if (!isNaN(parsed)) onUpdate(strategy, param, parsed);
+    else setVal(String(entry.value));
+  };
+
+  return (
+    <div style={{background:"#0f172a",borderRadius:6,padding:"8px 12px",border:"1px solid #1e293b"}}>
+      <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>{entry.description || param}</div>
+      <div style={{display:"flex",alignItems:"center",gap:8}}>
+        <code style={{fontSize:11,color:"#94a3b8",flex:1}}>{param}</code>
+        {editing ? (
+          <input type="number" value={val}
+            onChange={e=>setVal(e.target.value)} onBlur={commit}
+            onKeyDown={e=>{if(e.key==="Enter")commit();if(e.key==="Escape"){setEditing(false);setVal(String(entry.value));}}}
+            autoFocus
+            style={{width:80,background:"#1e293b",color:"#f1f5f9",border:"1px solid #3b82f6",
+              borderRadius:3,padding:"2px 6px",fontSize:12,textAlign:"right"}}
+            step={entry.type==="float"?"0.1":"1"} min={entry.min} max={entry.max}
+          />
+        ) : (
+          <button onClick={()=>setEditing(true)}
+            style={{background:"#1e293b",color:"#f1f5f9",border:"1px solid #334155",
+              borderRadius:3,padding:"2px 10px",fontSize:12,cursor:"pointer",fontFamily:"monospace"}}>
+            {entry.value}
+          </button>
+        )}
+      </div>
+      {entry.min!==undefined && (
+        <div style={{fontSize:9,color:"#475569",marginTop:2}}>range: {entry.min} – {entry.max}</div>
+      )}
+    </div>
+  );
+}
+
+function StrategyConfigPage({ config, onUpdate }) {
+  if (!config) return <div className="empty">Loading strategy config...</div>;
+
+  const LABELS = {
+    trend_follow:           "TrendFollow — LONG Breakout",
+    short_trend:            "ShortTrend — SHORT Breakdown",
+    mean_reversion:         "MeanReversion — Range Bounce",
+    institutional_momentum: "InstitutionalMomentum — ATM Options (conviction days)",
+    directional_options:    "DirectionalOptions — Debit Spread",
+    options_income:         "OptionsIncome — Premium Collection",
+    iron_condor:            "IronCondor — 4-Leg Range",
+    gap_fade:               "GapFade — Gap Reversal at Open",
+    momentum_reversal:      "MomentumReversal — Extreme RSI Fade",
+  };
+
+  const updateParam = (strat, param, value) => {
+    fetch(`${API}/config/strategies/${strat}/${param}`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({value}),
+    })
+    .then(r=>r.json())
+    .then(d=>{
+      if (d.ok) onUpdate(strat, param, value);
+      else alert(`Update failed: ${d.error}`);
+    })
+    .catch(e=>alert(`Request error: ${e}`));
+  };
+
+  return (
+    <div>
+      <div style={{color:"#64748b",fontSize:11,marginBottom:16}}>
+        Changes take effect on the next evaluation cycle — no bot restart needed.
+        Click a value to edit it; press Enter or click away to apply.
+      </div>
+      <div style={{display:"grid",gap:14}}>
+        {Object.entries(config).map(([key, params]) => {
+          const isEnabled = params.enabled?.value ?? true;
+          return (
+            <div key={key} className="card" style={{opacity:isEnabled?1:0.55}}>
+              <h2 style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                <span>{LABELS[key]||key}</span>
+                <label style={{cursor:"pointer",display:"flex",alignItems:"center",gap:5,fontSize:11,fontWeight:400,marginLeft:"auto"}}>
+                  <input type="checkbox" checked={isEnabled}
+                    onChange={e=>updateParam(key,"enabled",e.target.checked)}
+                    style={{cursor:"pointer"}} />
+                  {isEnabled
+                    ? <span style={{color:"#22c55e"}}>Enabled</span>
+                    : <span style={{color:"#ef4444"}}>Disabled</span>}
+                </label>
+              </h2>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:8,marginTop:8}}>
+                {Object.entries(params)
+                  .filter(([k])=>k!=="enabled")
+                  .map(([param,entry])=>(
+                    <ParamField key={param} strategy={key} param={param}
+                      entry={entry} onUpdate={updateParam}/>
+                  ))}
+                {Object.keys(params).filter(k=>k!=="enabled").length===0 && (
+                  <div style={{fontSize:11,color:"#475569"}}>No configurable params — toggle enabled above.</div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [data, setData]               = React.useState(null);
   const [wsOk, setWsOk]               = React.useState(false);
@@ -1073,6 +1186,9 @@ function App() {
   const [commStats, setCommStats]     = React.useState(null);
   const [commTrades, setCommTrades]   = React.useState([]);
   const [commLtps,  setCommLtps]      = React.useState({});
+
+  /* strategy config */
+  const [stratConfig, setStratConfig] = React.useState(null);
 
   const logRef = React.useRef(null);
 
@@ -1138,8 +1254,10 @@ function App() {
       fetch(`${API}/commodity/stats`).then(r=>r.json()).then(setCommStats).catch(()=>{});
       fetch(`${API}/commodity/trades?limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});
     };
+    const loadConfig = () =>
+      fetch(`${API}/config/strategies`).then(r=>r.json()).then(d=>{if(d.config)setStratConfig(d.config);}).catch(()=>{});
 
-    loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadComm();
+    loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadComm(); loadConfig();
     // eslint-disable-next-line react-hooks/exhaustive-deps
 
     const t1 = setInterval(loadServices, 15000);
@@ -1262,7 +1380,7 @@ function App() {
 
       {/* ── Tabs ── */}
       <div className="tabs">
-        {[["trading","Trading"],["paper","Paper P&L"],["learning","Learning"],["commodity","MCX Options"],["logs","Live Logs"],["services","Services"],["backtest","Backtest"]].map(([id,label])=>(
+        {[["trading","Trading"],["paper","Paper P&L"],["learning","Learning"],["commodity","MCX Options"],["logs","Live Logs"],["services","Services"],["backtest","Backtest"],["config","Strategy Config"]].map(([id,label])=>(
           <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>{label}</button>
         ))}
       </div>
@@ -1676,6 +1794,32 @@ function App() {
               })()}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════
+          STRATEGY CONFIG TAB
+      ════════════════════════════════════════ */}
+      {tab==="config" && (
+        <div>
+          <div className="card">
+            <h2>Strategy Configuration</h2>
+            <StrategyConfigPage
+              config={stratConfig}
+              onUpdate={(strat, param, value) => {
+                setStratConfig(prev => {
+                  if (!prev || !prev[strat] || !prev[strat][param]) return prev;
+                  return {
+                    ...prev,
+                    [strat]: {
+                      ...prev[strat],
+                      [param]: { ...prev[strat][param], value }
+                    }
+                  };
+                });
+              }}
+            />
+          </div>
         </div>
       )}
 

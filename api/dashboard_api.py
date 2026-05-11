@@ -852,6 +852,43 @@ def get_portfolio_analysis():
 
 
 # ─────────────────────────────────────────────────────────────────
+# STRATEGY CONFIGURATION
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/config/strategies")
+def get_strategy_config():
+    """
+    Return full schema for all strategies including current values,
+    types, min/max bounds, and descriptions. Used by the config UI.
+    """
+    try:
+        from config.strategy_config import get_schema
+        return {"ok": True, "config": get_schema()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/config/strategies/{strategy}/{param}")
+def update_strategy_param(strategy: str, param: str, body: dict):
+    """
+    Update a single strategy parameter at runtime.
+    Body: {"value": <new_value>}
+    Change takes effect on the next evaluation cycle (no restart needed).
+    """
+    value = body.get("value")
+    if value is None:
+        return {"ok": False, "error": "body must contain 'value'"}
+    try:
+        from config.strategy_config import update
+        ok, err = update(strategy, param, value)
+        if not ok:
+            return {"ok": False, "error": err}
+        return {"ok": True, "strategy": strategy, "param": param, "value": value}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────
 # WEBSOCKET — live push every 2 seconds
 # ─────────────────────────────────────────────────────────────────
 

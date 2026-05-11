@@ -2,15 +2,20 @@
 conviction_scorer.py
 ────────────────────
 Pre-market conviction score. Runs at 9:00 AM IST daily.
-Combines 5 inputs into a single score (-10 to +10).
+Combines 6 inputs into a single score (-10 to +10).
 Only fires signal if abs(score) >= CONVICTION_THRESHOLD (default: 7).
 
 Scoring model:
   FII F&O net change:           +3 bullish / -3 bearish  (MODULE 1)
   OI signal (PCR + gamma wall): +2 bullish / -2 bearish  (MODULE 2)
+  Pre-open IEP gap:             +2 bullish / -2 bearish  (MODULE 3 — real order book)
   India VIX direction:          +1 bullish / -1 bearish
   Gift Nifty overnight:         +1 bullish / -1 bearish
   BankNifty leadership:         +1 bullish / -1 bearish
+
+Note: IEP signal is only available after 9:08 AM when NSE finalises the call auction.
+The conviction score is computed at 9:00 AM (IEP=0) and re-computed at 9:10 AM
+(IEP available) to capture the refined pre-open signal before market opens at 9:15 AM.
 
 Output: ConvictionScore(score, direction, reasons, capital_pct)
 """
@@ -37,11 +42,12 @@ class ConvictionScore:
     capital_pct: int                 # 35 (score 7-8) or 50 (score 9-10)
     tradeable: bool                  # abs(score) >= threshold
     timestamp: str = ""
-    fii_score: int = 0
-    oi_score: int = 0
-    vix_score: int = 0
-    gift_score: int = 0
-    rs_score: int = 0
+    fii_score:   int = 0
+    oi_score:    int = 0
+    iep_score:   int = 0
+    vix_score:   int = 0
+    gift_score:  int = 0
+    rs_score:    int = 0
 
 
 class ConvictionScorer:
@@ -85,17 +91,25 @@ class ConvictionScorer:
         total += oi_score
         reasons.append(f"OI  [{oi_score:+d}]: {oi_reason}")
 
-        # ── Signal 3: India VIX direction (+1/-1) ─────────────────
+        # ── Signal 3: NSE pre-open IEP gap (+2/-2) ───────────────
+        # Real order-book consensus. Returns 0 before 9:08 AM when IEP
+        # is not yet finalised; the score is re-computed at 9:10 AM to
+        # capture this signal before market opens at 9:15 AM.
+        iep_score, iep_reason = self._score_iep()
+        total += iep_score
+        reasons.append(f"IEP [{iep_score:+d}]: {iep_reason}")
+
+        # ── Signal 4: India VIX direction (+1/-1) ─────────────────
         vix_score, vix_reason = self._score_vix()
         total += vix_score
         reasons.append(f"VIX [{vix_score:+d}]: {vix_reason}")
 
-        # ── Signal 4: Gift Nifty overnight (+1/-1) ────────────────
+        # ── Signal 5: Gift Nifty overnight (+1/-1) ────────────────
         gift_score, gift_reason = self._score_gift_nifty()
         total += gift_score
         reasons.append(f"GIFT[{gift_score:+d}]: {gift_reason}")
 
-        # ── Signal 5: BankNifty leadership (+1/-1) ────────────────
+        # ── Signal 6: BankNifty leadership (+1/-1) ────────────────
         rs_score, rs_reason = self._score_relative_strength()
         total += rs_score
         reasons.append(f"RS  [{rs_score:+d}]: {rs_reason}")
@@ -118,6 +132,7 @@ class ConvictionScorer:
             timestamp   = now.strftime("%Y-%m-%d %H:%M"),
             fii_score   = fii_score,
             oi_score    = oi_score,
+            iep_score   = iep_score,
             vix_score   = vix_score,
             gift_score  = gift_score,
             rs_score    = rs_score,
@@ -161,6 +176,21 @@ class ConvictionScorer:
         except Exception as e:
             logger.warning(f"[ConvictionScorer] OI signal error: {e}")
             return 0, "OI data unavailable"
+
+    def _score_iep(self) -> tuple[int, str]:
+        """
+        NSE pre-open IEP gap signal (+2/-2).
+        This is real order-book consensus — the price at which buyers and sellers
+        have already agreed to transact BEFORE the market opens.
+        Only returns non-zero after 9:08 AM when the call auction finalises.
+        """
+        try:
+            from intelligence.premarket_analyzer import premarket_analyzer
+            score, reason = premarket_analyzer.get_signal()
+            return max(-2, min(2, score)), reason
+        except Exception as e:
+            logger.warning(f"[ConvictionScorer] IEP signal error: {e}")
+            return 0, "IEP signal unavailable"
 
     def _score_vix(self) -> tuple[int, str]:
         """

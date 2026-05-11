@@ -23,11 +23,14 @@ from intelligence.intelligence_engine import intelligence_engine
 from risk.portfolio_tracker import portfolio_tracker
 from strategies.base_strategy import Signal
 from strategies.trend_follow import TrendFollowStrategy
+from strategies.short_trend import ShortTrendStrategy
 from strategies.mean_reversion import MeanReversionStrategy
 from strategies.options_income import OptionsIncomeStrategy
 from strategies.directional_options import DirectionalOptionsStrategy
 from strategies.iron_condor import IronCondorStrategy
 from strategies.institutional_momentum import InstitutionalMomentumStrategy
+from strategies.gap_fade import GapFadeStrategy
+from strategies.momentum_reversal import MomentumReversalStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +47,14 @@ class StrategySelector:
     def __init__(self):
         # Instantiate all strategy modules
         self._trend        = TrendFollowStrategy()
+        self._short_trend  = ShortTrendStrategy()
         self._reversion    = MeanReversionStrategy()
         self._opt_income   = OptionsIncomeStrategy()
         self._opt_direct   = DirectionalOptionsStrategy()
         self._iron_condor  = IronCondorStrategy()
-        self._institutional = InstitutionalMomentumStrategy()
+        self._institutional  = InstitutionalMomentumStrategy()
+        self._gap_fade       = GapFadeStrategy()
+        self._momentum_rev   = MomentumReversalStrategy()
 
         # Thread pool for parallel options strategy evaluation.
         # Options strategies block on Fyers chain API calls — running them
@@ -258,10 +264,13 @@ class StrategySelector:
             "strategies_enabled": {
                 "institutional_momentum": self._institutional.enabled,
                 "trend_follow":           self._trend.enabled,
+                "short_trend":            self._short_trend.enabled,
                 "mean_reversion":         self._reversion.enabled,
                 "options_income":         self._opt_income.enabled,
                 "directional_options":    self._opt_direct.enabled,
                 "iron_condor":            self._iron_condor.enabled,
+                "gap_fade":               self._gap_fade.enabled,
+                "momentum_reversal":      self._momentum_rev.enabled,
             },
             "symbols_on_cooldown": len([
                 s for s, exp in self._cooldowns.items()
@@ -331,8 +340,8 @@ class StrategySelector:
         # ── INSTITUTIONAL override — highest priority ─────────────
         # Check conviction_scorer before regime routing.
         # On high-conviction days (score >= 7), institutional_momentum overrides
-        # all other strategies for BANKNIFTY and NIFTY index symbols.
-        if symbol in ("NSE:NIFTYBANK-INDEX", "NSE:NIFTY50-INDEX"):
+        # all other strategies for BANKNIFTY, NIFTY, and FINNIFTY index symbols.
+        if symbol in ("NSE:NIFTYBANK-INDEX", "NSE:NIFTY50-INDEX", "NSE:FINNIFTY-INDEX"):
             signal = self._try_strategy(self._institutional, symbol)
             if signal:
                 return signal
@@ -344,10 +353,22 @@ class StrategySelector:
         if regime == Regime.UNKNOWN:
             return None
 
+        # GapFade is time-gated (9:15–9:45 AM) — check it first across all regimes
+        # so a gap setup is never missed because the regime routed elsewhere.
+        signal = self._try_strategy(self._gap_fade, symbol)
+        if signal:
+            return signal
+
         # Route to strategy based on regime
         if regime in (Regime.TRENDING, Regime.BREAKOUT):
-            # Equity trend first (no network call — fast path)
+            # Try both directional equity strategies — TrendFollow (LONG) and
+            # ShortTrend (SHORT). Each has its own EMA-stack gate so only one
+            # will fire: if market is bullish → TrendFollow wins; if bearish →
+            # ShortTrend wins. Whichever fires first is returned.
             signal = self._try_strategy(self._trend, symbol)
+            if signal:
+                return signal
+            signal = self._try_strategy(self._short_trend, symbol)
             if signal:
                 return signal
             # Directional options in parallel (single strategy, wrapped for consistency)
@@ -358,11 +379,19 @@ class StrategySelector:
             signal = self._try_strategy(self._reversion, symbol)
             if signal:
                 return signal
+            # MomentumReversal in ranging — catches extreme RSI setups
+            signal = self._try_strategy(self._momentum_rev, symbol)
+            if signal:
+                return signal
             # IronCondor disabled: 3-year backtest shows win rate of 1% on index regimes —
             # indices almost never stay in a tight ±2% range for a full 30-day cycle.
             return self._evaluate_options_parallel(symbol, [self._opt_income])
 
         if regime == Regime.VOLATILE:
+            # MomentumReversal thrives in volatile markets (extreme RSI + mean revert)
+            signal = self._try_strategy(self._momentum_rev, symbol)
+            if signal:
+                return signal
             # Directional debit spread (indices only) — options are cheap in volatile markets.
             signal = self._evaluate_options_parallel(symbol, [self._opt_direct])
             if signal:

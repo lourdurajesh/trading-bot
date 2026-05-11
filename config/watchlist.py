@@ -82,6 +82,7 @@ ALL_SYMBOLS     = ALL_NSE_SYMBOLS + ALL_US_SYMBOLS
 PRIORITY_SYMBOLS = [
     "NSE:NIFTYBANK-INDEX",  # institutional momentum — evaluated first (preferred over NIFTY)
     "NSE:NIFTY50-INDEX",
+    "NSE:FINNIFTY-INDEX",   # added: now covered by institutional_momentum + directional_options
     "NSE:RELIANCE-EQ",
     "NSE:HDFCBANK-EQ",
     "NSE:TCS-EQ",

@@ -63,12 +63,14 @@ WARMUP_SECONDS         = 30   # wait for data streams to populate
 # ── Institutional F&O system schedule ────────────────────────────
 from datetime import time as dtime
 _PREMARKT_SCORE_TIME   = dtime(9,  0)   # run conviction_scorer once before open
+_PREMARKT_IEP_TIME     = dtime(9, 10)   # re-score with IEP after NSE call auction finalises (9:08)
 _PREMARKT_SCORE_END    = dtime(9, 30)   # window closes at 9:30
 _OI_CLOSE_SNAP_TIME    = dtime(15, 25)  # save OI snapshot 5 min before close
 _NSE_COLLECT_TIME      = dtime(17, 30)  # collect FII participant data after publish
 _NSE_COLLECT_END       = dtime(18, 30)  # retry window closes at 6:30 PM
 _EDGE_MONITOR_TIME     = dtime(8, 45)   # weekly edge check every Monday before market
 _ANALYTICS_TIME        = dtime(15, 35)  # daily trade analytics report after close
+_TOKEN_PREREFRESH_TIME = dtime(5, 30)   # proactive Fyers token refresh — expires at ~6 AM daily
 
 
 class TradingBot:
@@ -145,7 +147,10 @@ class TradingBot:
         logger.info(f"Warming up for {WARMUP_SECONDS} seconds...")
         time.sleep(WARMUP_SECONDS)
 
-        # Step 5: Run main evaluation loop
+        # Step 6: Catch-up conviction score if bot started mid-day (after 9:30 AM)
+        self._catch_up_conviction_score()
+
+        # Step 7: Run main evaluation loop
         logger.info("Bot is live. Starting evaluation loop.")
         self._run_loop()
 
@@ -197,10 +202,12 @@ class TradingBot:
         last_token_check     = 0          # periodic token health check
         TOKEN_CHECK_INTERVAL = 1800       # check token every 30 min
         _conviction_scored_date  = None   # date when score was last computed
+        _conviction_iep_date     = None   # date when IEP-refined score was computed
         _oi_snap_saved_date      = None   # date when OI close snapshot was saved
         _nse_collected_date      = None   # date when FII data was collected
         _edge_monitor_week       = None   # ISO week when edge monitor last ran
         _analytics_saved_date    = None   # date when analytics report was saved
+        _token_prerefreshed_date = None   # date of proactive 5:30 AM token refresh
 
         while self._running:
             try:
@@ -208,6 +215,25 @@ class TradingBot:
                 now_ist  = datetime.now(tz=IST)
                 now_time = now_ist.time()
                 today    = now_ist.date()
+
+                # ── Proactive token refresh at 5:30 AM ───────────────
+                # Fyers tokens expire at ~6:00 AM IST daily. The 30-min heartbeat
+                # is reactive and would only catch this at 6:15 AM, leaving a
+                # 15-minute gap where every API call fails. Force a refresh at
+                # 5:30 AM so the token is renewed before expiry.
+                if (now_time >= _TOKEN_PREREFRESH_TIME
+                        and today != _token_prerefreshed_date):
+                    _token_prerefreshed_date = today
+                    try:
+                        from token_manager import token_manager
+                        logger.info("[Main] Proactive 5:30 AM token refresh starting...")
+                        ok = token_manager.force_refresh("Proactive pre-6AM renewal")
+                        if ok:
+                            logger.info("[Main] Token pre-refresh successful — ready for market open")
+                        else:
+                            logger.warning("[Main] Token pre-refresh failed — will retry via 30-min heartbeat")
+                    except Exception as te:
+                        logger.error(f"[Main] Token pre-refresh error: {te}")
 
                 # ── Edge monitor — every Monday at 08:45 IST ──────────
                 current_week = now_ist.isocalendar()[1]
@@ -233,12 +259,30 @@ class TradingBot:
                         result = conviction_scorer.score("BANKNIFTY")
                         _conviction_scored_date = today
                         logger.info(
-                            f"[Main] Conviction score: {result.score:+d} "
-                            f"{result.direction} — "
+                            f"[Main] Conviction score (initial): {result.score:+d} "
+                            f"{result.direction} IEP={result.iep_score:+d} — "
                             f"{'TRADE DAY' if result.tradeable else 'no trade (below threshold)'}"
                         )
                     except Exception as e:
                         logger.error(f"[Main] Conviction scorer error: {e}")
+
+                # ── IEP-refined re-score at 09:10 IST ────────────────
+                # NSE call auction finalises at ~9:08 AM. Re-compute the
+                # conviction score at 9:10 AM so the IEP gap signal is included
+                # before InstitutionalMomentum starts evaluating at 9:30 AM.
+                if (_PREMARKT_IEP_TIME <= now_time <= _PREMARKT_SCORE_END
+                        and today != _conviction_iep_date
+                        and now_ist.weekday() < 5):
+                    try:
+                        result = conviction_scorer.score("BANKNIFTY")
+                        _conviction_iep_date = today
+                        logger.info(
+                            f"[Main] Conviction score (IEP-refined): {result.score:+d} "
+                            f"{result.direction} IEP={result.iep_score:+d} — "
+                            f"{'TRADE DAY' if result.tradeable else 'no trade (below threshold)'}"
+                        )
+                    except Exception as e:
+                        logger.error(f"[Main] IEP re-score error: {e}")
 
                 if self._is_market_hours():
                     # ── Fast loop — runs every 5 seconds ──────────
@@ -361,6 +405,30 @@ class TradingBot:
     # ─────────────────────────────────────────────────────────────
     # HELPERS
     # ─────────────────────────────────────────────────────────────
+
+    def _catch_up_conviction_score(self) -> None:
+        """
+        If the bot starts (or restarts) mid-day after the 9:00–9:30 AM scoring
+        window, InstitutionalMomentum will find _last_score=None and skip all
+        index signals for the rest of the day. Run a catch-up score immediately
+        so the strategy can trade during the remaining session.
+        """
+        from datetime import time as dtime
+        from intelligence.conviction_scorer import conviction_scorer
+        now_ist  = datetime.now(tz=IST)
+        now_time = now_ist.time()
+        if (dtime(9, 30) <= now_time <= dtime(14, 30)
+                and now_ist.weekday() < 5
+                and conviction_scorer.get_last_score() is None):
+            logger.info("[Main] Bot started mid-day — computing catch-up conviction score...")
+            try:
+                result = conviction_scorer.score("BANKNIFTY")
+                logger.info(
+                    f"[Main] Catch-up conviction: {result.score:+d} {result.direction} — "
+                    f"{'TRADE DAY' if result.tradeable else 'no trade (below threshold)'}"
+                )
+            except Exception as e:
+                logger.error(f"[Main] Catch-up conviction score failed: {e}")
 
     def _load_dynamic_watchlist(self) -> None:
         """Load dynamic watchlist generated by nightly agent if available."""

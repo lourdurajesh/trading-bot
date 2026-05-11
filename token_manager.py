@@ -69,6 +69,16 @@ class TokenManager:
         except Exception as exc:
             return self._do_refresh(f"get_profile exception: {exc}")
 
+    def force_refresh(self, reason: str = "Scheduled proactive refresh") -> bool:
+        """
+        Force a token refresh regardless of current validity.
+        Used for the proactive 5:30 AM refresh before Fyers 6 AM daily expiry.
+        Calls _do_refresh() directly, bypassing the get_profile() validity check.
+        Rate-limited to 15 min like all refreshes.
+        """
+        logger.info(f"[TokenManager] Force refresh: {reason}")
+        return self._do_refresh(reason)
+
     def notify_token_failure(self, component: str, message: str) -> None:
         """
         Called by OIAnalyzer / OptionsEngine when they hit "Please provide valid token".

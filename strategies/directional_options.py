@@ -23,7 +23,7 @@ _IST          = ZoneInfo("Asia/Kolkata")
 _MARKET_OPEN  = dtime(9, 15)
 _MARKET_CLOSE = dtime(15, 30)
 
-MAX_IV_RANK = 40    # buy options when IV is cheap
+MAX_IV_RANK = 55    # buy options when IV is not too expensive (VIX proxy: passes when VIX < ~21)
 MIN_DTE     = 7
 MAX_DTE     = 21
 
