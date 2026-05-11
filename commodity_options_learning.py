@@ -502,12 +502,16 @@ class CommodityOptionsLearning:
                 pnl_approx  = round(est_pnl, 2)
 
             if exit_reason:
-                pnl_r = round(pnl_approx / net_debit, 2) if net_debit > 0 else 0
+                lot_size   = trade.get("lot_size", 1)
+                # pnl_r is per-unit ratio (dimensionless) — compute before scaling
+                pnl_r      = round(pnl_approx / net_debit, 2) if net_debit > 0 else 0
+                # pnl_approx stored as actual INR (per-unit × lot_size)
+                pnl_approx = round(pnl_approx * lot_size, 2)
                 self._db_close(trade["id"], spot, exit_reason, pnl_approx, pnl_r)
                 closed.append(key)
                 logger.info(
                     f"[CommOpts] CLOSE {trade['id']} | {trade['instrument']} "
-                    f"{exit_reason} spot={spot:.2f} est_pnl={pnl_approx:+.2f} "
+                    f"{exit_reason} spot={spot:.2f} pnl=₹{pnl_approx:+.0f} "
                     f"({pnl_r:+.1f}R)"
                 )
 
