@@ -21,6 +21,57 @@ RISK_FREE_RATE = 0.065   # Indian 10-year bond yield ~6.5%
 TRADING_DAYS   = 252
 
 
+def compute_extended_metrics(result: "BacktestResult") -> dict:
+    """
+    Compute Sortino, Calmar, and Kelly criterion beyond standard compute_metrics().
+    Returns a dict with additional fields; also attaches them to result as attributes.
+    """
+    trades = result.trades
+    if not trades:
+        return {}
+
+    from config.settings import TOTAL_CAPITAL
+    pnls     = [t.pnl for t in trades]
+    wins     = [p for p in pnls if p > 0]
+    losses   = [abs(p) for p in pnls if p < 0]
+
+    daily    = _trade_returns_to_daily(trades)
+    arr      = np.array(daily)
+    rf_daily = RISK_FREE_RATE / TRADING_DAYS
+    mean_r   = arr.mean() if len(arr) else 0.0
+
+    # Sortino: downside deviation only
+    neg      = arr[arr < 0]
+    down_std = neg.std() if len(neg) > 1 else 1e-10
+    sortino  = (mean_r - rf_daily) / down_std * math.sqrt(TRADING_DAYS) if down_std > 1e-10 else 0.0
+
+    # Calmar: annualised return / max drawdown
+    eq_curve   = _build_equity_curve(trades)
+    max_dd_pct = _max_drawdown(eq_curve)
+    total_pnl  = sum(pnls)
+    ann_return = (total_pnl / TOTAL_CAPITAL) * (TRADING_DAYS / max(result.avg_holding_days, 1)) * 100
+    calmar     = ann_return / max_dd_pct if max_dd_pct > 0 else 0.0
+
+    # Kelly criterion: f* = p - q/b
+    if wins and losses:
+        p  = len(wins) / len(pnls)
+        b  = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
+        k  = p - (1 - p) / b if b > 0 else 0.0
+        hk = k / 2
+    else:
+        k = hk = 0.0
+
+    extras = {
+        "sortino_ratio":    round(sortino, 2),
+        "calmar_ratio":     round(calmar, 2),
+        "kelly_full":       round(k, 4),
+        "kelly_half":       round(hk, 4),
+    }
+    for attr, val in extras.items():
+        setattr(result, attr, val)
+    return extras
+
+
 def compute_metrics(result: BacktestResult) -> BacktestResult:
     """
     Compute all performance metrics for a backtest result.
@@ -75,6 +126,10 @@ def compute_metrics(result: BacktestResult) -> BacktestResult:
 
 def format_report(result: BacktestResult) -> str:
     """Format a readable backtest report string."""
+    compute_extended_metrics(result)
+    sortino = getattr(result, "sortino_ratio", 0.0)
+    calmar  = getattr(result, "calmar_ratio",  0.0)
+    hkelly  = getattr(result, "kelly_half",    0.0)
     lines = [
         "=" * 60,
         f"BACKTEST REPORT: {result.symbol}",
@@ -85,11 +140,14 @@ def format_report(result: BacktestResult) -> str:
         f"Win rate:         {result.win_rate:.1%}",
         f"Profit factor:    {result.profit_factor:.2f}",
         f"Sharpe ratio:     {result.sharpe_ratio:.2f}",
+        f"Sortino ratio:    {sortino:.2f}",
+        f"Calmar ratio:     {calmar:.2f}",
         f"Max drawdown:     {result.max_drawdown_pct:.1f}%",
         f"Total return:     {result.total_return_pct:+.1f}%",
         f"Avg winner:       ₹{result.avg_winner:,.0f}",
         f"Avg loser:        ₹{result.avg_loser:,.0f}",
         f"Expectancy/trade: ₹{result.expectancy:,.0f}",
+        f"Half Kelly f:     {hkelly:.1%}",
         f"Avg holding:      {result.avg_holding_days:.0f} days",
         "-" * 60,
         _grade(result),

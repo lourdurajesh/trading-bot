@@ -67,6 +67,8 @@ _PREMARKT_SCORE_END    = dtime(9, 30)   # window closes at 9:30
 _OI_CLOSE_SNAP_TIME    = dtime(15, 25)  # save OI snapshot 5 min before close
 _NSE_COLLECT_TIME      = dtime(17, 30)  # collect FII participant data after publish
 _NSE_COLLECT_END       = dtime(18, 30)  # retry window closes at 6:30 PM
+_EDGE_MONITOR_TIME     = dtime(8, 45)   # weekly edge check every Monday before market
+_ANALYTICS_TIME        = dtime(15, 35)  # daily trade analytics report after close
 
 
 class TradingBot:
@@ -197,6 +199,8 @@ class TradingBot:
         _conviction_scored_date  = None   # date when score was last computed
         _oi_snap_saved_date      = None   # date when OI close snapshot was saved
         _nse_collected_date      = None   # date when FII data was collected
+        _edge_monitor_week       = None   # ISO week when edge monitor last ran
+        _analytics_saved_date    = None   # date when analytics report was saved
 
         while self._running:
             try:
@@ -204,6 +208,22 @@ class TradingBot:
                 now_ist  = datetime.now(tz=IST)
                 now_time = now_ist.time()
                 today    = now_ist.date()
+
+                # ── Edge monitor — every Monday at 08:45 IST ──────────
+                current_week = now_ist.isocalendar()[1]
+                if (now_ist.weekday() == 0
+                        and now_time >= _EDGE_MONITOR_TIME
+                        and current_week != _edge_monitor_week):
+                    try:
+                        from analysis.edge_monitor import edge_monitor
+                        report = edge_monitor.run(send_alert=True)
+                        _edge_monitor_week = current_week
+                        logger.info(
+                            f"[Main] Edge monitor: {report.overall_status}  "
+                            f"({sum(1 for s in report.strategies if s.status != 'OK')} degraded)"
+                        )
+                    except Exception as e:
+                        logger.error(f"[Main] Edge monitor error: {e}")
 
                 # ── Pre-market conviction scoring (09:00–09:30 IST) ──
                 if (_PREMARKT_SCORE_TIME <= now_time <= _PREMARKT_SCORE_END
@@ -260,6 +280,18 @@ class TradingBot:
 
                 else:
                     logger.debug("Outside market hours — skipping.")
+
+                # ── Daily trade analytics report at 15:35 IST ────────
+                if (now_time >= _ANALYTICS_TIME
+                        and today != _analytics_saved_date
+                        and now_ist.weekday() < 5):
+                    try:
+                        from analysis.trade_analytics import trade_analytics
+                        path = trade_analytics.save_report()
+                        _analytics_saved_date = today
+                        logger.info(f"[Main] Trade analytics saved: {path}")
+                    except Exception as e:
+                        logger.debug(f"[Main] Analytics save error: {e}")
 
                 # ── NSE FII data collection at 17:30 IST ──────────
                 if (_NSE_COLLECT_TIME <= now_time <= _NSE_COLLECT_END
