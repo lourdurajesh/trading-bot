@@ -50,6 +50,8 @@ SWING_MAX_HOLD_DAYS  = 5
 CHANDELIER_MULT      = 2.5   # ATR multiplier for Chandelier trailing stop
 EOD_TIGHT_HOUR       = 14    # after 2pm, tighten stop to protect 50% of intraday gain
 EOD_TIGHT_MINUTE     = 0
+MAX_BARS_INTRADAY    = 16    # 16 × 15min = 4hr max; dead-money trades recycled after this
+VOLATILITY_CONTRACTION = 0.50  # exit if current ATR < 50% of entry ATR (momentum gone)
 
 
 class LearningEngine:
@@ -215,6 +217,9 @@ class LearningEngine:
             risk_pts = round(abs(entry_price - float(signal["stop_loss"])), 2)
             meta["risk_pts"]      = risk_pts
             meta["original_stop"] = float(signal["stop_loss"])
+            # Persist target_2 in metadata so it survives bot restarts (no DB column)
+            if signal.get("target_2"):
+                meta["target_2"] = float(signal["target_2"])
 
         trade_id = f"LRN-{uuid.uuid4().hex[:8].upper()}"
         now_str  = datetime.now(tz=IST).isoformat()
@@ -227,6 +232,7 @@ class LearningEngine:
             "entry_price":  entry_price,
             "stop_loss":    signal["stop_loss"],
             "target":       signal["target"],
+            "target_2":     float(signal.get("target_2") or 0),
             "rr":           signal["rr"],
             "metadata":     meta,
             "entry_time":   now_str,
@@ -315,6 +321,10 @@ class LearningEngine:
             # Read stop/target AFTER all trail updates
             stop        = trade["stop_loss"]
             target      = trade["target"]
+            target_2    = trade.get("target_2", 0)
+            # Use T2 as final exit when present, else T1
+            final_target = target_2 if target_2 > 0 else target
+            final_reason = "TARGET2" if target_2 > 0 else "TARGET"
             exit_reason = None
             exit_price  = None
 
@@ -329,20 +339,45 @@ class LearningEngine:
                     original_stop = metadata.get("original_stop", stop)
                     exit_reason = "TRAIL_STOP" if abs(stop - original_stop) > 0.01 else "STOP"
                     exit_price  = ltp
-                elif ltp >= target:
-                    exit_reason, exit_price = "TARGET", ltp
+                elif ltp >= final_target:
+                    exit_reason, exit_price = final_reason, ltp
             else:
                 if ltp >= stop:
                     original_stop = metadata.get("original_stop", stop)
                     exit_reason = "TRAIL_STOP" if abs(stop - original_stop) > 0.01 else "STOP"
                     exit_price  = ltp
-                elif ltp <= target:
-                    exit_reason, exit_price = "TARGET", ltp
+                elif ltp <= final_target:
+                    exit_reason, exit_price = final_reason, ltp
 
             # Signal reversal exit — entry condition gone, take profit or limit loss now
             if exit_reason is None and instrument_type != "nse_options":
                 if self._check_signal_reversal(trade, store):
                     exit_reason = "SIGNAL_REVERSAL"
+                    exit_price  = ltp
+
+            # BB middle cross — price returned through centre band, bounce failed
+            if exit_reason is None and instrument_type != "nse_options":
+                bb_exit = self._check_bb_middle_exit(trade, ltp, store)
+                if bb_exit:
+                    exit_reason = bb_exit
+                    exit_price  = ltp
+
+            # Time-based exit — max N bars to prevent dead-money trades lingering all day
+            if exit_reason is None and trade.get("strategy") == "SimpleRSI":
+                try:
+                    entry_dt     = datetime.fromisoformat(trade["entry_time"]).astimezone(IST)
+                    elapsed_secs = (datetime.now(tz=IST) - entry_dt).total_seconds()
+                    bars_elapsed = int(elapsed_secs // (15 * 60))
+                    if bars_elapsed >= MAX_BARS_INTRADAY:
+                        exit_reason = "TIME_EXIT"
+                        exit_price  = ltp
+                except Exception:
+                    pass
+
+            # Volatility contraction — ATR collapsed, momentum is gone
+            if exit_reason is None and instrument_type != "nse_options":
+                if self._check_volatility_exit(trade, store):
+                    exit_reason = "VOLATILITY_EXIT"
                     exit_price  = ltp
 
             # EOD close only for intraday strategies
@@ -402,7 +437,8 @@ class LearningEngine:
                     f"fees ₹{fees:.0f} ({pnl_r:+.1f}R)"
                 )
 
-                win_exits = {"TARGET", "TARGET1", "TARGET2", "TRAIL_STOP", "SIGNAL_REVERSAL"}
+                win_exits = {"TARGET", "TARGET1", "TARGET2", "TRAIL_STOP", "SIGNAL_REVERSAL",
+                             "BB_MID_CROSS", "TIME_EXIT", "VOLATILITY_EXIT"}
                 if exit_reason in win_exits:
                     self._apply_cooldown(symbol, minutes=30)
                 else:
@@ -557,6 +593,53 @@ class LearningEngine:
             logger.debug(f"[Learning] Signal reversal check error for {trade['id']}: {e}")
         return False
 
+    def _check_bb_middle_exit(self, trade: dict, ltp: float, store) -> Optional[str]:
+        """
+        Exit when price crosses back through BB middle — indicates the RSI bounce failed
+        and price is reverting to the mean (against our position).
+        Only applied to SimpleRSI trades where BB was part of the entry filter.
+        """
+        if trade.get("strategy") != "SimpleRSI":
+            return None
+        direction = trade["direction"]
+        try:
+            from analysis.indicators import bollinger_bands
+            df = store.get_ohlcv(trade["symbol"], "15m", n=30)
+            if df is None or len(df) < 20:
+                return None
+            _, middle, _ = bollinger_bands(df["close"])
+            bb_mid = middle.iloc[-1]
+            if direction == "LONG" and ltp < bb_mid:
+                return "BB_MID_CROSS"
+            if direction == "SHORT" and ltp > bb_mid:
+                return "BB_MID_CROSS"
+        except Exception as e:
+            logger.debug(f"[Learning] BB middle exit check error for {trade['id']}: {e}")
+        return None
+
+    def _check_volatility_exit(self, trade: dict, store) -> bool:
+        """
+        Exit if current ATR has dropped below 50% of entry ATR — momentum has dried up
+        and the trade is unlikely to reach its target. Recycle capital elsewhere.
+        Only applied to SimpleRSI trades (entry_atr stored in metadata).
+        """
+        if trade.get("strategy") != "SimpleRSI":
+            return False
+        metadata  = trade.get("metadata") or {}
+        entry_atr = float(metadata.get("entry_atr") or 0)
+        if entry_atr <= 0:
+            return False
+        try:
+            from analysis.indicators import atr
+            df = store.get_ohlcv(trade["symbol"], "15m", n=30)
+            if df is None or len(df) < 15:
+                return False
+            current_atr = atr(df).iloc[-1]
+            return current_atr < VOLATILITY_CONTRACTION * entry_atr
+        except Exception as e:
+            logger.debug(f"[Learning] Volatility exit check error for {trade['id']}: {e}")
+        return False
+
     def _db_update_stop(self, trade_id: str, new_stop: float) -> None:
         try:
             with sqlite3.connect(DB_PATH) as conn:
@@ -702,8 +785,9 @@ class LearningEngine:
                 trade["metadata"] = json.loads(trade.get("metadata") or "{}")
             except Exception:
                 trade["metadata"] = {}
-            trade["mae_pts"] = trade.get("mae_pts") or 0.0
-            trade["mfe_pts"] = trade.get("mfe_pts") or 0.0
+            trade["mae_pts"]  = trade.get("mae_pts") or 0.0
+            trade["mfe_pts"]  = trade.get("mfe_pts") or 0.0
+            trade["target_2"] = float(trade.get("metadata", {}).get("target_2") or 0)
 
             # Trades from a prior day missed their EOD close — mark STALE
             try:
