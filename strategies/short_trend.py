@@ -59,7 +59,7 @@ class ShortTrendStrategy(BaseStrategy):
     def __init__(self):
         super().__init__()
         self.name       = "ShortTrend"
-        self.hold_type  = "swing"
+        self.hold_type  = "intraday"   # NSE equity short selling is intraday-only (no CNC delivery short)
         self.timeframe  = "1H"
         self.confirm_tf = "1D"
 

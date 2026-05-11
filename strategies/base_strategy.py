@@ -69,6 +69,9 @@ class Signal:
     # Options-specific (populated by options strategies)
     options_meta: dict  = field(default_factory=dict)
 
+    # Hold type — injected by StrategySelector from strategy.hold_type
+    hold_type:    str   = "intraday"   # "intraday" | "swing"
+
     # Filled by RiskManager
     position_size:   int   = 0      # shares / lots
     capital_at_risk: float = 0.0    # INR / USD

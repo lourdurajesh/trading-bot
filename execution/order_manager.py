@@ -186,8 +186,10 @@ class OrderManager:
                         return True   # can't compute — let it through
                     SPAN_PCT = 0.06
                     required = lots * lot_size * spot * SPAN_PCT
+            elif getattr(signal, "hold_type", "intraday") == "swing" and signal.direction.value == "LONG":
+                required = signal.entry * size   # CNC delivery: full notional required
             else:
-                required = signal.entry * size * 0.25   # 25% intraday equity margin
+                required = signal.entry * size * 0.25   # INTRADAY: 25% bracket margin
 
             if available < required:
                 logger.warning(
@@ -272,12 +274,21 @@ class OrderManager:
             f"× {signal.position_size} @ {signal.entry:.2f}"
         )
 
+        # Swing trades use CNC (delivery) so broker doesn't auto-square at EOD.
+        # Intraday shorts must use INTRADAY — NSE doesn't allow delivery short selling.
+        eq_product = (
+            "CNC"
+            if getattr(signal, "hold_type", "intraday") == "swing"
+            and signal.direction.value == "LONG"
+            else "INTRADAY"
+        )
         entry_order_id = broker.place_order(
             symbol     = signal.symbol,
             direction  = signal.direction.value,
             qty        = signal.position_size,
             order_type = "MARKET",
             price      = signal.entry,
+            product    = eq_product,
         )
 
         if not entry_order_id:
@@ -379,13 +390,20 @@ class OrderManager:
         broker      = self._get_broker(signal.symbol)
         placed_ids  = []
 
+        # CARRYFORWARD allows holding F&O positions overnight.
+        # Swing options strategies (e.g. OptionsIncome, IronCondor) opt into this.
+        opt_product = (
+            "CARRYFORWARD"
+            if getattr(signal, "hold_type", "intraday") == "swing"
+            else "INTRADAY"
+        )
         for nfo_symbol, direction in legs:
             oid = broker.place_order(
                 symbol     = nfo_symbol,
                 direction  = direction,
                 qty        = qty,
                 order_type = "MARKET",
-                product    = "INTRADAY",
+                product    = opt_product,
             )
             if oid:
                 placed_ids.append(oid)

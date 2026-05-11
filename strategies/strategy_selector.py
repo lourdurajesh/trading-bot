@@ -406,6 +406,7 @@ class StrategySelector:
         try:
             signal = strategy.evaluate(symbol)
             if signal and signal.confidence >= MIN_SIGNAL_CONFIDENCE:
+                signal.hold_type = getattr(strategy, "hold_type", "intraday")
                 return signal
         except Exception as e:
             logger.error(f"[StrategySelector] Strategy {strategy.name} error on {symbol}: {e}")

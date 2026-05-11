@@ -118,6 +118,10 @@ class PositionManager:
 
         # ── 1. EOD forced exit (3:15 PM IST) ─────────────────────
         if now.time() >= EOD_EXIT_TIME:
+            if pos.hold_type == "swing":
+                # Swing trades hold overnight — skip EOD close, keep monitoring stops/targets.
+                # Broker product is CNC so no auto-squareoff from exchange side either.
+                return
             logger.info(f"[PositionManager] EOD exit: {symbol} × {remaining_size}")
             self._exit_position(symbol, remaining_size, "EOD_FORCED", ltp)
             return
@@ -289,6 +293,11 @@ class PositionManager:
 
         # ── 3. EOD forced exit (3:15 PM) ─────────────────────────
         if now.time() >= EOD_EXIT_TIME:
+            opt_pos = portfolio_tracker.get_position(symbol)
+            if opt_pos and opt_pos.hold_type == "swing":
+                # Swing options (e.g. OptionsIncome, IronCondor) are placed as
+                # CARRYFORWARD — broker won't auto-square, so we skip EOD exit too.
+                return
             logger.info(f"[PositionManager] EOD OPTIONS exit: {symbol}")
             self._exit_options_position(symbol, size, "EOD_FORCED", options_meta)
             return

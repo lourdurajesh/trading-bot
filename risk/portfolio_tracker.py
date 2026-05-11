@@ -40,6 +40,7 @@ class Position:
     position_size:   int
     capital_at_risk: float
     entry_time:      datetime
+    hold_type:       str     = "intraday"   # "intraday" | "swing"
     exit_price:      float   = 0.0
     exit_time:       Optional[datetime] = None
     realised_pnl:    float   = 0.0
@@ -96,6 +97,7 @@ class PortfolioTracker:
             position_size   = signal.position_size,
             capital_at_risk = signal.capital_at_risk,
             entry_time      = datetime.now(tz=IST),
+            hold_type       = getattr(signal, "hold_type", "intraday"),
             options_meta    = signal.options_meta,
         )
 
@@ -195,6 +197,7 @@ class PortfolioTracker:
                 "strategy":        pos.strategy,
                 "direction":       pos.direction,
                 "signal_type":     pos.signal_type,
+                "hold_type":       pos.hold_type,
                 "entry_price":     pos.entry_price,
                 "ltp":             ltp,
                 "stop_loss":       pos.stop_loss,
@@ -321,6 +324,7 @@ class PortfolioTracker:
         for col, typedef in [
             ("target_2",    "REAL DEFAULT 0"),
             ("signal_type", "TEXT DEFAULT 'EQUITY'"),
+            ("hold_type",   "TEXT DEFAULT 'intraday'"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typedef}")
@@ -332,12 +336,12 @@ class PortfolioTracker:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO trades
-                (id, symbol, strategy, direction, signal_type, entry_price,
+                (id, symbol, strategy, direction, signal_type, hold_type, entry_price,
                  exit_price, stop_loss, target_1, target_2, position_size, capital_at_risk,
                  realised_pnl, status, exit_reason, entry_time, exit_time)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
-                pos.id, pos.symbol, pos.strategy, pos.direction, pos.signal_type,
+                pos.id, pos.symbol, pos.strategy, pos.direction, pos.signal_type, pos.hold_type,
                 pos.entry_price, pos.exit_price, pos.stop_loss, pos.target_1, pos.target_2,
                 pos.position_size, pos.capital_at_risk, pos.realised_pnl,
                 pos.status, pos.exit_reason,
@@ -371,6 +375,7 @@ class PortfolioTracker:
                     position_size   = row["position_size"],
                     capital_at_risk = row["capital_at_risk"],
                     entry_time      = datetime.fromisoformat(row["entry_time"]),
+                    hold_type       = row["hold_type"] if row["hold_type"] else "intraday",
                 )
                 self._open_positions[pos.symbol] = pos
                 logger.info(f"[Portfolio] Restored open position: {pos.symbol}")

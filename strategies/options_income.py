@@ -35,6 +35,7 @@ class OptionsIncomeStrategy(BaseStrategy):
     def __init__(self):
         super().__init__()
         self.name      = "OptionsIncome"
+        self.hold_type = "swing"   # theta strategies gain over days; placed as CARRYFORWARD
         self.timeframe = "1D"
 
     def evaluate(self, symbol: str) -> Optional[Signal]:
