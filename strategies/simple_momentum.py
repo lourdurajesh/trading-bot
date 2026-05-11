@@ -24,7 +24,7 @@ from data.data_store import store
 
 IST           = ZoneInfo("Asia/Kolkata")
 _MARKET_OPEN  = dtime(9, 45)
-_MARKET_CLOSE = dtime(15, 15)
+_MARKET_CLOSE = dtime(13, 30)   # late entries (>13:30) net -72 pts vs +113 pts before — no time to reach 3R target
 
 TIMEFRAME   = "1H"
 MIN_BARS    = 30
@@ -81,6 +81,14 @@ class SimpleMomentumStrategy:
         elif crossed_down and rsi_val < 50:
             direction = "SHORT"
         else:
+            return None
+
+        # Require a real trend — crossovers in low-ADX ranging markets are noise
+        if adx_val < 20:
+            return None
+
+        # Don't short into an already-exhausted move — bounce risk too high (TITAN scenario)
+        if direction == "SHORT" and rsi_val < 35:
             return None
 
         if direction == "LONG":

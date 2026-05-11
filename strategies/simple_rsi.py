@@ -26,7 +26,7 @@ from analysis.indicators import atr, rsi, bollinger_bands, ema
 from data.data_store import store
 
 IST             = ZoneInfo("Asia/Kolkata")
-_MARKET_OPEN    = dtime(9, 45)    # avoid opening 30-minute gap noise
+_MARKET_OPEN    = dtime(10, 0)    # avoid opening candle gap risk (data: -196pt slippage on 9:45 entry)
 _MARKET_CLOSE   = dtime(15, 15)   # exit 15 min before close
 
 RSI_OVERSOLD    = 35
@@ -83,6 +83,11 @@ class SimpleRSIStrategy:
         if direction == "LONG" and ema21_val < ema50_val:
             return None
         if direction == "SHORT" and ema21_val > ema50_val:
+            return None
+
+        # Price above BB upper in an uptrend = momentum, not reversal (data: 5/6 such shorts lost)
+        bb_pos = upper.iloc[-1], lower.iloc[-1]
+        if direction == "SHORT" and ltp > bb_pos[0] and ema21_val > ema50_val:
             return None
 
         if direction == "LONG":

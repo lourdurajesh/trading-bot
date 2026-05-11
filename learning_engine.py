@@ -444,7 +444,7 @@ class LearningEngine:
         try:
             from intelligence.fundamental_guard import fundamental_guard
             result = fundamental_guard.check(symbol)
-            return not result.allowed
+            return result.veto
         except Exception:
             return False
 

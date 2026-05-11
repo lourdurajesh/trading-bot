@@ -70,8 +70,9 @@ class FundamentalGuard:
     """
 
     def __init__(self):
-        self._earnings_cache: dict[str, tuple] = {}   # symbol → (date, cached_at)
-        self._earnings_calendar: dict[str, str] = {}   # symbol → earnings date
+        self._earnings_cache: dict[str, tuple] = {}        # symbol → (date, cached_at)
+        self._result_cache:   dict[str, tuple] = {}        # symbol → (FundamentalRisk, trade_date)
+        self._earnings_calendar: dict[str, str] = {}       # symbol → earnings date
 
         # Manually maintained earnings calendar (update weekly)
         # Format: ticker → "YYYY-MM-DD" of expected results
@@ -93,12 +94,20 @@ class FundamentalGuard:
         # MCX commodities, index symbols, options/futures contracts
         if not symbol.startswith("NSE:") or not symbol.endswith("-EQ"):
             return FundamentalRisk(symbol=symbol, notes="Non-equity — no fundamental check")
-        risk   = FundamentalRisk(symbol=symbol)
 
+        today = datetime.now(tz=IST).date()
+        cached = self._result_cache.get(symbol)
+        if cached:
+            cached_risk, cached_date = cached
+            if cached_date == today:
+                return cached_risk
+
+        risk = FundamentalRisk(symbol=symbol)
         self._check_earnings(ticker, risk)
         self._check_corporate_actions(ticker, risk)
         self._compute_score(risk)
 
+        self._result_cache[symbol] = (risk, today)
         return risk
 
     # ─────────────────────────────────────────────────────────────
