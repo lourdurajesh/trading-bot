@@ -46,7 +46,10 @@ FEES_OPTIONS_FLAT  = 40.0   # ₹40 per options round trip (₹20 × 2 orders, f
 # Swing strategies are NOT forced to close at EOD; they run until
 # stop/target hit or SWING_MAX_HOLD_DAYS trading days have elapsed.
 _SWING_STRATEGIES = {"TrendFollow"}
-SWING_MAX_HOLD_DAYS = 5
+SWING_MAX_HOLD_DAYS  = 5
+CHANDELIER_MULT      = 2.5   # ATR multiplier for Chandelier trailing stop
+EOD_TIGHT_HOUR       = 14    # after 2pm, tighten stop to protect 50% of intraday gain
+EOD_TIGHT_MINUTE     = 0
 
 
 class LearningEngine:
@@ -207,6 +210,12 @@ class LearningEngine:
         else:
             entry_price = round(raw_entry * (1 - slip), 2)
 
+        # Store risk context for trailing stop — equity/futures only
+        if instrument_type != "nse_options":
+            risk_pts = round(abs(entry_price - float(signal["stop_loss"])), 2)
+            meta["risk_pts"]      = risk_pts
+            meta["original_stop"] = float(signal["stop_loss"])
+
         trade_id = f"LRN-{uuid.uuid4().hex[:8].upper()}"
         now_str  = datetime.now(tz=IST).isoformat()
 
@@ -280,15 +289,11 @@ class LearningEngine:
             if not ltp:
                 continue
 
-            direction   = trade["direction"]
-            stop        = trade["stop_loss"]
-            target      = trade["target"]
-            entry       = trade["entry_price"]
-            hold_type   = metadata.get("hold_type", "intraday")
-            exit_reason = None
-            exit_price  = None
+            direction = trade["direction"]
+            entry     = trade["entry_price"]
+            hold_type = metadata.get("hold_type", "intraday")
 
-            # MAE/MFE — options always "long" the contract
+            # MAE/MFE — update first; Chandelier derives peak_ltp from mfe_pts
             if instrument_type == "nse_options":
                 adverse    = entry - ltp
                 favourable = ltp - entry
@@ -301,6 +306,18 @@ class LearningEngine:
             trade["mae_pts"] = max(trade["mae_pts"], adverse)
             trade["mfe_pts"] = max(trade["mfe_pts"], favourable)
 
+            # Trail, protect, and partial-book (equity/futures only)
+            if instrument_type != "nse_options":
+                self._update_chandelier_stop(trade, ltp)
+                self._apply_time_tightening(trade, ltp)
+                self._check_partial_booking(trade, ltp)
+
+            # Read stop/target AFTER all trail updates
+            stop        = trade["stop_loss"]
+            target      = trade["target"]
+            exit_reason = None
+            exit_price  = None
+
             # Stop / target exits
             if instrument_type == "nse_options":
                 if ltp <= stop:
@@ -309,16 +326,26 @@ class LearningEngine:
                     exit_reason, exit_price = "TARGET", ltp
             elif direction == "LONG":
                 if ltp <= stop:
-                    exit_reason, exit_price = "STOP",   ltp
+                    original_stop = metadata.get("original_stop", stop)
+                    exit_reason = "TRAIL_STOP" if abs(stop - original_stop) > 0.01 else "STOP"
+                    exit_price  = ltp
                 elif ltp >= target:
                     exit_reason, exit_price = "TARGET", ltp
             else:
                 if ltp >= stop:
-                    exit_reason, exit_price = "STOP",   ltp
+                    original_stop = metadata.get("original_stop", stop)
+                    exit_reason = "TRAIL_STOP" if abs(stop - original_stop) > 0.01 else "STOP"
+                    exit_price  = ltp
                 elif ltp <= target:
                     exit_reason, exit_price = "TARGET", ltp
 
-            # Gap 1: EOD close only for intraday strategies
+            # Signal reversal exit — entry condition gone, take profit or limit loss now
+            if exit_reason is None and instrument_type != "nse_options":
+                if self._check_signal_reversal(trade, store):
+                    exit_reason = "SIGNAL_REVERSAL"
+                    exit_price  = ltp
+
+            # EOD close only for intraday strategies
             # Swing strategies run across sessions until stop/target or max hold
             now_time = datetime.now(tz=IST).time()
             if now_time >= dtime(15, 20) and exit_reason is None:
@@ -349,10 +376,18 @@ class LearningEngine:
                     pnl_pts = round((eff_exit - entry) * lot_size - fees, 2)
                     pnl_r   = round((eff_exit - entry) / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
                 else:
-                    # pnl_pts is in price points; fees stored separately (no qty to convert)
-                    fees    = FEES_EQUITY_FLAT
-                    pnl_pts = round((eff_exit - entry) if direction == "LONG" else (entry - eff_exit), 2)
-                    pnl_r   = round(pnl_pts / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
+                    fees = FEES_EQUITY_FLAT
+                    # Partial booking: 50% was booked at 1R; blend with final exit
+                    if metadata.get("partial_booked") and metadata.get("partial_price"):
+                        half_price = float(metadata["partial_price"])
+                        half1 = (half_price - entry) if direction == "LONG" else (entry - half_price)
+                        half2 = (eff_exit  - entry) if direction == "LONG" else (entry - eff_exit)
+                        pnl_pts = round((half1 + half2) / 2, 2)
+                    else:
+                        pnl_pts = round((eff_exit - entry) if direction == "LONG" else (entry - eff_exit), 2)
+                    # pnl_r against original risk (not trailed stop) for consistent R reporting
+                    orig_risk = abs(entry - float(metadata.get("original_stop", stop)))
+                    pnl_r = round(pnl_pts / orig_risk, 2) if orig_risk > 0 else 0
 
                 exit_price = eff_exit  # store slippage-adjusted price
 
@@ -367,7 +402,7 @@ class LearningEngine:
                     f"fees ₹{fees:.0f} ({pnl_r:+.1f}R)"
                 )
 
-                win_exits = {"TARGET", "TARGET1", "TARGET2"}
+                win_exits = {"TARGET", "TARGET1", "TARGET2", "TRAIL_STOP", "SIGNAL_REVERSAL"}
                 if exit_reason in win_exits:
                     self._apply_cooldown(symbol, minutes=30)
                 else:
@@ -383,6 +418,164 @@ class LearningEngine:
 
         for k in closed_keys:
             del self._open_positions[k]
+
+    def _update_chandelier_stop(self, trade: dict, ltp: float) -> None:
+        """Chandelier Exit: trail stop at N×ATR from the highest high (LONG) or lowest low (SHORT).
+
+        Adapts to volatility — stays loose in a smooth trend, tightens when ATR expands.
+        Uses ATR from entry metadata; peak_ltp is derived from mfe_pts on first call after restart.
+        """
+        metadata     = trade.get("metadata") or {}
+        direction    = trade["direction"]
+        entry        = trade["entry_price"]
+        atr_val      = float(metadata.get("atr", 0) or 0)
+        if atr_val <= 0:
+            return  # strategy didn't compute ATR — skip
+
+        # Derive peak/trough from mfe_pts if not yet tracked this session
+        if "peak_ltp" not in trade:
+            mfe = trade.get("mfe_pts", 0)
+            trade["peak_ltp"] = (entry + mfe) if direction == "LONG" else (entry - mfe)
+
+        current_stop = trade["stop_loss"]
+
+        if direction == "LONG":
+            trade["peak_ltp"] = max(trade["peak_ltp"], ltp)
+            chandelier = round(trade["peak_ltp"] - CHANDELIER_MULT * atr_val, 2)
+            if chandelier <= current_stop:
+                return  # don't loosen the stop
+            trade["stop_loss"] = chandelier
+        else:  # SHORT
+            trade["peak_ltp"] = min(trade["peak_ltp"], ltp)
+            chandelier = round(trade["peak_ltp"] + CHANDELIER_MULT * atr_val, 2)
+            if chandelier >= current_stop:
+                return  # don't loosen the stop
+            trade["stop_loss"] = chandelier
+
+        logger.info(
+            f"[Learning] CHANDELIER {trade['id']} | "
+            f"peak {trade['peak_ltp']:.2f} ± {CHANDELIER_MULT}×ATR({atr_val:.2f}) "
+            f"= stop {current_stop:.2f} → {trade['stop_loss']:.2f}"
+        )
+        self._db_update_stop(trade["id"], trade["stop_loss"])
+
+    def _apply_time_tightening(self, trade: dict, ltp: float) -> None:
+        """After 14:00, tighten stop to protect at least 50% of any open intraday gain.
+
+        Prevents giving back profit at EOD when there's no time to reach the target.
+        """
+        from datetime import time as dtime
+        if datetime.now(tz=IST).time() < dtime(EOD_TIGHT_HOUR, EOD_TIGHT_MINUTE):
+            return
+
+        direction    = trade["direction"]
+        entry        = trade["entry_price"]
+        current_stop = trade["stop_loss"]
+
+        if direction == "LONG":
+            profit_pts = ltp - entry
+            if profit_pts <= 0:
+                return
+            protective = round(entry + 0.5 * profit_pts, 2)
+            if protective <= current_stop:
+                return  # already protected at least this much
+            trade["stop_loss"] = protective
+        else:  # SHORT
+            profit_pts = entry - ltp
+            if profit_pts <= 0:
+                return
+            protective = round(entry - 0.5 * profit_pts, 2)
+            if protective >= current_stop:
+                return
+            trade["stop_loss"] = protective
+
+        logger.info(
+            f"[Learning] EOD-TIGHT {trade['id']} | "
+            f"protecting 50% of {profit_pts:.1f} pts | "
+            f"stop {current_stop:.2f} → {trade['stop_loss']:.2f}"
+        )
+        self._db_update_stop(trade["id"], trade["stop_loss"])
+
+    def _check_partial_booking(self, trade: dict, ltp: float) -> None:
+        """Simulate booking 50% of the position when 1R profit is first reached.
+
+        Records partial_booked and partial_price in metadata so the final P&L
+        calculation blends the booked half with the remaining position's outcome.
+        """
+        metadata = trade.get("metadata") or {}
+        if metadata.get("partial_booked"):
+            return  # already recorded
+
+        direction = trade["direction"]
+        entry     = trade["entry_price"]
+        risk_pts  = float(metadata.get("risk_pts", 0) or 0)
+        if risk_pts <= 0:
+            return
+
+        reached_1r = (ltp >= entry + risk_pts) if direction == "LONG" else (ltp <= entry - risk_pts)
+        if not reached_1r:
+            return
+
+        metadata["partial_booked"] = True
+        metadata["partial_price"]  = round(ltp, 2)
+        trade["metadata"] = metadata
+        logger.info(
+            f"[Learning] PARTIAL BOOK {trade['id']} | "
+            f"50% @ {ltp:.2f} (+{risk_pts:.1f} pts, 1R)"
+        )
+        self._db_update_metadata(trade["id"], metadata)
+
+    def _check_signal_reversal(self, trade: dict, store) -> bool:
+        """Return True when the condition that triggered entry has reversed.
+
+        SimpleMomentum: EMA9/21 crossed back the other way.
+        SimpleRSI: RSI returned past the 50 midpoint (bounce/reversion complete).
+        """
+        strategy  = trade.get("strategy", "")
+        symbol    = trade["symbol"]
+        direction = trade["direction"]
+        try:
+            if strategy == "SimpleMomentum":
+                from analysis.indicators import ema
+                df = store.get_ohlcv(symbol, "1H", n=30)
+                if df is None or len(df) < 5:
+                    return False
+                e9   = ema(df["close"], 9)
+                e21  = ema(df["close"], 21)
+                diff = e9.iloc[-1] - e21.iloc[-1]
+                return (direction == "LONG" and diff < 0) or (direction == "SHORT" and diff > 0)
+
+            if strategy == "SimpleRSI":
+                from analysis.indicators import rsi
+                df = store.get_ohlcv(symbol, "15m", n=30)
+                if df is None or len(df) < 5:
+                    return False
+                rsi_val = rsi(df["close"]).iloc[-1]
+                return (direction == "LONG" and rsi_val > 50) or (direction == "SHORT" and rsi_val < 50)
+
+        except Exception as e:
+            logger.debug(f"[Learning] Signal reversal check error for {trade['id']}: {e}")
+        return False
+
+    def _db_update_stop(self, trade_id: str, new_stop: float) -> None:
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "UPDATE learning_trades SET stop_loss=? WHERE id=?",
+                    (new_stop, trade_id),
+                )
+        except Exception as e:
+            logger.debug(f"[Learning] Could not persist trailing stop for {trade_id}: {e}")
+
+    def _db_update_metadata(self, trade_id: str, metadata: dict) -> None:
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "UPDATE learning_trades SET metadata=? WHERE id=?",
+                    (json.dumps(metadata), trade_id),
+                )
+        except Exception as e:
+            logger.debug(f"[Learning] Could not persist metadata for {trade_id}: {e}")
 
     # ─────────────────────────────────────────────────────────────
     # COOLDOWN + EARNINGS VETO
