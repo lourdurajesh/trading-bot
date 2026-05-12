@@ -659,7 +659,7 @@ function CommodityTradesTable({trades: tds, ltps: lps}) {
             const isOpen      = t.status==="OPEN";
             const lot         = t.lot_size || 1;
             const spotEntry   = t.spot_at_entry||0;
-            const ltp         = lps ? (lps[t.symbol]||null) : null;
+            const ltp         = lps ? (lps[t.instrument]||null) : null;
             const spotMove    = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
             const estPnlLot   = spotMove != null ? round2(spotMove * SPREAD_DELTA * lot) : null;
             const pnlColor    = estPnlLot == null ? "#64748b" : estPnlLot > 0 ? "#22c55e" : estPnlLot < 0 ? "#ef4444" : "#94a3b8";
@@ -793,7 +793,7 @@ function CommodityTabContent({trades, ltps, commStats}) {
   const totalRF    = closedF.reduce((s,t)=>s+(t.pnl_r||0), 0);
   const closedPnlInr = closedF.reduce((s,t)=>s+(t.pnl_approx||0), 0);
   const openPnlInr   = openF.reduce((s,t) => {
-    const ltp       = ltps ? (ltps[t.symbol]||null) : null;
+    const ltp       = ltps ? (ltps[t.instrument]||null) : null;
     const spotEntry = t.spot_at_entry || 0;
     const spotMove  = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
     const estPnlLot = spotMove != null ? round2(round2(spotMove * 0.35) * (t.lot_size||1)) : 0;

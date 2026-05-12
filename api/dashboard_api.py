@@ -1239,26 +1239,29 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
     except Exception:
         pass
 
-    # Live spot LTPs for open commodity option positions (keyed by futures symbol)
+    # Live spot LTPs for open commodity option positions (keyed by instrument name)
     commodity_ltps: dict = {}
     try:
         from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS
         open_comm = commodity_options.get_trades(status="OPEN")
+        seen_instruments: set = set()
         for t in open_comm:
-            sym        = t.get("symbol")
             instrument = t.get("instrument")  # e.g. "CRUDEOIL"
-            if not sym:
+            sym        = t.get("symbol")
+            if not instrument or instrument in seen_instruments:
                 continue
-            ltp = store.get_ltp(sym)
-            # Fallback 1: stored symbol may be a rolled-over contract — try current active
-            if not ltp and instrument:
-                try:
-                    active_sym = _fyers_sym(instrument)
-                    if active_sym != sym:
-                        ltp = store.get_ltp(active_sym)
-                except Exception:
-                    pass
-            # Fallback 2: validate range — discard if value looks like an options premium
+            seen_instruments.add(instrument)
+            # Always try the current active contract first — same approach as the engine
+            ltp = None
+            try:
+                active_sym = _fyers_sym(instrument)
+                ltp = store.get_ltp(active_sym)
+            except Exception:
+                pass
+            # Fallback: stored symbol (handles edge case where active_sym lookup fails)
+            if not ltp and sym:
+                ltp = store.get_ltp(sym)
+            # Validate range — discard if value looks like an options premium or is stale
             if ltp and instrument:
                 meta  = MCX_CONTRACTS.get(instrument, {})
                 min_p = meta.get("min_price", 0)
@@ -1267,11 +1270,12 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
                     import logging as _log
                     _log.getLogger(__name__).warning(
                         f"[Dashboard] MCX LTP {ltp:.1f} out of range [{min_p}-{max_p}] "
-                        f"for {instrument} ({sym}) — discarding stale value"
+                        f"for {instrument} — discarding stale value"
                     )
                     ltp = None
+            # Key by instrument name so the frontend lookup is rollover-safe
             if ltp:
-                commodity_ltps[sym] = ltp
+                commodity_ltps[instrument] = ltp
     except Exception:
         pass
 
