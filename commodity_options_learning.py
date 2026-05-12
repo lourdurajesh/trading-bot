@@ -278,7 +278,12 @@ class CommodityOptionsLearning:
             logger.info(f"[CommOpts] {short} no strategy signal — spot={spot:.2f}")
             return
 
-        direction, strategy_name, signal_reason, rsi_val, ema5_val, ema20_val = result
+        # BreakoutSpread returns a 7th element (breakout level); others return 6
+        if len(result) == 7:
+            direction, strategy_name, signal_reason, rsi_val, ema5_val, ema20_val, breakout_level = result
+        else:
+            direction, strategy_name, signal_reason, rsi_val, ema5_val, ema20_val = result
+            breakout_level = None
         logger.info(f"[CommOpts] {short} → {strategy_name} {direction} | {signal_reason}")
 
         chain    = self._get_chain(symbol)
@@ -289,6 +294,7 @@ class CommodityOptionsLearning:
             direction=direction, strategy_name=strategy_name, signal_reason=signal_reason,
             opt_type=opt_type, chain=chain,
             rsi_val=rsi_val, ema5_val=ema5_val, ema20_val=ema20_val, now=now,
+            breakout_level=breakout_level,
         )
         if trade:
             self._open_trade(trade)
@@ -349,7 +355,9 @@ class CommodityOptionsLearning:
         return None
 
     def _check_breakout_spread(self, df, spot: float):
-        """BreakoutSpread: 5-bar price breakout above/below recent range with RSI confirmation."""
+        """BreakoutSpread: 5-bar price breakout above/below recent range with RSI confirmation.
+        Returns a 7-tuple; 7th element is the breakout level used for false-breakout invalidation.
+        """
         try:
             from analysis.indicators import rsi as calc_rsi, ema as calc_ema
             close   = df["close"]
@@ -366,18 +374,20 @@ class CommodityOptionsLearning:
             if spot > prev_high and rsi_val > 52:
                 return ("LONG", "BreakoutSpread",
                         f"Breakout above {prev_high:.0f}, RSI={rsi_val:.1f}",
-                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
+                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2),
+                        round(prev_high, 2))
             if spot < prev_low and rsi_val < 48:
                 return ("SHORT", "BreakoutSpread",
                         f"Breakdown below {prev_low:.0f}, RSI={rsi_val:.1f}",
-                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
+                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2),
+                        round(prev_low, 2))
         except Exception as exc:
             logger.debug(f"[CommOpts] BreakoutSpread error: {exc}")
         return None
 
     def _build_trade(
         self, symbol, short, meta, spot, direction, strategy_name, signal_reason,
-        opt_type, chain, rsi_val, ema5_val, ema20_val, now,
+        opt_type, chain, rsi_val, ema5_val, ema20_val, now, breakout_level=None,
     ) -> Optional[dict]:
         """Build a debit spread trade (buy ATM + sell OTM)."""
         step    = meta["strike_step"]
@@ -459,9 +469,10 @@ class CommodityOptionsLearning:
                 "atm_prem":      round(atm_premium, 2),
                 "otm_prem":      round(otm_premium, 2),
                 "price_unit":    meta["price_unit"],
-                "signal_reason": signal_reason,
-                "atm_symbol":    atm_sym,
-                "otm_symbol":    otm_sym,
+                "signal_reason":   signal_reason,
+                "atm_symbol":      atm_sym,
+                "otm_symbol":      otm_sym,
+                "breakout_level":  breakout_level,  # None for non-breakout strategies
             },
         }
 
@@ -496,6 +507,8 @@ class CommodityOptionsLearning:
             entry_spot = trade["spot_at_entry"]
             net_debit  = trade["net_debit"]
             max_profit = trade["max_profit"]
+            strategy   = trade.get("strategy", "")
+            trade_meta = trade.get("metadata", {})
             exit_reason = None
             pnl_approx  = None
 
@@ -505,16 +518,38 @@ class CommodityOptionsLearning:
             est_delta = 0.35
             est_pnl   = round(spot_move * est_delta, 2)  # per unit, not per lot
 
+            # ── False-breakout invalidation (BreakoutSpread only) ──────────────────
+            # Exit immediately if price reverses back through the original breakout
+            # level — the signal was wrong and holding just adds to the loss.
+            if strategy == "BreakoutSpread" and exit_reason is None:
+                # Prefer the stored breakout level; fall back to entry spot for old trades
+                breakout_level = trade_meta.get("breakout_level") or entry_spot
+                if direction == "LONG" and spot < breakout_level:
+                    exit_reason = "FALSE_BREAKOUT"
+                    pnl_approx  = round(est_pnl, 2)
+                    logger.info(
+                        f"[CommOpts] {instrument} LONG breakout invalidated — "
+                        f"spot {spot:.2f} < breakout {breakout_level:.2f}"
+                    )
+                elif direction == "SHORT" and spot > breakout_level:
+                    exit_reason = "FALSE_BREAKOUT"
+                    pnl_approx  = round(est_pnl, 2)
+                    logger.info(
+                        f"[CommOpts] {instrument} SHORT breakdown invalidated — "
+                        f"spot {spot:.2f} > breakout {breakout_level:.2f}"
+                    )
+
             # Exit at 50% profit or 60% loss (stop early — don't let every loser go to -1R)
-            if est_pnl >= max_profit * 0.50:
-                exit_reason = "TARGET_50PCT"
-                pnl_approx  = round(net_debit * 0.50, 2)
-            elif est_pnl <= -net_debit * 0.60:
-                exit_reason = "STOP_60PCT"
-                pnl_approx  = round(-net_debit * 0.60, 2)
-            elif now.time() >= dtime(23, 15):
-                exit_reason = "EOD_MCX"
-                pnl_approx  = round(est_pnl, 2)
+            if exit_reason is None:
+                if est_pnl >= max_profit * 0.50:
+                    exit_reason = "TARGET_50PCT"
+                    pnl_approx  = round(net_debit * 0.50, 2)
+                elif est_pnl <= -net_debit * 0.60:
+                    exit_reason = "STOP_60PCT"
+                    pnl_approx  = round(-net_debit * 0.60, 2)
+                elif now.time() >= dtime(23, 15):
+                    exit_reason = "EOD_MCX"
+                    pnl_approx  = round(est_pnl, 2)
 
             if exit_reason:
                 lot_size   = trade.get("lot_size", 1)
