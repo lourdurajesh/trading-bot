@@ -167,6 +167,23 @@
     .rejection-pill .rp-label{color:#94a3b8}
     .journal-date-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
     .journal-date-input{background:#151a28;border:1px solid #2d3748;border-radius:6px;color:#e2e8f0;padding:5px 10px;font-size:12px;outline:none}
+    /* ── Conviction Score Card ── */
+    .conviction-card{background:#0f1420;border-radius:10px;padding:14px 16px;margin-bottom:16px;border:1px solid #1e2433}
+    .conviction-header{display:flex;align-items:center;gap:16px;margin-bottom:12px}
+    .conviction-score-big{font-size:32px;font-weight:800;font-family:'Courier New',monospace;line-height:1}
+    .conviction-score-big.bullish{color:#22c55e}.conviction-score-big.bearish{color:#ef4444}.conviction-score-big.neutral{color:#f59e0b}
+    .conviction-meta{flex:1}
+    .conviction-direction{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+    .conviction-direction.bullish{color:#22c55e}.conviction-direction.bearish{color:#ef4444}.conviction-direction.neutral{color:#f59e0b}
+    .conviction-tradeable{font-size:10px;margin-top:2px}
+    .conviction-timestamp{font-size:10px;color:#475569;margin-top:1px}
+    .conviction-signals{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+    .conviction-signal{background:#151a28;border-radius:6px;padding:8px 10px}
+    .conviction-signal-label{font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px}
+    .conviction-signal-row{display:flex;align-items:baseline;gap:6px}
+    .conviction-signal-score{font-family:monospace;font-weight:800;font-size:14px}
+    .conviction-signal-score.pos{color:#22c55e}.conviction-signal-score.neg{color:#ef4444}.conviction-signal-score.zero{color:#475569}
+    .conviction-signal-reason{font-size:10px;color:#64748b;margin-top:2px;line-height:1.35}
     .journal-filter-btns{display:flex;gap:4px;flex-wrap:wrap}
     .journal-filter-btn{padding:3px 10px;border-radius:5px;border:1px solid #2d3748;background:transparent;color:#64748b;font-size:11px;cursor:pointer}
     .journal-filter-btn.active{background:#1e293b;color:#f1f5f9;border-color:#334155}
@@ -1916,6 +1933,62 @@ function App() {
               <div className="journal-empty">No journal data loaded</div>
             ) : (
               <>
+                {/* ── Conviction Score Card ── */}
+                {j.conviction && (() => {
+                  const cv = j.conviction;
+                  const dir = (cv.direction||"neutral").toLowerCase();
+                  const scoreClass = cv.tradeable ? dir : "neutral";
+                  const signals = [
+                    { label:"FII F&O",    score: cv.fii_score,  reason: (cv.reasons||[]).find(r=>r.startsWith("FII")) || "" },
+                    { label:"OI / PCR",   score: cv.oi_score,   reason: (cv.reasons||[]).find(r=>r.startsWith("OI"))  || "" },
+                    { label:"Pre-open IEP",score:cv.iep_score,  reason: (cv.reasons||[]).find(r=>r.startsWith("IEP")) || "" },
+                    { label:"India VIX",  score: cv.vix_score,  reason: (cv.reasons||[]).find(r=>r.startsWith("VIX")) || "" },
+                    { label:"Gift Nifty", score: cv.gift_score, reason: (cv.reasons||[]).find(r=>r.startsWith("GIFT"))|| "" },
+                    { label:"BankNifty RS",score:cv.rs_score,   reason: (cv.reasons||[]).find(r=>r.startsWith("RS"))  || "" },
+                  ];
+                  const scoreColor = scoreClass==="bullish"?"#22c55e":scoreClass==="bearish"?"#ef4444":"#f59e0b";
+                  return (
+                    <div className="conviction-card">
+                      <div className="conviction-header">
+                        <div>
+                          <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>Pre-market Conviction Score</div>
+                          <div className={`conviction-score-big ${scoreClass}`}>{cv.score > 0 ? `+${cv.score}` : cv.score}<span style={{fontSize:14,color:"#475569"}}>/10</span></div>
+                        </div>
+                        <div className="conviction-meta">
+                          <div className={`conviction-direction ${scoreClass}`}>{cv.direction}</div>
+                          <div className="conviction-tradeable" style={{color: cv.tradeable ? "#22c55e" : "#f59e0b"}}>
+                            {cv.tradeable ? `TRADEABLE — deploying ${cv.capital_pct}% capital` : `BELOW THRESHOLD — no index trade (need ±7, got ${cv.score > 0 ? '+' : ''}${cv.score})`}
+                          </div>
+                          <div className="conviction-timestamp">{cv.timestamp || cv.date}</div>
+                        </div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>Threshold</div>
+                          <div style={{fontFamily:"monospace",fontWeight:700,fontSize:16,color:"#475569"}}>±7</div>
+                        </div>
+                      </div>
+                      <div className="conviction-signals">
+                        {signals.map(sig=>{
+                          const sc = sig.score||0;
+                          const cls = sc>0?"pos":sc<0?"neg":"zero";
+                          const rawReason = sig.reason.replace(/^[A-Z]+\s*\[[\+\-]\d+\]:\s*/,"");
+                          return (
+                            <div key={sig.label} className="conviction-signal">
+                              <div className="conviction-signal-label">{sig.label}</div>
+                              <div className="conviction-signal-row">
+                                <span className={`conviction-signal-score ${cls}`}>{sc>0?`+${sc}`:sc}</span>
+                                <span style={{fontSize:9,color:"#475569"}}>
+                                  {sig.label==="FII F&O"?"max ±3":sig.label==="OI / PCR"||sig.label==="Pre-open IEP"?"max ±2":"max ±1"}
+                                </span>
+                              </div>
+                              <div className="conviction-signal-reason">{rawReason}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Session summary */}
                 <div className="journal-session">
                   <div className="metric"><div className="lbl">Bot Started</div><div className="val neutral" style={{fontSize:14}}>{s.bot_started||"—"}</div></div>

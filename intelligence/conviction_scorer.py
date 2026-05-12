@@ -31,7 +31,8 @@ from zoneinfo import ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger(__name__)
 
-_VIX_HISTORY_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "vix_history.json")
+_VIX_HISTORY_PATH       = os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "vix_history.json")
+_CONVICTION_DAILY_PATH  = os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "conviction_daily.json")
 
 
 @dataclass
@@ -322,6 +323,52 @@ class ConvictionScorer:
         )
         for reason in result.reasons:
             logger.info(f"[ConvictionScorer]   {reason}")
+        self._save_daily_score(result)
+
+    def _save_daily_score(self, result: ConvictionScore) -> None:
+        """Persist each conviction score computation to db/conviction_daily.json."""
+        try:
+            history: list = []
+            if os.path.exists(_CONVICTION_DAILY_PATH):
+                with open(_CONVICTION_DAILY_PATH) as f:
+                    history = json.load(f)
+
+            today_str = datetime.now(tz=IST).date().isoformat()
+            # Replace any existing entry for today (keep latest re-score)
+            history = [h for h in history if h.get("date") != today_str]
+            history.append({
+                "date":        today_str,
+                "timestamp":   result.timestamp,
+                "score":       result.score,
+                "direction":   result.direction,
+                "tradeable":   result.tradeable,
+                "capital_pct": result.capital_pct,
+                "reasons":     result.reasons,
+                "fii_score":   result.fii_score,
+                "oi_score":    result.oi_score,
+                "iep_score":   result.iep_score,
+                "vix_score":   result.vix_score,
+                "gift_score":  result.gift_score,
+                "rs_score":    result.rs_score,
+            })
+            history = history[-90:]  # keep 3 months
+            os.makedirs(os.path.dirname(_CONVICTION_DAILY_PATH), exist_ok=True)
+            with open(_CONVICTION_DAILY_PATH, "w") as f:
+                json.dump(history, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[ConvictionScorer] Could not save daily score: {e}")
+
+    def get_for_date(self, date_str: str) -> Optional[dict]:
+        """Return the persisted conviction record for a given YYYY-MM-DD, or None."""
+        try:
+            if not os.path.exists(_CONVICTION_DAILY_PATH):
+                return None
+            with open(_CONVICTION_DAILY_PATH) as f:
+                history = json.load(f)
+            entries = [h for h in history if h.get("date") == date_str]
+            return entries[-1] if entries else None
+        except Exception:
+            return None
 
     def _load_vix_history(self) -> None:
         try:

@@ -30,7 +30,6 @@ NSE_EQUITIES = [
     "NSE:MARUTI-EQ",
     # Energy & Industrial
     "NSE:RELIANCE-EQ",
-    "NSE:ONGC-EQ",          # oil & gas, cyclical — strong mean reversion patterns
     "NSE:NTPC-EQ",          # power utility, range-bound behaviour
     "NSE:ADANIPORTS-EQ",    # infra/logistics, high volume
     # Auto
@@ -47,7 +46,6 @@ NSE_EQUITIES = [
 
 # ── NSE Mid Cap ───────────────────────────────────────────────────
 NSE_MIDCAP = [
-    "NSE:PERSISTENT-EQ",
     "NSE:POLICYBZR-EQ",
     "NSE:DIVISLAB-EQ",      # pharma mid-cap, range-bound, low market correlation
     "NSE:MPHASIS-EQ",       # IT mid-cap, US-focused revenue, more volatile

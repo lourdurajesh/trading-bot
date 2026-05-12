@@ -127,19 +127,30 @@ class NSEParticipantCollector:
         """
         row = self.get_latest(symbol)
         if row is None:
-            return 0, f"No FII data for {symbol}"
+            return 0, f"No FII data — collector runs at 17:30 IST to populate"
 
         change = row.fii_net_change
+        net    = row.fii_net
+
+        # First collection: change=0 because there is no previous row to diff against.
+        # Return 0 but distinguish from a genuine neutral day.
+        symbol_rows = [r for r in self._history if r.get("symbol") == symbol]
+        if change == 0 and len(symbol_rows) <= 1:
+            return 0, (
+                f"FII baseline established today (net={net:+,} contracts) — "
+                f"day-over-day change available from day 2"
+            )
+
         if change > 10_000:
-            return 3, f"FII bought {change:+,} {symbol} futures (strongly bullish)"
+            return 3, f"FII bought {change:+,} {symbol} futures | net={net:+,} (strongly bullish)"
         elif change > 5_000:
-            return 2, f"FII bought {change:+,} {symbol} futures (moderately bullish)"
+            return 2, f"FII bought {change:+,} {symbol} futures | net={net:+,} (moderately bullish)"
         elif change < -10_000:
-            return -3, f"FII sold {change:+,} {symbol} futures (strongly bearish)"
+            return -3, f"FII sold {change:+,} {symbol} futures | net={net:+,} (strongly bearish)"
         elif change < -5_000:
-            return -2, f"FII sold {change:+,} {symbol} futures (moderately bearish)"
+            return -2, f"FII sold {change:+,} {symbol} futures | net={net:+,} (moderately bearish)"
         else:
-            return 0, f"FII net change {change:+,} {symbol} futures (neutral)"
+            return 0, f"FII net change {change:+,} {symbol} futures | net={net:+,} (neutral)"
 
     def get_history_df(self, symbol: str = "INDEX", days: int = 30) -> list[dict]:
         """Return last N days of history for a symbol (for analysis/charts)."""

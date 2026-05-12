@@ -248,6 +248,33 @@ def daily_decisions(date: str = None):
                 cat = layer if layer != "unknown" else "other"
             rejection_breakdown[cat] = rejection_breakdown.get(cat, 0) + 1
 
+    # ── Conviction score for the target date ─────────────────────────
+    conviction = None
+    try:
+        from intelligence.conviction_scorer import conviction_scorer
+        conviction = conviction_scorer.get_for_date(target_date)
+        # Fall back to in-memory last score for today
+        if conviction is None and target_date == ist_now.strftime("%Y-%m-%d"):
+            last = conviction_scorer.get_last_score()
+            if last:
+                conviction = {
+                    "date":        target_date,
+                    "timestamp":   last.timestamp,
+                    "score":       last.score,
+                    "direction":   last.direction,
+                    "tradeable":   last.tradeable,
+                    "capital_pct": last.capital_pct,
+                    "reasons":     last.reasons,
+                    "fii_score":   last.fii_score,
+                    "oi_score":    last.oi_score,
+                    "iep_score":   last.iep_score,
+                    "vix_score":   last.vix_score,
+                    "gift_score":  last.gift_score,
+                    "rs_score":    last.rs_score,
+                }
+    except Exception:
+        pass
+
     return {
         "date":   target_date,
         "session": {
@@ -265,6 +292,7 @@ def daily_decisions(date: str = None):
         "symbols":             symbols_out,
         "trades":              trades,
         "rejection_breakdown": rejection_breakdown,
+        "conviction":          conviction,
     }
 
 
@@ -967,6 +995,37 @@ def get_journal_analysis():
             "improvement_areas":   analysis.improvement_areas,
             "missed_opportunities": analysis.missed_opportunities,
         }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/conviction/today")
+def get_conviction_today():
+    """Return today's pre-market conviction score with full component breakdown."""
+    try:
+        from intelligence.conviction_scorer import conviction_scorer
+        today = datetime.now(tz=IST).strftime("%Y-%m-%d")
+        saved = conviction_scorer.get_for_date(today)
+        if saved:
+            return saved
+        last = conviction_scorer.get_last_score()
+        if last:
+            return {
+                "date":        today,
+                "timestamp":   last.timestamp,
+                "score":       last.score,
+                "direction":   last.direction,
+                "tradeable":   last.tradeable,
+                "capital_pct": last.capital_pct,
+                "reasons":     last.reasons,
+                "fii_score":   last.fii_score,
+                "oi_score":    last.oi_score,
+                "iep_score":   last.iep_score,
+                "vix_score":   last.vix_score,
+                "gift_score":  last.gift_score,
+                "rs_score":    last.rs_score,
+            }
+        return {"error": "No conviction score computed today (bot not started or pre-market not run yet)"}
     except Exception as e:
         return {"error": str(e)}
 

@@ -107,6 +107,8 @@ class OIAnalyzer:
         # Track consecutive chain-fetch failures per symbol to suppress log spam.
         # First failure → WARNING; subsequent failures → DEBUG only.
         self._consecutive_failures: dict[str, int] = {}
+        # Track whether the latest refresh for each symbol used real or simulated data.
+        self._data_source: dict[str, str] = {}               # symbol → "real" | "simulation"
         self._load_today_snapshots()
 
     # ─────────────────────────────────────────────────────────────
@@ -187,9 +189,13 @@ class OIAnalyzer:
 
         Score range: -4 to +4 (PCR signal + OI change signal)
         """
+        # If the most recent refresh used simulated data, score = 0 and be explicit.
+        if self._data_source.get(symbol) == "simulation":
+            return 0, "OI chain unavailable (Fyers API not returning chain data — simulation active)"
+
         snap = self._snapshots.get(symbol) or self._load_latest_close_snapshot(symbol)
         if snap is None:
-            return 0, f"No OI data for {symbol}"
+            return 0, f"No OI snapshot for {symbol} — refresh will populate at market open"
 
         reasons = []
         score = 0
@@ -223,6 +229,7 @@ class OIAnalyzer:
     def _fetch_chain(self, symbol: str) -> list[ChainRow]:
         """Fetch options chain from Fyers. Returns simulated data if unavailable."""
         if self._fyers is None:
+            self._data_source[symbol] = "simulation"
             return self._simulate_chain(symbol)
 
         fyers_sym = INDEX_SYMBOLS.get(symbol)
@@ -273,9 +280,11 @@ class OIAnalyzer:
                             pass
                 else:
                     logger.debug(f"[OIAnalyzer] Chain fetch error for {symbol} (#{fail_count}): {msg}")
+                self._data_source[symbol] = "simulation"
                 return self._simulate_chain(symbol)
 
-            # Success — reset failure counter and clear alert
+            # Success — reset failure counter, clear alert, mark data as real
+            self._data_source[symbol] = "real"
             if self._consecutive_failures.get(symbol, 0) > 0:
                 self._consecutive_failures[symbol] = 0
                 try:
@@ -305,6 +314,7 @@ class OIAnalyzer:
                 logger.warning(f"[OIAnalyzer] Chain fetch exception for {symbol}: {e}")
             else:
                 logger.debug(f"[OIAnalyzer] Chain fetch exception for {symbol} (#{fail_count}): {e}")
+            self._data_source[symbol] = "simulation"
             return self._simulate_chain(symbol)
 
     def _get_spot(self, symbol: str) -> Optional[float]:
