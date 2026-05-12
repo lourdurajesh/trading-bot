@@ -98,6 +98,38 @@ MCX_CONTRACTS = {
 
 ALL_MCX_SHORTS = list(MCX_CONTRACTS.keys())
 
+# ─────────────────────────────────────────────────────────────────
+# MCX STRATEGY CONFIGURATION — risk profiles and cooldown settings
+# ─────────────────────────────────────────────────────────────────
+# Strategies are evaluated in priority order (1 = first / most preferred).
+# cooldown_enabled / cooldown_hours are editable at runtime via API.
+MCX_STRATEGY_CONFIG: dict = {
+    "TrendSpread": {
+        "priority":         1,
+        "risk":             "MEDIUM",
+        "risk_label":       "Trend-following EMA crossover — well-defined conditions, lower failure rate",
+        "risk_color":       "#f59e0b",
+        "cooldown_enabled": True,
+        "cooldown_hours":   2,
+    },
+    "RSIReversalSpread": {
+        "priority":         2,
+        "risk":             "HIGH",
+        "risk_label":       "Counter-trend reversal — may catch a falling knife if trend continues",
+        "risk_color":       "#f97316",
+        "cooldown_enabled": True,
+        "cooldown_hours":   3,
+    },
+    "BreakoutSpread": {
+        "priority":         3,
+        "risk":             "HIGH",
+        "risk_label":       "Price breakout — frequent false signals, high failure rate",
+        "risk_color":       "#ef4444",
+        "cooldown_enabled": True,
+        "cooldown_hours":   3,
+    },
+}
+
 _MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
 
 # Days-before-month-end trigger for rolling to next contract.
@@ -226,6 +258,46 @@ class CommodityOptionsLearning:
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
     # ─────────────────────────────────────────────────────────────
+
+    def get_strategy_config(self) -> dict:
+        """Return MCX_STRATEGY_CONFIG (risk profiles + cooldown settings)."""
+        return MCX_STRATEGY_CONFIG
+
+    def get_cooldown_status(self) -> dict:
+        """Return currently active cooldowns with remaining time."""
+        now = datetime.now(tz=IST)
+        return {
+            instr: {
+                "resume_at":     resume_at.isoformat(),
+                "remaining_min": max(0, int((resume_at - now).total_seconds() / 60)),
+            }
+            for instr, resume_at in self._entry_cooldown.items()
+            if resume_at > now
+        }
+
+    def update_strategy_config(self, strategy: str, param: str, value) -> tuple[bool, str]:
+        """Update a single MCX strategy config param at runtime (cooldown_enabled, cooldown_hours)."""
+        if strategy not in MCX_STRATEGY_CONFIG:
+            return False, f"Unknown MCX strategy: {strategy}"
+        cfg = MCX_STRATEGY_CONFIG[strategy]
+        if param not in cfg:
+            return False, f"Unknown param '{param}' for strategy '{strategy}'"
+        existing = cfg[param]
+        try:
+            if isinstance(existing, bool):
+                if isinstance(value, str):
+                    value = value.lower() in ("true", "1", "yes")
+                else:
+                    value = bool(value)
+            elif isinstance(existing, int):
+                value = int(value)
+            elif isinstance(existing, float):
+                value = float(value)
+        except (ValueError, TypeError) as e:
+            return False, f"Type error: {e}"
+        MCX_STRATEGY_CONFIG[strategy][param] = value
+        logger.info(f"[CommOpts] Strategy config updated: {strategy}.{param} = {value}")
+        return True, ""
 
     def run_cycle(self) -> None:
         """Call once per minute during MCX hours."""
@@ -576,11 +648,14 @@ class CommodityOptionsLearning:
                 # After a bad exit, impose a re-entry cooldown so the engine doesn't
                 # immediately pile back into the same hostile market.
                 if exit_reason in ("FALSE_BREAKOUT", "STOP_60PCT"):
-                    self._entry_cooldown[instrument] = now + timedelta(hours=3)
-                    logger.info(
-                        f"[CommOpts] {instrument} entry cooldown set — "
-                        f"no new trades until {self._entry_cooldown[instrument].strftime('%H:%M')}"
-                    )
+                    strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
+                    if strat_cfg.get("cooldown_enabled", True):
+                        hours = strat_cfg.get("cooldown_hours", 3)
+                        self._entry_cooldown[instrument] = now + timedelta(hours=hours)
+                        logger.info(
+                            f"[CommOpts] {instrument} entry cooldown {hours}h — "
+                            f"no new trades until {self._entry_cooldown[instrument].strftime('%H:%M')}"
+                        )
 
         for k in closed:
             del self._open_positions[k]

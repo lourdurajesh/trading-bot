@@ -923,8 +923,8 @@ def commodity_manual_close(trade_id: str):
     Records MANUAL_CLOSE as exit reason and removes it from the engine's open positions.
     """
     try:
-        from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS
-        from datetime import datetime as _dt
+        from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS, MCX_STRATEGY_CONFIG
+        from datetime import datetime as _dt, timedelta as _td
         from zoneinfo import ZoneInfo as _ZI
         _IST = _ZI("Asia/Kolkata")
 
@@ -968,17 +968,32 @@ def commodity_manual_close(trade_id: str):
         if key_to_remove:
             del commodity_options._open_positions[key_to_remove]
 
+        # Apply entry cooldown so the engine doesn't immediately re-enter the same instrument
+        strategy  = trade.get("strategy", "")
+        strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
+        cooldown_applied = False
+        if strat_cfg.get("cooldown_enabled", True):
+            hours = strat_cfg.get("cooldown_hours", 3)
+            resume_at = _dt.now(tz=_IST) + _td(hours=hours)
+            commodity_options._entry_cooldown[instrument] = resume_at
+            cooldown_applied = True
+            logger.info(
+                f"[CommOpts] {instrument} MANUAL_CLOSE — entry cooldown {hours}h "
+                f"until {resume_at.strftime('%H:%M')} IST"
+            )
+
         try:
             from audit_log import audit_log
             audit_log.bot_event(
                 "COMMODITY_MANUAL_CLOSE",
                 f"Dashboard manual close: {trade_id} {instrument} {direction} "
-                f"spot={spot:.2f} pnl=₹{pnl_inr:+.0f}",
+                f"spot={spot:.2f} pnl=₹{pnl_inr:+.0f}"
+                + (f" | cooldown {strat_cfg.get('cooldown_hours',3)}h" if cooldown_applied else ""),
             )
         except Exception:
             pass
 
-        return {
+        result: dict = {
             "success":    True,
             "trade_id":   trade_id,
             "instrument": instrument,
@@ -986,6 +1001,10 @@ def commodity_manual_close(trade_id: str):
             "pnl_inr":    pnl_inr,
             "pnl_r":      pnl_r,
         }
+        if cooldown_applied:
+            result["cooldown_hours"]  = strat_cfg.get("cooldown_hours", 3)
+            result["cooldown_resume"] = commodity_options._entry_cooldown[instrument].strftime("%H:%M")
+        return result
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -1216,6 +1235,53 @@ def update_strategy_param(strategy: str, param: str, body: dict):
         if not ok:
             return {"ok": False, "error": err}
         return {"ok": True, "strategy": strategy, "param": param, "value": value}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────
+# MCX COMMODITY STRATEGY CONFIGURATION
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/commodity/config")
+def get_commodity_strategy_config():
+    """Return MCX strategy risk profiles, cooldown settings, and active cooldowns."""
+    try:
+        from commodity_options_learning import commodity_options
+        return {
+            "ok":         True,
+            "strategies": commodity_options.get_strategy_config(),
+            "cooldowns":  commodity_options.get_cooldown_status(),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/commodity/config/{strategy}/{param}")
+def update_commodity_strategy_config(strategy: str, param: str, body: dict):
+    """Update a single MCX strategy param (cooldown_enabled, cooldown_hours) at runtime."""
+    value = body.get("value")
+    if value is None:
+        return {"ok": False, "error": "body must contain 'value'"}
+    try:
+        from commodity_options_learning import commodity_options
+        ok, err = commodity_options.update_strategy_config(strategy, param, value)
+        if not ok:
+            return {"ok": False, "error": err}
+        return {"ok": True, "strategy": strategy, "param": param, "value": value}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.delete("/commodity/cooldown/{instrument}")
+def clear_commodity_cooldown(instrument: str):
+    """Manually clear an active entry cooldown for a commodity instrument."""
+    try:
+        from commodity_options_learning import commodity_options
+        cleared = instrument in commodity_options._entry_cooldown
+        if cleared:
+            del commodity_options._entry_cooldown[instrument]
+        return {"ok": True, "cleared": cleared, "instrument": instrument}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

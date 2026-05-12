@@ -441,6 +441,13 @@ function StratBadge({name}) {
   return <span style={{background:c+"22",color:c,border:`1px solid ${c}44`,borderRadius:3,padding:"1px 5px",fontSize:9,fontWeight:600,whiteSpace:"nowrap"}}>{name||"—"}</span>;
 }
 
+// Static MCX strategy risk/priority metadata — mirrors MCX_STRATEGY_CONFIG in backend
+const MCX_RISK_META = {
+  "TrendSpread":       { priority:1, risk:"MEDIUM", risk_color:"#f59e0b", risk_label:"Trend-following EMA crossover — well-defined conditions" },
+  "RSIReversalSpread": { priority:2, risk:"HIGH",   risk_color:"#f97316", risk_label:"Counter-trend reversal — may catch a falling knife" },
+  "BreakoutSpread":    { priority:3, risk:"HIGH",   risk_color:"#ef4444", risk_label:"Price breakout — frequent false signals" },
+};
+
 /* ─────────────────────────────────────────────────────────────
    LearningTabContent — owns filter state; stats widgets update
    with the active filter. React.memo shields from 2 s WS ticks.
@@ -627,7 +634,7 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
    Module-level so React never treats it as a new component type
    on re-renders, preventing the unmount/remount LTP flash.
 ───────────────────────────────────────────────────────────── */
-function CommodityTradesTable({trades: tds, ltps: lps, onManualClose}) {
+function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}) {
   if (!tds || !tds.length) return <div className="empty">No commodity option trades yet — engine runs during MCX hours (09:00–23:30 IST)</div>;
   const SPREAD_DELTA = 0.35;
   const ATM_DELTA    = 0.50;
@@ -687,6 +694,19 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose}) {
                     {t.atm_strike||"?"}{optSuffix} / {t.otm_strike||"?"}{optSuffix}
                   </div>
                   <div style={{marginTop:3}}><StratBadge name={t.strategy}/></div>
+                  {(() => {
+                    const rm = (mcxConfig?.strategies?.[t.strategy]) || MCX_RISK_META[t.strategy];
+                    if (!rm) return null;
+                    const rc = rm.risk_color || "#64748b";
+                    return (
+                      <div style={{marginTop:2}} title={rm.risk_label}>
+                        <span style={{fontSize:8,padding:"1px 4px",borderRadius:2,
+                          background:rc+"22",color:rc,border:`1px solid ${rc}44`,fontWeight:700}}>
+                          {rm.risk==="HIGH" ? "⚠ HIGH RISK" : `● ${rm.risk}`}
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </td>
                 <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
                 <td style={{fontFamily:"monospace",color:"#94a3b8"}}>{spotEntry ? spotEntry.toFixed(0) : "—"}</td>
@@ -751,16 +771,21 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose}) {
                     <div style={{marginTop:4}}>
                       <button
                         onClick={() => {
+                          const rm = MCX_RISK_META[t.strategy] || {};
                           if (!window.confirm(
                             `Close ${t.instrument} ${t.direction} spread now?\n\n` +
-                            `This will record a MANUAL_CLOSE at the current spot price.\n` +
-                            `Est. P&L: ${estPnlLot!=null?(estPnlLot>=0?"+":"")+"₹"+Math.abs(estPnlLot).toFixed(0):"unknown"}`
+                            `Exit: MANUAL_CLOSE at current spot.\n` +
+                            `Est. P&L: ${estPnlLot!=null?(estPnlLot>=0?"+":"")+"₹"+Math.abs(estPnlLot).toFixed(0):"unknown"}\n\n` +
+                            `A ${(mcxConfig?.strategies?.[t.strategy]||rm).cooldown_hours||3}h re-entry cooldown will be applied.`
                           )) return;
                           fetch(`${API}/commodity/trades/${t.id}/close`, {method:"POST"})
                             .then(r=>r.json())
                             .then(d=>{
-                              if (d.success) onManualClose();
-                              else alert("Close failed: "+(d.error||"unknown error"));
+                              if (d.success) {
+                                onManualClose();
+                                if (d.cooldown_resume)
+                                  console.info(`${d.instrument} cooldown until ${d.cooldown_resume}`);
+                              } else alert("Close failed: "+(d.error||"unknown error"));
                             })
                             .catch(()=>alert("Network error — close failed"));
                         }}
@@ -785,7 +810,7 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose}) {
    CommodityTabContent — owns filter state + options chain state.
    Stats widgets and table rows both update with the active filter.
 ───────────────────────────────────────────────────────────── */
-function CommodityTabContent({trades, ltps, commStats, onManualClose}) {
+function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}) {
   const [filterSym,    setFilterSym]    = React.useState("");
   const [filterStrat,  setFilterStrat]  = React.useState("all");
   const [filterStatus, setFilterStatus] = React.useState("all");
@@ -1105,7 +1130,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose}) {
             Trades
             {isFiltered && <span style={{marginLeft:6,fontWeight:400,color:"#f59e0b",fontSize:10,textTransform:"none",letterSpacing:0}}>· filter active</span>}
           </h2>
-          <CommodityTradesTable trades={filtered} ltps={ltps} onManualClose={onManualClose}/>
+          <CommodityTradesTable trades={filtered} ltps={ltps} onManualClose={onManualClose} mcxConfig={mcxConfig}/>
         </div>
       )}
 
@@ -1113,7 +1138,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose}) {
         <div className="card">
           <h2>Open positions ({openF.length})</h2>
           {openF.length ? (
-            <CommodityTradesTable trades={openF} ltps={ltps} onManualClose={onManualClose}/>
+            <CommodityTradesTable trades={openF} ltps={ltps} onManualClose={onManualClose} mcxConfig={mcxConfig}/>
           ) : <div className="empty">No open commodity option positions</div>}
         </div>
       )}
@@ -1165,6 +1190,136 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose}) {
 }
 
 // ── Strategy Config components ───────────────────────────────────────────
+
+function CooldownHoursInput({ value, onChange }) {
+  const [editing, setEditing] = React.useState(false);
+  const [val, setVal] = React.useState(String(value));
+  React.useEffect(() => { setVal(String(value)); }, [value]);
+  const commit = () => {
+    setEditing(false);
+    const n = parseInt(val, 10);
+    if (!isNaN(n) && n >= 1 && n <= 24) onChange(n);
+    else setVal(String(value));
+  };
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:6,fontSize:11}}>
+      <span style={{color:"#64748b"}}>Duration:</span>
+      {editing ? (
+        <input type="number" value={val}
+          onChange={e=>setVal(e.target.value)} onBlur={commit}
+          onKeyDown={e=>{if(e.key==="Enter")commit();if(e.key==="Escape"){setEditing(false);setVal(String(value));}}}
+          autoFocus min={1} max={24}
+          style={{width:56,background:"#1e293b",color:"#f1f5f9",border:"1px solid #3b82f6",
+                  borderRadius:3,padding:"2px 6px",fontSize:11,textAlign:"center"}}
+        />
+      ) : (
+        <button onClick={()=>setEditing(true)}
+          style={{background:"#1e293b",color:"#f1f5f9",border:"1px solid #334155",
+                  borderRadius:3,padding:"2px 10px",fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>
+          {value}h
+        </button>
+      )}
+    </div>
+  );
+}
+
+function McxConfigPage({ config, onUpdate, onRefresh }) {
+  if (!config) return <div className="empty">Loading MCX strategy config...</div>;
+  const { strategies = {}, cooldowns = {} } = config;
+  const sorted = Object.entries(strategies).sort(([,a],[,b]) => a.priority - b.priority);
+  const RISK_BG = { HIGH:"#1f0505", MEDIUM:"#2d2200", LOW:"#0d2218" };
+  const RISK_BC = { HIGH:"#ef444444", MEDIUM:"#f59e0b44", LOW:"#16653444" };
+
+  const updateParam = (strat, param, value) => {
+    fetch(`${API}/commodity/config/${strat}/${param}`, {
+      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({value}),
+    }).then(r=>r.json()).then(d=>{
+      if (d.ok) onUpdate(strat, param, value);
+      else alert(`Update failed: ${d.error}`);
+    }).catch(e=>alert(`Request error: ${e}`));
+  };
+
+  const clearCooldown = (instrument) => {
+    fetch(`${API}/commodity/cooldown/${instrument}`, {method:"DELETE"})
+      .then(r=>r.json())
+      .then(d=>{ if(d.ok) onRefresh(); else alert(`Clear failed: ${d.error}`); })
+      .catch(e=>alert(`Request error: ${e}`));
+  };
+
+  return (
+    <div>
+      <div style={{color:"#64748b",fontSize:11,marginBottom:16}}>
+        Strategies are evaluated in priority order — first match wins. Risk reflects historical false-signal rate.
+        Cooldown blocks re-entry on an instrument after a bad exit. Changes apply on the next MCX cycle.
+      </div>
+
+      <div style={{display:"grid",gap:10}}>
+        {sorted.map(([key, cfg]) => {
+          const rc = cfg.risk_color || "#94a3b8";
+          const riskBg = RISK_BG[cfg.risk] || "#151a28";
+          const riskBc = RISK_BC[cfg.risk] || "#33415544";
+          return (
+            <div key={key} style={{background:riskBg,border:`1px solid ${riskBc}`,borderRadius:10,padding:"14px 16px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:10}}>
+                <span style={{background:"#1e293b",border:"1px solid #334155",color:"#475569",
+                              borderRadius:4,padding:"2px 8px",fontSize:10,fontWeight:700,fontFamily:"monospace"}}>
+                  #{cfg.priority}
+                </span>
+                <span style={{fontWeight:600,fontSize:13,color:"#f1f5f9"}}>{key}</span>
+                <span style={{background:rc+"22",color:rc,border:`1px solid ${rc}44`,
+                              borderRadius:3,padding:"2px 8px",fontSize:10,fontWeight:700}}>
+                  {cfg.risk==="HIGH" ? "⚠ HIGH RISK" : `● ${cfg.risk} RISK`}
+                </span>
+                <span style={{color:"#64748b",fontSize:10,flex:1,minWidth:120}}>{cfg.risk_label}</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:16,background:"#0f172a",borderRadius:6,padding:"10px 14px",flexWrap:"wrap"}}>
+                <span style={{fontSize:11,color:"#94a3b8",fontWeight:500}}>Cooldown after bad exit:</span>
+                <label style={{cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontSize:11}}>
+                  <input type="checkbox" checked={cfg.cooldown_enabled}
+                    onChange={e=>updateParam(key,"cooldown_enabled",e.target.checked)}
+                    style={{cursor:"pointer"}}/>
+                  {cfg.cooldown_enabled
+                    ? <span style={{color:"#22c55e"}}>Enabled</span>
+                    : <span style={{color:"#ef4444"}}>Disabled</span>}
+                </label>
+                {cfg.cooldown_enabled && (
+                  <CooldownHoursInput value={cfg.cooldown_hours}
+                    onChange={v=>updateParam(key,"cooldown_hours",v)}/>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Active cooldowns */}
+      <div className="card" style={{marginTop:16}}>
+        <h2 style={{marginBottom:10}}>Active Entry Cooldowns</h2>
+        {Object.keys(cooldowns).length === 0 ? (
+          <div style={{color:"#475569",fontSize:11}}>No active cooldowns — all instruments available for entry.</div>
+        ) : (
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {Object.entries(cooldowns).map(([instr, cd]) => (
+              <div key={instr} style={{display:"flex",alignItems:"center",gap:10,
+                background:"#1a0a00",borderRadius:6,padding:"8px 14px",
+                border:"1px solid #f9731644",flexWrap:"wrap"}}>
+                <span style={{fontSize:13,color:"#f59e0b",fontWeight:700,fontFamily:"monospace"}}>{instr}</span>
+                <span style={{fontSize:11,color:"#f97316"}}>⏳ {cd.remaining_min}min remaining</span>
+                <span style={{fontSize:10,color:"#64748b",flex:1}}>resumes {cd.resume_at.substring(11,16)} IST</span>
+                <button onClick={()=>clearCooldown(instr)}
+                  style={{background:"transparent",border:"1px solid #334155",color:"#94a3b8",
+                          borderRadius:3,fontSize:10,padding:"2px 8px",cursor:"pointer"}}>
+                  Clear
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ParamField({ strategy, param, entry, onUpdate }) {
   const [editing, setEditing] = React.useState(false);
   const [val, setVal] = React.useState(String(entry.value));
@@ -1306,6 +1461,7 @@ function App() {
 
   /* strategy config */
   const [stratConfig, setStratConfig] = React.useState(null);
+  const [mcxConfig,   setMcxConfig]   = React.useState(null);
 
   /* daily journal */
   const [journal, setJournal]         = React.useState(null);
@@ -1380,15 +1536,18 @@ function App() {
     };
     const loadConfig = () =>
       fetch(`${API}/config/strategies`).then(r=>r.json()).then(d=>{if(d.config)setStratConfig(d.config);}).catch(()=>{});
+    const loadMcxConfig = () =>
+      fetch(`${API}/commodity/config`).then(r=>r.json()).then(d=>{if(d.ok)setMcxConfig(d);}).catch(()=>{});
 
-    loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadComm(); loadConfig();
+    loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadComm(); loadConfig(); loadMcxConfig();
     // eslint-disable-next-line react-hooks/exhaustive-deps
 
-    const t1 = setInterval(loadServices, 15000);
-    const t2 = setInterval(loadPaper,    5000);
-    const t3 = setInterval(loadDrought,  60000);
-    const t5 = setInterval(loadComm,     60000);
-    return () => [t1,t2,t3,t5].forEach(clearInterval);
+    const t1 = setInterval(loadServices,   15000);
+    const t2 = setInterval(loadPaper,       5000);
+    const t3 = setInterval(loadDrought,    60000);
+    const t5 = setInterval(loadComm,       60000);
+    const t6 = setInterval(loadMcxConfig,  30000);  // refresh cooldown status every 30s
+    return () => [t1,t2,t3,t5,t6].forEach(clearInterval);
   }, []);
 
   /* ── journal fetch: load on mount + when tab is opened ── */
@@ -1746,6 +1905,7 @@ function App() {
       ════════════════════════════════════════ */}
       <div style={{display: tab==="commodity" ? "block" : "none"}}>
         <CommodityTabContent trades={commTrades} ltps={commLtps} commStats={commStats}
+          mcxConfig={mcxConfig}
           onManualClose={() => {
             fetch(`${API}/commodity/stats`).then(r=>r.json()).then(setCommStats).catch(()=>{});
             fetch(`${API}/commodity/trades?limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});
@@ -2180,7 +2340,7 @@ function App() {
       {tab==="config" && (
         <div>
           <div className="card">
-            <h2>Strategy Configuration</h2>
+            <h2>NSE Strategy Configuration</h2>
             <StrategyConfigPage
               config={stratConfig}
               onUpdate={(strat, param, value) => {
@@ -2188,13 +2348,32 @@ function App() {
                   if (!prev || !prev[strat] || !prev[strat][param]) return prev;
                   return {
                     ...prev,
-                    [strat]: {
-                      ...prev[strat],
-                      [param]: { ...prev[strat][param], value }
+                    [strat]: { ...prev[strat], [param]: { ...prev[strat][param], value } }
+                  };
+                });
+              }}
+            />
+          </div>
+          <div className="card" style={{marginTop:16}}>
+            <h2>MCX Commodity Strategy Configuration</h2>
+            <McxConfigPage
+              config={mcxConfig}
+              onUpdate={(strat, param, value) => {
+                setMcxConfig(prev => {
+                  if (!prev?.strategies?.[strat]) return prev;
+                  return {
+                    ...prev,
+                    strategies: {
+                      ...prev.strategies,
+                      [strat]: { ...prev.strategies[strat], [param]: value }
                     }
                   };
                 });
               }}
+              onRefresh={() =>
+                fetch(`${API}/commodity/config`).then(r=>r.json())
+                  .then(d=>{ if(d.ok) setMcxConfig(d); }).catch(()=>{})
+              }
             />
           </div>
         </div>
