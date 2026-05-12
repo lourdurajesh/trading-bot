@@ -330,12 +330,47 @@ class CommodityOptionsLearning:
         if any(short in k for k in self._open_positions):
             return
 
-        # Post-exit cooldown — skip if a recent bad exit banned re-entry
+        # Post-exit cooldown — in-memory fast path
         resume_at = self._entry_cooldown.get(short)
         if resume_at and now < resume_at:
             remaining = int((resume_at - now).total_seconds() / 60)
             logger.info(f"[CommOpts] {short} entry blocked — cooldown {remaining}min remaining")
             return
+
+        # DB-based cooldown check — survives restarts and catches manual closes
+        # that may have bypassed the in-memory dict (race condition / process restart)
+        try:
+            with sqlite3.connect(DB_PATH) as _conn:
+                _row = _conn.execute(
+                    "SELECT exit_reason, exit_time, strategy FROM commodity_learning_trades "
+                    "WHERE instrument=? AND status='CLOSED' "
+                    "AND exit_reason IN ('FALSE_BREAKOUT','STOP_60PCT','MANUAL_CLOSE') "
+                    "ORDER BY exit_time DESC LIMIT 1",
+                    (short,),
+                ).fetchone()
+            if _row:
+                _exit_reason, _exit_time_str, _strategy = _row
+                if _exit_time_str:
+                    _exit_time = datetime.fromisoformat(_exit_time_str)
+                    if _exit_time.tzinfo is None:
+                        _exit_time = _exit_time.replace(tzinfo=IST)
+                    _strat_cfg = MCX_STRATEGY_CONFIG.get(_strategy or "", {})
+                    # MANUAL_CLOSE always applies cooldown; others respect cooldown_enabled flag
+                    _cd_enabled = (_exit_reason == "MANUAL_CLOSE") or _strat_cfg.get("cooldown_enabled", True)
+                    _cd_hours   = _strat_cfg.get("cooldown_hours", 3)
+                    if _cd_enabled:
+                        _resume = _exit_time + timedelta(hours=_cd_hours)
+                        if now < _resume:
+                            _remaining = int((_resume - now).total_seconds() / 60)
+                            logger.info(
+                                f"[CommOpts] {short} entry blocked (DB cooldown after {_exit_reason}) "
+                                f"— {_remaining}min remaining (resumes {_resume.strftime('%H:%M')} IST)"
+                            )
+                            # Re-populate in-memory dict so next cycle skips the DB query
+                            self._entry_cooldown[short] = _resume
+                            return
+        except Exception as _e:
+            logger.debug(f"[CommOpts] DB cooldown check error for {short}: {_e}")
 
         # Get futures price
         spot = store.get_ltp(symbol)

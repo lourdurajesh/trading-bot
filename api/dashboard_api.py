@@ -968,19 +968,18 @@ def commodity_manual_close(trade_id: str):
         if key_to_remove:
             del commodity_options._open_positions[key_to_remove]
 
-        # Apply entry cooldown so the engine doesn't immediately re-enter the same instrument
+        # Apply entry cooldown — MANUAL_CLOSE always triggers cooldown regardless of
+        # cooldown_enabled flag, because the user closed it due to a perceived problem.
         strategy  = trade.get("strategy", "")
         strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
-        cooldown_applied = False
-        if strat_cfg.get("cooldown_enabled", True):
-            hours = strat_cfg.get("cooldown_hours", 3)
-            resume_at = _dt.now(tz=_IST) + _td(hours=hours)
-            commodity_options._entry_cooldown[instrument] = resume_at
-            cooldown_applied = True
-            logger.info(
-                f"[CommOpts] {instrument} MANUAL_CLOSE — entry cooldown {hours}h "
-                f"until {resume_at.strftime('%H:%M')} IST"
-            )
+        hours = strat_cfg.get("cooldown_hours", 3)   # default 3h if strategy unknown
+        resume_at = _dt.now(tz=_IST) + _td(hours=hours)
+        commodity_options._entry_cooldown[instrument] = resume_at
+        cooldown_applied = True
+        logger.info(
+            f"[CommOpts] {instrument} MANUAL_CLOSE — entry cooldown {hours}h "
+            f"until {resume_at.strftime('%H:%M')} IST"
+        )
 
         try:
             from audit_log import audit_log
