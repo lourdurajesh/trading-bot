@@ -472,9 +472,24 @@ class CommodityOptionsLearning:
     def _check_exits(self, store, now: datetime) -> None:
         closed = []
         for key, trade in list(self._open_positions.items()):
-            symbol = trade["symbol"]
+            instrument = trade["instrument"]        # "CRUDEOIL"
+            stored_sym = trade["symbol"]            # symbol at entry (may be old contract)
+            # Always use the current active contract for live spot — handles rollover
+            symbol = _fyers_sym(instrument)
             spot   = store.get_ltp(symbol)
+            if not spot and symbol != stored_sym:
+                spot = store.get_ltp(stored_sym)   # last-resort: try stored symbol
             if not spot:
+                continue
+            # Validate spot is in expected range for this commodity
+            meta  = MCX_CONTRACTS.get(instrument, {})
+            min_p = meta.get("min_price", 0)
+            max_p = meta.get("max_price", float("inf"))
+            if spot < min_p or spot > max_p:
+                logger.warning(
+                    f"[CommOpts] Spot {spot:.1f} out of range [{min_p}-{max_p}] "
+                    f"for {instrument} — skipping exit check"
+                )
                 continue
 
             direction  = trade["direction"]

@@ -265,6 +265,39 @@ def commodity_chain_full(symbol: str, expiry_idx: int = 0):
         return {"error": str(e), "source": "error", "strikes": [], "expiries": []}
 
 
+@app.get("/commodity/ltp-debug")
+def commodity_ltp_debug():
+    """
+    Debug endpoint — shows what LTP the data store has for each MCX futures symbol.
+    Also shows subscribed vs. stored symbols for open positions.
+    """
+    try:
+        from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS, ALL_MCX_SHORTS
+        open_comm = commodity_options.get_trades(status="OPEN")
+        result = {}
+        for short in ALL_MCX_SHORTS:
+            active_sym = _fyers_sym(short)
+            active_ltp = store.get_ltp(active_sym)
+            meta       = MCX_CONTRACTS.get(short, {})
+            result[short] = {
+                "active_symbol": active_sym,
+                "active_ltp":    active_ltp,
+                "min_price":     meta.get("min_price"),
+                "max_price":     meta.get("max_price"),
+                "in_range":      meta.get("min_price", 0) <= (active_ltp or 0) <= meta.get("max_price", 0),
+            }
+        for t in open_comm:
+            inst = t.get("instrument", "?")
+            sym  = t.get("symbol")
+            if inst in result:
+                result[inst]["stored_symbol"] = sym
+                result[inst]["stored_ltp"]    = store.get_ltp(sym) if sym else None
+                result[inst]["symbol_match"]  = sym == result[inst]["active_symbol"]
+        return {"mcx_ltps": result, "store_symbols": [s for s in store.get_active_symbols() if "MCX" in s]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/logs")
 def get_logs(lines: int = 50):
     """Return last N lines from bot log."""
@@ -984,14 +1017,36 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
     # Live spot LTPs for open commodity option positions (keyed by futures symbol)
     commodity_ltps: dict = {}
     try:
-        from commodity_options_learning import commodity_options
+        from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS
         open_comm = commodity_options.get_trades(status="OPEN")
         for t in open_comm:
-            sym = t.get("symbol")
-            if sym:
-                ltp = store.get_ltp(sym)
-                if ltp:
-                    commodity_ltps[sym] = ltp
+            sym        = t.get("symbol")
+            instrument = t.get("instrument")  # e.g. "CRUDEOIL"
+            if not sym:
+                continue
+            ltp = store.get_ltp(sym)
+            # Fallback 1: stored symbol may be a rolled-over contract — try current active
+            if not ltp and instrument:
+                try:
+                    active_sym = _fyers_sym(instrument)
+                    if active_sym != sym:
+                        ltp = store.get_ltp(active_sym)
+                except Exception:
+                    pass
+            # Fallback 2: validate range — discard if value looks like an options premium
+            if ltp and instrument:
+                meta  = MCX_CONTRACTS.get(instrument, {})
+                min_p = meta.get("min_price", 0)
+                max_p = meta.get("max_price", float("inf"))
+                if ltp < min_p or ltp > max_p:
+                    import logging as _log
+                    _log.getLogger(__name__).warning(
+                        f"[Dashboard] MCX LTP {ltp:.1f} out of range [{min_p}-{max_p}] "
+                        f"for {instrument} ({sym}) — discarding stale value"
+                    )
+                    ltp = None
+            if ltp:
+                commodity_ltps[sym] = ltp
     except Exception:
         pass
 
