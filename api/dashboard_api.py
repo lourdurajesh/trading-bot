@@ -916,6 +916,80 @@ def force_close_position(body: dict):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/commodity/trades/{trade_id}/close")
+def commodity_manual_close(trade_id: str):
+    """
+    Manually close an open MCX commodity option trade at the current spot price.
+    Records MANUAL_CLOSE as exit reason and removes it from the engine's open positions.
+    """
+    try:
+        from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+        _IST = _ZI("Asia/Kolkata")
+
+        # Find the trade in DB
+        open_trades = commodity_options.get_trades(status="OPEN")
+        trade = next((t for t in open_trades if t["id"] == trade_id), None)
+        if not trade:
+            return {"success": False, "error": f"No open trade found with id {trade_id}"}
+
+        instrument = trade["instrument"]
+        direction  = trade["direction"]
+        net_debit  = trade["net_debit"]
+        entry_spot = trade["spot_at_entry"]
+        lot_size   = trade.get("lot_size", 1)
+
+        # Get current spot for P&L estimate
+        sym = trade.get("symbol")
+        spot = None
+        try:
+            active_sym = _fyers_sym(instrument)
+            spot = store.get_ltp(active_sym)
+        except Exception:
+            pass
+        if not spot and sym:
+            spot = store.get_ltp(sym)
+        if not spot:
+            spot = entry_spot  # last resort: no P&L movement
+
+        spot_move = spot - entry_spot if direction == "LONG" else entry_spot - spot
+        est_pnl   = round(spot_move * 0.35, 2)
+        pnl_r     = round(est_pnl / net_debit, 2) if net_debit > 0 else 0
+        pnl_inr   = round(est_pnl * lot_size, 2)
+
+        commodity_options._db_close(trade_id, spot, "MANUAL_CLOSE", pnl_inr, pnl_r)
+
+        # Remove from in-memory positions so exit monitoring doesn't re-process it
+        key_to_remove = next(
+            (k for k, v in commodity_options._open_positions.items() if v.get("id") == trade_id),
+            None,
+        )
+        if key_to_remove:
+            del commodity_options._open_positions[key_to_remove]
+
+        try:
+            from audit_log import audit_log
+            audit_log.bot_event(
+                "COMMODITY_MANUAL_CLOSE",
+                f"Dashboard manual close: {trade_id} {instrument} {direction} "
+                f"spot={spot:.2f} pnl=₹{pnl_inr:+.0f}",
+            )
+        except Exception:
+            pass
+
+        return {
+            "success":    True,
+            "trade_id":   trade_id,
+            "instrument": instrument,
+            "spot":       spot,
+            "pnl_inr":    pnl_inr,
+            "pnl_r":      pnl_r,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/ltp/{symbol:path}")
 def get_ltp(symbol: str):
     ltp = store.get_ltp(symbol)

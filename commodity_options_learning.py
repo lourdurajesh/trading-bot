@@ -33,7 +33,7 @@ import logging
 import math
 import sqlite3
 import uuid
-from datetime import datetime, date, time as dtime
+from datetime import datetime, date, timedelta, time as dtime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -193,6 +193,8 @@ class CommodityOptionsLearning:
     def __init__(self):
         self._open_positions: dict[str, dict] = {}  # key → trade
         self._chain_cache:    dict[str, tuple] = {}  # symbol → (data, fetched_at)
+        # Cooldown after a bad exit — blocks all re-entry on that instrument
+        self._entry_cooldown: dict[str, datetime] = {}  # instrument → resume_at
         self._init_db()
         self._reload_open_positions()
 
@@ -254,6 +256,13 @@ class CommodityOptionsLearning:
 
         # Already have an open position for this commodity?
         if any(short in k for k in self._open_positions):
+            return
+
+        # Post-exit cooldown — skip if a recent bad exit banned re-entry
+        resume_at = self._entry_cooldown.get(short)
+        if resume_at and now < resume_at:
+            remaining = int((resume_at - now).total_seconds() / 60)
+            logger.info(f"[CommOpts] {short} entry blocked — cooldown {remaining}min remaining")
             return
 
         # Get futures price
@@ -564,6 +573,14 @@ class CommodityOptionsLearning:
                     f"{exit_reason} spot={spot:.2f} pnl=₹{pnl_approx:+.0f} "
                     f"({pnl_r:+.1f}R)"
                 )
+                # After a bad exit, impose a re-entry cooldown so the engine doesn't
+                # immediately pile back into the same hostile market.
+                if exit_reason in ("FALSE_BREAKOUT", "STOP_60PCT"):
+                    self._entry_cooldown[instrument] = now + timedelta(hours=3)
+                    logger.info(
+                        f"[CommOpts] {instrument} entry cooldown set — "
+                        f"no new trades until {self._entry_cooldown[instrument].strftime('%H:%M')}"
+                    )
 
         for k in closed:
             del self._open_positions[k]

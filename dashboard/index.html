@@ -627,7 +627,7 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
    Module-level so React never treats it as a new component type
    on re-renders, preventing the unmount/remount LTP flash.
 ───────────────────────────────────────────────────────────── */
-function CommodityTradesTable({trades: tds, ltps: lps}) {
+function CommodityTradesTable({trades: tds, ltps: lps, onManualClose}) {
   if (!tds || !tds.length) return <div className="empty">No commodity option trades yet — engine runs during MCX hours (09:00–23:30 IST)</div>;
   const SPREAD_DELTA = 0.35;
   const ATM_DELTA    = 0.50;
@@ -745,7 +745,32 @@ function CommodityTradesTable({trades: tds, ltps: lps}) {
                       : "—"}
                 </td>
                 <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{isOpen?"open":fmtR(r)}</td>
-                <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
+                <td style={{color:"#64748b",fontSize:10}}>
+                  {t.exit_reason||"—"}
+                  {isOpen && onManualClose && (
+                    <div style={{marginTop:4}}>
+                      <button
+                        onClick={() => {
+                          if (!window.confirm(
+                            `Close ${t.instrument} ${t.direction} spread now?\n\n` +
+                            `This will record a MANUAL_CLOSE at the current spot price.\n` +
+                            `Est. P&L: ${estPnlLot!=null?(estPnlLot>=0?"+":"")+"₹"+Math.abs(estPnlLot).toFixed(0):"unknown"}`
+                          )) return;
+                          fetch(`${API}/commodity/trades/${t.id}/close`, {method:"POST"})
+                            .then(r=>r.json())
+                            .then(d=>{
+                              if (d.success) onManualClose();
+                              else alert("Close failed: "+(d.error||"unknown error"));
+                            })
+                            .catch(()=>alert("Network error — close failed"));
+                        }}
+                        style={{background:"transparent",border:"1px solid #7f1d1d",color:"#f87171",
+                                borderRadius:3,fontSize:9,padding:"2px 7px",cursor:"pointer",lineHeight:"1.4"}}>
+                        ✕ Close Now
+                      </button>
+                    </div>
+                  )}
+                </td>
                 <td><span className={t.data_source==="live_chain"?"source-live":"source-sim"}>{t.data_source==="live_chain"?"●":"◌"}</span></td>
               </tr>
             );
@@ -760,7 +785,7 @@ function CommodityTradesTable({trades: tds, ltps: lps}) {
    CommodityTabContent — owns filter state + options chain state.
    Stats widgets and table rows both update with the active filter.
 ───────────────────────────────────────────────────────────── */
-function CommodityTabContent({trades, ltps, commStats}) {
+function CommodityTabContent({trades, ltps, commStats, onManualClose}) {
   const [filterSym,    setFilterSym]    = React.useState("");
   const [filterStrat,  setFilterStrat]  = React.useState("all");
   const [filterStatus, setFilterStatus] = React.useState("all");
@@ -1080,7 +1105,7 @@ function CommodityTabContent({trades, ltps, commStats}) {
             Trades
             {isFiltered && <span style={{marginLeft:6,fontWeight:400,color:"#f59e0b",fontSize:10,textTransform:"none",letterSpacing:0}}>· filter active</span>}
           </h2>
-          <CommodityTradesTable trades={filtered} ltps={ltps}/>
+          <CommodityTradesTable trades={filtered} ltps={ltps} onManualClose={onManualClose}/>
         </div>
       )}
 
@@ -1088,7 +1113,7 @@ function CommodityTabContent({trades, ltps, commStats}) {
         <div className="card">
           <h2>Open positions ({openF.length})</h2>
           {openF.length ? (
-            <CommodityTradesTable trades={openF} ltps={ltps}/>
+            <CommodityTradesTable trades={openF} ltps={ltps} onManualClose={onManualClose}/>
           ) : <div className="empty">No open commodity option positions</div>}
         </div>
       )}
@@ -1720,7 +1745,12 @@ function App() {
           MCX COMMODITY OPTIONS TAB
       ════════════════════════════════════════ */}
       <div style={{display: tab==="commodity" ? "block" : "none"}}>
-        <CommodityTabContent trades={commTrades} ltps={commLtps} commStats={commStats}/>
+        <CommodityTabContent trades={commTrades} ltps={commLtps} commStats={commStats}
+          onManualClose={() => {
+            fetch(`${API}/commodity/stats`).then(r=>r.json()).then(setCommStats).catch(()=>{});
+            fetch(`${API}/commodity/trades?limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});
+          }}
+        />
       </div>
 
       {/* ════════════════════════════════════════
