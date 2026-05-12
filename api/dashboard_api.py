@@ -1240,9 +1240,11 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
         pass
 
     # Live spot LTPs for open commodity option positions (keyed by instrument name)
+    # Each entry: {"ltp": float, "age_s": float|None} where age_s is seconds since last tick
     commodity_ltps: dict = {}
     try:
         from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS
+        _now_ist = datetime.now(tz=IST)
         open_comm = commodity_options.get_trades(status="OPEN")
         seen_instruments: set = set()
         for t in open_comm:
@@ -1252,15 +1254,21 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
                 continue
             seen_instruments.add(instrument)
             # Always try the current active contract first — same approach as the engine
-            ltp = None
+            ltp      = None
+            age_s    = None
+            tick_sym = None
             try:
                 active_sym = _fyers_sym(instrument)
                 ltp = store.get_ltp(active_sym)
+                if ltp:
+                    tick_sym = active_sym
             except Exception:
                 pass
             # Fallback: stored symbol (handles edge case where active_sym lookup fails)
             if not ltp and sym:
                 ltp = store.get_ltp(sym)
+                if ltp:
+                    tick_sym = sym
             # Validate range — discard if value looks like an options premium or is stale
             if ltp and instrument:
                 meta  = MCX_CONTRACTS.get(instrument, {})
@@ -1273,9 +1281,18 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
                         f"for {instrument} — discarding stale value"
                     )
                     ltp = None
+                    tick_sym = None
+            # Compute tick age so the frontend can warn on stale data
+            if ltp and tick_sym:
+                try:
+                    last_tick = store.get_latest_tick(tick_sym)
+                    if last_tick and last_tick.get("timestamp"):
+                        age_s = (_now_ist - last_tick["timestamp"]).total_seconds()
+                except Exception:
+                    pass
             # Key by instrument name so the frontend lookup is rollover-safe
             if ltp:
-                commodity_ltps[instrument] = ltp
+                commodity_ltps[instrument] = {"ltp": ltp, "age_s": age_s}
     except Exception:
         pass
 

@@ -659,7 +659,10 @@ function CommodityTradesTable({trades: tds, ltps: lps}) {
             const isOpen      = t.status==="OPEN";
             const lot         = t.lot_size || 1;
             const spotEntry   = t.spot_at_entry||0;
-            const ltp         = (lps && isOpen) ? (lps[t.instrument]||null) : null;
+            const ltpEntry    = (lps && isOpen) ? (lps[t.instrument]||null) : null;
+            const ltp         = ltpEntry ? ltpEntry.ltp : null;
+            const ltpAgeS     = ltpEntry ? ltpEntry.age_s : null;
+            const ltpStale    = ltpAgeS != null && ltpAgeS > 300;
             const spotMove    = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
             const estPnlLot   = spotMove != null ? round2(spotMove * SPREAD_DELTA * lot) : null;
             const pnlColor    = estPnlLot == null ? "#64748b" : estPnlLot > 0 ? "#22c55e" : estPnlLot < 0 ? "#ef4444" : "#94a3b8";
@@ -690,13 +693,18 @@ function CommodityTradesTable({trades: tds, ltps: lps}) {
                 <td style={{fontFamily:"monospace"}}>
                   {ltp != null ? (
                     <>
-                      <span style={{color:"#f59e0b",fontWeight:isOpen?"600":"400"}}>{ltp.toFixed(0)}</span>
+                      <span style={{color: ltpStale ? "#94a3b8" : "#f59e0b",fontWeight:isOpen?"600":"400"}}>{ltp.toFixed(0)}</span>
                       {spotMove != null && (
                         <span style={{fontSize:9,color:pnlColor,marginLeft:4}}>
                           {spotMove>=0?"+":""}{spotMove.toFixed(0)}
                         </span>
                       )}
-                      {atmLiveEst != null && (
+                      {ltpStale && (
+                        <div style={{fontSize:9,color:"#f97316",marginTop:2}}>
+                          ⚠ stale {ltpAgeS!=null?Math.floor(ltpAgeS/60)+"min":""}
+                        </div>
+                      )}
+                      {!ltpStale && atmLiveEst != null && (
                         <div style={{fontSize:9,color:"#a3e635",marginTop:2}}>
                           ATM ~{atmLiveEst.toFixed(1)} est.
                         </div>
@@ -793,7 +801,7 @@ function CommodityTabContent({trades, ltps, commStats}) {
   const totalRF    = closedF.reduce((s,t)=>s+(t.pnl_r||0), 0);
   const closedPnlInr = closedF.reduce((s,t)=>s+(t.pnl_approx||0), 0);
   const openPnlInr   = openF.reduce((s,t) => {
-    const ltp       = ltps ? (ltps[t.instrument]||null) : null;
+    const ltp       = ltps ? (ltps[t.instrument]?.ltp||null) : null;
     const spotEntry = t.spot_at_entry || 0;
     const spotMove  = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
     const estPnlLot = spotMove != null ? round2(round2(spotMove * 0.35) * (t.lot_size||1)) : 0;
