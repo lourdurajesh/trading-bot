@@ -702,7 +702,6 @@ const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltp
               <th style={{color:"#94a3b8"}}>RSI</th>
               <th style={{color:"#94a3b8"}}>IV%</th>
               <th>Time</th>
-              <th style={{color:"#475569",maxWidth:160}}>Signal Reason</th>
               <th style={{color:"#f59e0b"}}>Live P&L</th>
               <th>P&L (R)</th>
               <th>Exit</th>
@@ -794,7 +793,6 @@ const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltp
                   <td style={{fontFamily:"monospace",color:rsiColor,fontSize:10}}>{meta.rsi ? Number(meta.rsi).toFixed(1) : "—"}</td>
                   <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{meta.iv_pct ? meta.iv_pct+"%" : "—"}</td>
                   <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{entryHHMM}</td>
-                  <td style={{color:"#475569",fontSize:9,maxWidth:160,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={meta.signal_reason||""}>{signal||"—"}</td>
                   {/* Fix 3: P&L already × lot — add lot label to confirm */}
                   <td style={{fontFamily:"monospace",fontWeight:600,color:pnlColor}}>
                     {isOpen && estPnlLot != null
