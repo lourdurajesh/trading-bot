@@ -752,7 +752,7 @@ function CommodityTradesTable({trades: tds, ltps: lps}) {
    CommodityTabContent — owns filter state + options chain state.
    Stats widgets and table rows both update with the active filter.
 ───────────────────────────────────────────────────────────── */
-const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltps, commStats}) {
+function CommodityTabContent({trades, ltps, commStats}) {
   const [filterSym,    setFilterSym]    = React.useState("");
   const [filterStrat,  setFilterStrat]  = React.useState("all");
   const [filterStatus, setFilterStatus] = React.useState("all");
@@ -1129,7 +1129,7 @@ const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltp
       )}
     </div>
   );
-});
+}
 
 // ── Strategy Config components ───────────────────────────────────────────
 function ParamField({ strategy, param, entry, onUpdate }) {
