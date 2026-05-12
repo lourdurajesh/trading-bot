@@ -659,7 +659,7 @@ function CommodityTradesTable({trades: tds, ltps: lps}) {
             const isOpen      = t.status==="OPEN";
             const lot         = t.lot_size || 1;
             const spotEntry   = t.spot_at_entry||0;
-            const ltp         = lps ? (lps[t.instrument]||null) : null;
+            const ltp         = (lps && isOpen) ? (lps[t.instrument]||null) : null;
             const spotMove    = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
             const estPnlLot   = spotMove != null ? round2(spotMove * SPREAD_DELTA * lot) : null;
             const pnlColor    = estPnlLot == null ? "#64748b" : estPnlLot > 0 ? "#22c55e" : estPnlLot < 0 ? "#ef4444" : "#94a3b8";
