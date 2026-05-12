@@ -684,7 +684,8 @@ const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltp
 
   function CommodityTradesTable({trades: tds, ltps: lps}) {
     if (!tds || !tds.length) return <div className="empty">No commodity option trades yet — engine runs during MCX hours (09:00–23:30 IST)</div>;
-    const EST_DELTA = 0.35;
+    const SPREAD_DELTA = 0.35;  // net delta of debit spread (ATM ≈ 0.5, OTM ≈ 0.15)
+    const ATM_DELTA    = 0.50;  // delta of the bought ATM leg alone
     return (
       <div style={{overflowX:"auto"}}>
         <table className="data-table">
@@ -693,9 +694,11 @@ const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltp
               <th>Instrument</th>
               <th>Dir</th>
               <th>Entry Spot</th>
-              <th style={{color:"#f59e0b"}}>Live LTP</th>
-              <th style={{color:"#60a5fa"}}>ATM/OTM</th>
-              <th>Debit</th><th>MaxP</th><th>RR</th>
+              <th style={{color:"#f59e0b"}}>Spot Now / Opt.Est.</th>
+              <th>Entry Prem (ATM)</th>
+              <th>Debit (Cost)</th>
+              <th>Target / SL</th>
+              <th>RR</th>
               <th style={{color:"#94a3b8"}}>RSI</th>
               <th style={{color:"#94a3b8"}}>IV%</th>
               <th>Time</th>
@@ -708,65 +711,106 @@ const CommodityTabContent = React.memo(function CommodityTabContent({trades, ltp
           </thead>
           <tbody>
             {tds.map(t=>{
-              const r          = t.pnl_r||0;
-              const isOpen     = t.status==="OPEN";
-              const spotEntry  = t.spot_at_entry||0;
-              const ltp        = lps ? (lps[t.symbol]||null) : null;
-              const spotMove   = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
-              const estPnl     = spotMove != null ? round2(spotMove * EST_DELTA) : null;
-              const estPnlLot  = estPnl != null ? round2(estPnl * (t.lot_size||1)) : null;
-              const pnlColor   = estPnl == null ? "#64748b" : estPnl > 0 ? "#22c55e" : estPnl < 0 ? "#ef4444" : "#94a3b8";
-              const meta       = t.metadata || {};
-              const entryHHMM  = t.entry_time ? t.entry_time.substring(11,16) : "—";
-              const signal     = (meta.signal_reason || "").substring(0, 44);
-              const rsiColor   = meta.rsi > 60 ? "#f59e0b" : meta.rsi < 40 ? "#93c5fd" : "#94a3b8";
-              const optSuffix  = t.opt_type==="call" ? "CE" : "PE";
-              const atmLabel   = meta.atm_symbol
-                ? meta.atm_symbol.replace("MCX:","")
-                : `${(t.instrument||"").replace("MCX:","")}${t.atm_strike||""}${optSuffix}`;
-              const otmLabel   = meta.otm_symbol
-                ? meta.otm_symbol.replace("MCX:","")
-                : (t.otm_strike ? `${(t.instrument||"").replace("MCX:","")}${t.otm_strike}${optSuffix}` : null);
+              const r           = t.pnl_r||0;
+              const isOpen      = t.status==="OPEN";
+              const lot         = t.lot_size || 1;
+              const spotEntry   = t.spot_at_entry||0;
+              const ltp         = lps ? (lps[t.symbol]||null) : null;
+              const spotMove    = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
+              // Spread P&L: net_delta × spot_move × lot
+              const estPnlLot   = spotMove != null ? round2(spotMove * SPREAD_DELTA * lot) : null;
+              const pnlColor    = estPnlLot == null ? "#64748b" : estPnlLot > 0 ? "#22c55e" : estPnlLot < 0 ? "#ef4444" : "#94a3b8";
+              const meta        = t.metadata || {};
+              const entryHHMM   = t.entry_time ? t.entry_time.substring(11,16) : "—";
+              const signal      = (meta.signal_reason || "").substring(0, 44);
+              const rsiColor    = meta.rsi > 60 ? "#f59e0b" : meta.rsi < 40 ? "#93c5fd" : "#94a3b8";
+              const optSuffix   = t.opt_type==="call" ? "CE" : "PE";
+              // Estimated current ATM option price (ATM delta ≈ 0.5)
+              const atmPremEntry = meta.atm_prem || 0;
+              const atmLiveEst   = (spotMove != null && atmPremEntry > 0)
+                ? Math.max(0, round2(atmPremEntry + spotMove * ATM_DELTA))
+                : null;
+              // SL and target in INR (per the exit rules: SL=-60% of debit, target=50% of max_profit)
+              const slInr  = round2((t.net_debit||0) * 0.60 * lot);
+              const tgtInr = round2((t.max_profit||0) * 0.50 * lot);
               return (
                 <tr key={t.id}>
+                  {/* Fix 1: single spread description, no confusing ▲/▼ dual legs */}
                   <td className="sym">
-                    {(t.instrument||"").replace("MCX:","")}
-                    <div style={{fontSize:9,color:"#60a5fa",fontFamily:"monospace",marginTop:2,whiteSpace:"nowrap"}}>
-                      <span title="Buy leg">▲ {atmLabel}</span>
+                    <span>{(t.instrument||"").replace("MCX:","")}</span>
+                    <div style={{fontSize:9,color:"#94a3b8",fontFamily:"monospace",marginTop:2}}>
+                      {optSuffix==="CE"?"CALL":"PUT"} SPREAD
                     </div>
-                    <div style={{fontSize:9,color:"#60a5fa",fontFamily:"monospace",marginTop:2,whiteSpace:"nowrap"}}>
-                      {otmLabel && <span style={{color:"#f87171"}} title="Sell leg">▼ {otmLabel}</span>}
+                    <div style={{fontSize:9,color:"#60a5fa",fontFamily:"monospace",marginTop:1}}>
+                      {t.atm_strike||"?"}{optSuffix} / {t.otm_strike||"?"}{optSuffix}
                     </div>
                     <div style={{marginTop:3}}><StratBadge name={t.strategy}/></div>
                   </td>
                   <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
                   <td style={{fontFamily:"monospace",color:"#94a3b8"}}>{spotEntry ? spotEntry.toFixed(0) : "—"}</td>
-                  <td style={{fontFamily:"monospace",color:"#f59e0b",fontWeight:isOpen?"600":"400"}}>
-                    {ltp != null ? ltp.toFixed(0) : "—"}
-                    {spotMove != null && <div style={{fontSize:9,color:pnlColor}}>{spotMove>=0?"+":""}{spotMove.toFixed(0)}</div>}
+                  {/* Fix 2: spot clearly labeled; ATM estimated option price in sub-line */}
+                  <td style={{fontFamily:"monospace"}}>
+                    {ltp != null ? (
+                      <>
+                        <span style={{color:"#f59e0b",fontWeight:isOpen?"600":"400"}}>{ltp.toFixed(0)}</span>
+                        {spotMove != null && (
+                          <span style={{fontSize:9,color:pnlColor,marginLeft:4}}>
+                            {spotMove>=0?"+":""}{spotMove.toFixed(0)}
+                          </span>
+                        )}
+                        {atmLiveEst != null && (
+                          <div style={{fontSize:9,color:"#a3e635",marginTop:2}}>
+                            ATM ~{atmLiveEst.toFixed(1)} est.
+                          </div>
+                        )}
+                      </>
+                    ) : "—"}
                   </td>
-                  <td style={{fontFamily:"monospace",fontSize:10,color:"#60a5fa"}}>
-                    {t.atm_strike||"—"}
-                    {t.otm_strike ? <span style={{color:"#475569"}}>/{t.otm_strike}</span> : null}
+                  {/* Entry ATM premium (what was actually bought) */}
+                  <td style={{fontFamily:"monospace",color:"#e2e8f0"}}>
+                    {atmPremEntry > 0 ? atmPremEntry.toFixed(2) : (t.net_debit||0).toFixed(2)}
+                    <div style={{fontSize:9,color:"#475569",marginTop:1}}>
+                      OTM: {(meta.otm_prem||0).toFixed(2)}
+                    </div>
                   </td>
+                  {/* Fix 4: Debit shows cost in INR; SL in rupee value */}
                   <td style={{fontFamily:"monospace",color:"#fca5a5"}}>
-                    {(t.net_debit||0).toFixed(2)}
-                    <div style={{fontSize:9,color:"#9f1239"}}>SL: {(t.net_debit*0.60).toFixed(2)} (-60%)</div>
+                    {(t.net_debit||0).toFixed(2)} × {lot}
+                    <div style={{fontSize:9,color:"#64748b",marginTop:1}}>
+                      = ₹{round2((t.net_debit||0)*lot).toFixed(0)} cost
+                    </div>
+                    <div style={{fontSize:9,color:"#9f1239",marginTop:1}}>
+                      SL: -₹{slInr.toFixed(0)}
+                    </div>
                   </td>
+                  {/* Fix 4: Target in INR, max profit in INR */}
                   <td style={{fontFamily:"monospace",color:"#86efac"}}>
-                    {(t.max_profit||0).toFixed(2)}
-                    {t.net_debit?<div style={{fontSize:9,color:"#166534"}}>+{((t.max_profit/t.net_debit)*100).toFixed(0)}%</div>:null}
+                    <div>Tgt: +₹{tgtInr.toFixed(0)}</div>
+                    <div style={{fontSize:9,color:"#475569",marginTop:1}}>
+                      Max: +₹{round2((t.max_profit||0)*lot).toFixed(0)}
+                    </div>
                   </td>
                   <td style={{fontFamily:"monospace"}}>{(t.rr||t.rr_planned||0).toFixed(1)}</td>
                   <td style={{fontFamily:"monospace",color:rsiColor,fontSize:10}}>{meta.rsi ? Number(meta.rsi).toFixed(1) : "—"}</td>
                   <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{meta.iv_pct ? meta.iv_pct+"%" : "—"}</td>
                   <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{entryHHMM}</td>
                   <td style={{color:"#475569",fontSize:9,maxWidth:160,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={meta.signal_reason||""}>{signal||"—"}</td>
+                  {/* Fix 3: P&L already × lot — add lot label to confirm */}
                   <td style={{fontFamily:"monospace",fontWeight:600,color:pnlColor}}>
                     {isOpen && estPnlLot != null
-                      ? `${estPnlLot>=0?"+":""}₹${Math.abs(estPnlLot).toFixed(0)}`
+                      ? (
+                        <>
+                          <span>{estPnlLot>=0?"+":""}₹{Math.abs(estPnlLot).toFixed(0)}</span>
+                          <div style={{fontSize:9,color:"#475569",marginTop:1}}>spread × {lot} lot</div>
+                        </>
+                      )
                       : !isOpen && (t.pnl_approx!=null)
-                        ? <span className={t.pnl_approx>=0?"good":"bad"}>{t.pnl_approx>=0?"+":""}₹{Math.abs(t.pnl_approx).toFixed(0)}</span>
+                        ? (
+                          <>
+                            <span className={t.pnl_approx>=0?"good":"bad"}>{t.pnl_approx>=0?"+":""}₹{Math.abs(t.pnl_approx).toFixed(0)}</span>
+                            <div style={{fontSize:9,color:"#475569",marginTop:1}}>× {lot} lot</div>
+                          </>
+                        )
                         : "—"}
                   </td>
                   <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{isOpen?"open":fmtR(r)}</td>
