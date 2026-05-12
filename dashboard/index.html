@@ -132,6 +132,47 @@
     .chain-table tr.atm:hover td.ctr{background:#0d1f35}
     .chain-sym-btn{padding:3px 10px;border-radius:4px;border:1px solid #2d3748;background:transparent;color:#64748b;font-size:11px;cursor:pointer;margin-right:4px;font-family:'Courier New',monospace;transition:all .1s}
     .chain-sym-btn.active{border-color:#3b82f6;background:#1e3a5f;color:#93c5fd}
+
+    /* ── Daily Journal ── */
+    .journal-session{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px}
+    .journal-sym-card{background:#151a28;border-radius:8px;padding:12px 14px;margin-bottom:8px;border-left:3px solid #334155}
+    .journal-sym-card.traded{border-color:#22c55e}
+    .journal-sym-card.paper_traded{border-color:#f59e0b}
+    .journal-sym-card.vetoed{border-color:#ef4444}
+    .journal-sym-card.risk_rejected{border-color:#f97316}
+    .journal-sym-card.signal_generated{border-color:#3b82f6}
+    .journal-sym-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+    .journal-sym-name{font-family:'Courier New',monospace;font-weight:700;font-size:13px;color:#f1f5f9}
+    .journal-outcome-badge{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+    .outcome-traded{background:#14532d;color:#86efac}
+    .outcome-paper_traded{background:#3b2f0a;color:#fcd34d}
+    .outcome-vetoed{background:#450a0a;color:#fca5a5}
+    .outcome-risk_rejected{background:#431407;color:#fdba74}
+    .outcome-signal_generated{background:#1e3a5f;color:#93c5fd}
+    .journal-reason{font-size:11px;color:#94a3b8;margin-top:3px;line-height:1.4}
+    .journal-events{margin-top:8px;border-left:1px solid #1e2433;padding-left:10px}
+    .journal-event{display:flex;gap:8px;font-size:10px;padding:2px 0;color:#64748b}
+    .journal-event-time{color:#475569;font-family:monospace;flex-shrink:0;width:58px}
+    .journal-event-type{font-weight:600;flex-shrink:0;width:140px}
+    .journal-event-type.SIGNAL_GENERATED{color:#3b82f6}
+    .journal-event-type.INTELLIGENCE_VETO{color:#ef4444}
+    .journal-event-type.SIGNAL_REJECTED{color:#f97316}
+    .journal-event-type.ORDER_PLACED,.journal-event-type.POSITION_OPENED{color:#22c55e}
+    .journal-event-type.PAPER_TRADE{color:#f59e0b}
+    .journal-event-reason{color:#94a3b8;flex:1}
+    .journal-section-hdr{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin:16px 0 8px;font-weight:500}
+    .rejection-pills{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+    .rejection-pill{background:#1e2433;border-radius:6px;padding:5px 10px;font-size:11px;display:flex;gap:6px;align-items:center}
+    .rejection-pill .rp-count{font-weight:700;color:#f1f5f9;font-family:monospace}
+    .rejection-pill .rp-label{color:#94a3b8}
+    .journal-date-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+    .journal-date-input{background:#151a28;border:1px solid #2d3748;border-radius:6px;color:#e2e8f0;padding:5px 10px;font-size:12px;outline:none}
+    .journal-filter-btns{display:flex;gap:4px;flex-wrap:wrap}
+    .journal-filter-btn{padding:3px 10px;border-radius:5px;border:1px solid #2d3748;background:transparent;color:#64748b;font-size:11px;cursor:pointer}
+    .journal-filter-btn.active{background:#1e293b;color:#f1f5f9;border-color:#334155}
+    .journal-trade-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #111827;font-size:12px}
+    .journal-trade-row:last-child{border-bottom:none}
+    .journal-empty{color:#475569;font-size:12px;text-align:center;padding:28px 0}
   </style>
 </head>
 <body>
@@ -1190,6 +1231,13 @@ function App() {
   /* strategy config */
   const [stratConfig, setStratConfig] = React.useState(null);
 
+  /* daily journal */
+  const [journal, setJournal]         = React.useState(null);
+  const [journalLoading, setJournalLoading] = React.useState(false);
+  const [jFilter, setJFilter]         = React.useState("all");
+  const [jDate,   setJDate]           = React.useState("");
+  const [jExpanded, setJExpanded]     = React.useState({});
+
   const logRef = React.useRef(null);
 
   /* ── live WS ── */
@@ -1266,6 +1314,17 @@ function App() {
     const t5 = setInterval(loadComm,     60000);
     return () => [t1,t2,t3,t5].forEach(clearInterval);
   }, []);
+
+  /* ── journal fetch: load on mount + when tab is opened ── */
+  const loadJournal = React.useCallback((date) => {
+    setJournalLoading(true);
+    const url = date ? `${API}/decisions/daily?date=${date}` : `${API}/decisions/daily`;
+    fetch(url).then(r=>r.json()).then(d=>{setJournal(d);setJournalLoading(false);}).catch(()=>setJournalLoading(false));
+  }, []);
+  React.useEffect(()=>{
+    if(tab==="journal") loadJournal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[tab]);
 
 
   const switchMode = m => fetch(`${API}/mode/${m}`, {method:"POST"});
@@ -1380,7 +1439,7 @@ function App() {
 
       {/* ── Tabs ── */}
       <div className="tabs">
-        {[["trading","Trading"],["paper","Paper P&L"],["learning","Learning"],["commodity","MCX Options"],["logs","Live Logs"],["services","Services"],["backtest","Backtest"],["config","Strategy Config"]].map(([id,label])=>(
+        {[["trading","Trading"],["journal","Daily Journal"],["paper","Paper P&L"],["learning","Learning"],["commodity","MCX Options"],["logs","Live Logs"],["services","Services"],["backtest","Backtest"],["config","Strategy Config"]].map(([id,label])=>(
           <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>{label}</button>
         ))}
       </div>
@@ -1602,16 +1661,16 @@ function App() {
       {/* ════════════════════════════════════════
           LEARNING TAB
       ════════════════════════════════════════ */}
-      {tab==="learning" && (
+      <div style={{display: tab==="learning" ? "block" : "none"}}>
         <LearningTabContent trades={learnTrades} ltps={learnLtps} learnStats={learnStats}/>
-      )}
+      </div>
 
       {/* ════════════════════════════════════════
           MCX COMMODITY OPTIONS TAB
       ════════════════════════════════════════ */}
-      {tab==="commodity" && (
+      <div style={{display: tab==="commodity" ? "block" : "none"}}>
         <CommodityTabContent trades={commTrades} ltps={commLtps} commStats={commStats}/>
-      )}
+      </div>
 
       {/* ════════════════════════════════════════
           LIVE LOGS TAB
@@ -1796,6 +1855,187 @@ function App() {
           )}
         </div>
       )}
+
+      {/* ════════════════════════════════════════
+          DAILY JOURNAL TAB
+      ════════════════════════════════════════ */}
+      {tab==="journal" && (() => {
+        const j = journal;
+        const s = j?.session || {};
+
+        const outcomeLabels = {
+          traded:           "Traded",
+          paper_traded:     "Paper Traded",
+          vetoed:           "Intelligence Veto",
+          risk_rejected:    "Risk Rejected",
+          signal_generated: "Signal Only",
+        };
+        const rejectionLabels = {
+          earnings_blackout:  "Earnings Blackout",
+          macro_veto:         "Macro Veto",
+          intelligence_veto:  "Intelligence Veto",
+          poor_risk_reward:   "Poor R:R",
+          portfolio_heat:     "Portfolio Heat",
+          daily_loss_limit:   "Daily Loss Limit",
+          cooldown:           "Cooldown",
+          max_positions:      "Max Positions",
+          risk:               "Risk Check",
+          other:              "Other",
+        };
+
+        const filteredSymbols = (j?.symbols || []).filter(sym => {
+          if (jFilter === "all")    return true;
+          if (jFilter === "active") return sym.outcome !== "no_setup";
+          return sym.outcome === jFilter;
+        });
+
+        const handleDateSearch = () => {
+          if (jDate.match(/^\d{4}-\d{2}-\d{2}$/)) loadJournal(jDate);
+          else loadJournal();
+        };
+
+        return (
+          <div>
+            {/* Date selector */}
+            <div className="journal-date-row">
+              <input
+                type="date"
+                className="journal-date-input"
+                value={jDate}
+                onChange={e => setJDate(e.target.value)}
+                onKeyDown={e => e.key==="Enter" && handleDateSearch()}
+              />
+              <button className="mode-btn" onClick={handleDateSearch} style={{fontSize:12}}>Load</button>
+              <button className="mode-btn" onClick={()=>{setJDate("");loadJournal();}} style={{fontSize:12}}>Today</button>
+              <button className="mode-btn" onClick={()=>loadJournal(jDate||undefined)} style={{fontSize:12}}>Refresh</button>
+              {journalLoading && <span style={{fontSize:11,color:"#64748b"}}>Loading...</span>}
+              {j && <span style={{fontSize:11,color:"#475569",marginLeft:4}}>{j.date}</span>}
+            </div>
+
+            {!j ? (
+              <div className="journal-empty">No journal data loaded</div>
+            ) : (
+              <>
+                {/* Session summary */}
+                <div className="journal-session">
+                  <div className="metric"><div className="lbl">Bot Started</div><div className="val neutral" style={{fontSize:14}}>{s.bot_started||"—"}</div></div>
+                  <div className="metric"><div className="lbl">Symbols Active</div><div className="val neutral">{s.total_symbols_active||0}</div></div>
+                  <div className="metric"><div className="lbl">Signals Generated</div><div className="val" style={{color:"#3b82f6"}}>{s.total_signals_generated||0}</div></div>
+                  <div className="metric"><div className="lbl">Vetoed / Rejected</div>
+                    <div className="val" style={{color:"#ef4444",fontSize:18}}>
+                      {s.total_vetoed||0} <span style={{color:"#f97316"}}>/ {s.total_rejected||0}</span>
+                    </div>
+                  </div>
+                  <div className="metric"><div className="lbl">Trades Placed</div>
+                    <div className={`val ${(s.total_traded||0)>0?"up":"neutral"}`}>{s.total_traded||0}</div>
+                  </div>
+                </div>
+
+                {/* Session events (mode changes, kill switch) */}
+                {(s.session_events||[]).filter(e=>e.type!=="TOKEN_REFRESH").length > 0 && (
+                  <div className="card" style={{padding:"12px 16px",marginBottom:12}}>
+                    <h2>Session events</h2>
+                    {(s.session_events||[]).filter(e=>e.type!=="TOKEN_REFRESH").map((e,i)=>(
+                      <div key={i} style={{display:"flex",gap:12,fontSize:11,padding:"3px 0",borderBottom:"1px solid #1e2433"}}>
+                        <span style={{color:"#475569",fontFamily:"monospace",flexShrink:0}}>{e.time}</span>
+                        <span style={{color:"#f59e0b",fontWeight:600,minWidth:100}}>{e.type.replace("_"," ")}</span>
+                        <span style={{color:"#94a3b8"}}>{e.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Rejection breakdown */}
+                {Object.keys(j.rejection_breakdown||{}).length > 0 && (
+                  <div style={{marginBottom:16}}>
+                    <div className="journal-section-hdr">Why signals were blocked today</div>
+                    <div className="rejection-pills">
+                      {Object.entries(j.rejection_breakdown).sort((a,b)=>b[1]-a[1]).map(([k,v])=>(
+                        <div key={k} className="rejection-pill">
+                          <span className="rp-count">{v}</span>
+                          <span className="rp-label">{rejectionLabels[k]||k.replace(/_/g," ")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Trades placed */}
+                {(j.trades||[]).length > 0 && (
+                  <div className="card" style={{marginBottom:16}}>
+                    <h2>Trades placed ({j.trades.length})</h2>
+                    {j.trades.map((t,i)=>(
+                      <div key={i} className="journal-trade-row">
+                        <div>
+                          <span style={{fontFamily:"monospace",fontWeight:700,color:"#f1f5f9"}}>{t.display}</span>
+                          <span className={`badge ${(t.direction||"").toLowerCase()}`} style={{marginLeft:6}}>{t.direction}</span>
+                          {t.paper && <span className="badge paper" style={{marginLeft:4}}>PAPER</span>}
+                          <span style={{fontSize:10,color:"#64748b",marginLeft:8}}>{t.strategy}</span>
+                        </div>
+                        <div style={{textAlign:"right",fontFamily:"monospace"}}>
+                          <span style={{color:"#94a3b8"}}>{t.qty} qty @ </span>
+                          <span style={{color:"#f1f5f9"}}>₹{(t.price||0).toFixed(2)}</span>
+                          <span style={{color:"#475569",fontSize:10,marginLeft:8}}>{t.time}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Per-symbol decisions */}
+                <div className="journal-section-hdr">Signal decisions by symbol</div>
+                <div className="journal-filter-btns" style={{marginBottom:12}}>
+                  {[["all","All"],["traded","Traded"],["vetoed","Vetoed"],["risk_rejected","Risk Rejected"],["signal_generated","Signal Only"]].map(([k,l])=>(
+                    <button key={k} className={`journal-filter-btn ${jFilter===k?"active":""}`} onClick={()=>setJFilter(k)}>{l}</button>
+                  ))}
+                </div>
+
+                {filteredSymbols.length === 0 && (
+                  <div className="journal-empty">No activity matching this filter for {j.date}</div>
+                )}
+
+                {filteredSymbols.map(sym=>{
+                  const isOpen = jExpanded[sym.symbol];
+                  const oc = sym.outcome.toLowerCase();
+                  return (
+                    <div key={sym.symbol} className={`journal-sym-card ${oc}`}>
+                      <div className="journal-sym-header" onClick={()=>setJExpanded(p=>({...p,[sym.symbol]:!p[sym.symbol]}))} style={{cursor:"pointer"}}>
+                        <div>
+                          <span className="journal-sym-name">{sym.display}</span>
+                          <span style={{fontSize:10,color:"#475569",marginLeft:8,fontFamily:"monospace"}}>{sym.symbol}</span>
+                        </div>
+                        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                          <span className={`journal-outcome-badge outcome-${oc}`}>{outcomeLabels[oc]||oc}</span>
+                          <span style={{color:"#475569",fontSize:12}}>{isOpen?"▲":"▼"}</span>
+                        </div>
+                      </div>
+                      {sym.final_reason && (
+                        <div className="journal-reason">{sym.final_reason}</div>
+                      )}
+                      {isOpen && (
+                        <div className="journal-events">
+                          {sym.events.map((ev,i)=>(
+                            <div key={i} className="journal-event">
+                              <span className="journal-event-time">{ev.time}</span>
+                              <span className={`journal-event-type ${ev.type}`}>{ev.type.replace(/_/g," ")}</span>
+                              <span className="journal-event-reason">
+                                {ev.direction && <span style={{color:"#3b82f6",marginRight:4}}>{ev.direction}</span>}
+                                {ev.strategy && <span style={{color:"#64748b",marginRight:4}}>[{ev.strategy}]</span>}
+                                {ev.reason}
+                                {ev.price > 0 && <span style={{color:"#94a3b8",marginLeft:4}}>@ ₹{ev.price.toFixed(2)}</span>}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ════════════════════════════════════════
           STRATEGY CONFIG TAB

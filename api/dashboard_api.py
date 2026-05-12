@@ -102,6 +102,172 @@ def export_audit():
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/decisions/daily")
+def daily_decisions(date: str = None):
+    """
+    Daily decision journal — what the bot evaluated, decided, and why.
+    date: YYYY-MM-DD in IST (defaults to today).
+    Returns per-symbol decision trails grouped by outcome category.
+    """
+    import sqlite3, json as _json
+    from audit_log import AUDIT_DB_PATH
+
+    ist_now = datetime.now(IST)
+    target_date = date or ist_now.strftime("%Y-%m-%d")
+
+    # Fetch all rows for the target date
+    try:
+        with sqlite3.connect(AUDIT_DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM audit_log WHERE timestamp LIKE ? ORDER BY id ASC",
+                (f"{target_date}%",)
+            ).fetchall()
+    except Exception as e:
+        return {"error": str(e), "date": target_date, "symbols": [], "session": {}, "trades": []}
+
+    # Parse rows
+    events = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["details"] = _json.loads(d.get("details") or "{}")
+        except Exception:
+            d["details"] = {}
+        # Extract HH:MM:SS from ISO timestamp
+        ts = d.get("timestamp", "")
+        d["time"] = ts[11:19] if len(ts) >= 19 else ts
+        events.append(d)
+
+    # Session-level events
+    session_events = [e for e in events if e["event_type"] in ("BOT_START", "BOT_STOP", "MODE_CHANGE", "KILL_SWITCH", "TOKEN_REFRESH")]
+    bot_start = next((e["time"] for e in events if e["event_type"] == "BOT_START"), None)
+    mode = next(
+        (e["details"].get("new") or e["reason"].split("→")[-1].strip()
+         for e in reversed(events) if e["event_type"] == "MODE_CHANGE"),
+        None
+    )
+
+    # Group symbol-level events
+    SYMBOL_EVENTS = {"SIGNAL_GENERATED", "INTELLIGENCE_VETO", "SIGNAL_REJECTED",
+                     "ORDER_PLACED", "ORDER_FILLED", "ORDER_FAILED",
+                     "POSITION_OPENED", "POSITION_CLOSED", "STOP_HIT", "TARGET_HIT",
+                     "TRAILING_STOP", "PAPER_TRADE"}
+    sym_map: dict = {}
+    for e in events:
+        sym = e.get("symbol", "")
+        if not sym or e["event_type"] not in SYMBOL_EVENTS:
+            continue
+        if sym not in sym_map:
+            sym_map[sym] = []
+        sym_map[sym].append({
+            "time":      e["time"],
+            "type":      e["event_type"],
+            "direction": e.get("direction", ""),
+            "strategy":  e.get("strategy", ""),
+            "reason":    e.get("reason", ""),
+            "price":     e.get("price", 0),
+            "qty":       e.get("qty", 0),
+            "details":   e["details"],
+        })
+
+    # Determine outcome per symbol
+    OUTCOME_ORDER = {"TRADED": 0, "PAPER_TRADED": 1, "VETOED": 2, "RISK_REJECTED": 3, "SIGNAL_GENERATED": 4}
+    symbols_out = []
+    for sym, evts in sym_map.items():
+        types = {ev["type"] for ev in evts}
+        if "ORDER_PLACED" in types or "ORDER_FILLED" in types or "POSITION_OPENED" in types:
+            outcome = "TRADED"
+        elif "PAPER_TRADE" in types:
+            outcome = "PAPER_TRADED"
+        elif "INTELLIGENCE_VETO" in types:
+            outcome = "VETOED"
+        elif "SIGNAL_REJECTED" in types:
+            outcome = "RISK_REJECTED"
+        else:
+            outcome = "SIGNAL_GENERATED"
+
+        final_reason = ""
+        for et in ("INTELLIGENCE_VETO", "SIGNAL_REJECTED", "ORDER_PLACED", "PAPER_TRADE"):
+            match = next((ev["reason"] for ev in reversed(evts) if ev["type"] == et), None)
+            if match:
+                final_reason = match
+                break
+
+        display = sym.replace("NSE:", "").replace("-EQ", "").replace("MCX:", "").replace("BSE:", "")
+        symbols_out.append({
+            "symbol":       sym,
+            "display":      display,
+            "outcome":      outcome,
+            "final_reason": final_reason,
+            "events":       evts,
+        })
+
+    symbols_out.sort(key=lambda x: OUTCOME_ORDER.get(x["outcome"], 99))
+
+    # Trades placed today
+    trades = [
+        {
+            "time":      e["time"],
+            "symbol":    e.get("symbol", ""),
+            "display":   e.get("symbol","").replace("NSE:","").replace("-EQ","").replace("MCX:",""),
+            "direction": e.get("direction", ""),
+            "qty":       e.get("qty", 0),
+            "price":     e.get("price", 0),
+            "strategy":  e.get("strategy", ""),
+            "paper":     bool(e.get("paper", 0)),
+        }
+        for e in events
+        if e["event_type"] in ("ORDER_PLACED", "PAPER_TRADE", "POSITION_OPENED")
+    ]
+
+    # Rejection breakdown
+    rejection_breakdown = {}
+    for e in events:
+        if e["event_type"] in ("SIGNAL_REJECTED", "INTELLIGENCE_VETO"):
+            reason = e.get("reason", "")
+            layer  = e.get("details", {}).get("layer", "unknown")
+            if e["event_type"] == "INTELLIGENCE_VETO":
+                if "earnings" in reason.lower():
+                    cat = "earnings_blackout"
+                elif "macro" in reason.lower():
+                    cat = "macro_veto"
+                else:
+                    cat = "intelligence_veto"
+            elif "risk_reward" in reason.lower() or "r:r" in reason.lower():
+                cat = "poor_risk_reward"
+            elif "heat" in reason.lower():
+                cat = "portfolio_heat"
+            elif "loss limit" in reason.lower():
+                cat = "daily_loss_limit"
+            elif "cooldown" in reason.lower():
+                cat = "cooldown"
+            elif "position" in reason.lower() and "max" in reason.lower():
+                cat = "max_positions"
+            else:
+                cat = layer if layer != "unknown" else "other"
+            rejection_breakdown[cat] = rejection_breakdown.get(cat, 0) + 1
+
+    return {
+        "date":   target_date,
+        "session": {
+            "bot_started":           bot_start,
+            "mode":                  mode,
+            "total_symbols_active":  len(sym_map),
+            "total_signals_generated": sum(
+                1 for e in events if e["event_type"] == "SIGNAL_GENERATED"
+            ),
+            "total_vetoed":    sum(1 for e in events if e["event_type"] == "INTELLIGENCE_VETO"),
+            "total_rejected":  sum(1 for e in events if e["event_type"] == "SIGNAL_REJECTED"),
+            "total_traded":    len([s for s in symbols_out if s["outcome"] == "TRADED"]),
+            "session_events":  [{"time": e["time"], "type": e["event_type"], "reason": e.get("reason","")} for e in session_events],
+        },
+        "symbols":             symbols_out,
+        "trades":              trades,
+        "rejection_breakdown": rejection_breakdown,
+    }
+
+
 @app.get("/options/chain/{symbol:path}")
 def get_options_chain(symbol: str):
     """Return live options chain for a symbol."""

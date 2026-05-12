@@ -535,7 +535,11 @@ class OptionsExecutor:
         try:
             expiry = datetime.strptime(expiry_str, "%Y-%m-%d").replace(tzinfo=IST)
             now    = datetime.now(tz=IST)
-            return max(0, (expiry - now).days)
+            delta  = expiry - now
+            # Ceil: if any partial day remains, count it as a full day.
+            # Without this, Tuesday 9:30 AM → Thursday expiry shows 2 DTE (not 3)
+            # because timedelta.days truncates the 14-hour remainder.
+            return max(0, delta.days + (1 if delta.seconds > 0 else 0))
         except Exception:
             return 0
 
