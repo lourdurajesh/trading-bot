@@ -749,7 +749,11 @@ class CommodityOptionsLearning:
             # Convert debit-% params to spot-point distances for this trade
             sl_dist    = round((sl_debit_pct    * net_debit) / _SPREAD_DELTA, 2) if net_debit > 0 else round(entry_spot * 0.015, 2)
             trail_dist = round((trail_debit_pct * net_debit) / _SPREAD_DELTA, 2) if net_debit > 0 else round(entry_spot * 0.011, 2)
-            trail_trig = round((trail_trig_pct  * net_debit) / _SPREAD_DELTA, 2) if net_debit > 0 else sl_dist
+            # Trail trigger as a fraction of SL distance — e.g. 0.50 means "activate
+            # trail once spot has moved half the SL distance in our favour".
+            # Previously used (pct × debit / delta) which gave 135 pts vs SL of 108 pts,
+            # meaning trail only kicked in 16 pts before target — effectively useless.
+            trail_trig = round(trail_trig_pct * sl_dist, 2)
 
             sl_price   = trade_meta.get("sl_price")
             peak_spot  = trade_meta.get("peak_spot", entry_spot)
@@ -759,6 +763,12 @@ class CommodityOptionsLearning:
             # First-time setup for trades opened before this feature
             if sl_price is None:
                 sl_price   = _debit_sl_price(entry_spot, direction, net_debit, strat_cfg)
+                sl_updated = True
+            # Recalculate trail_trig_spot; rewrite if stale so formula changes take effect
+            _trig_spot_new = round(
+                (entry_spot + trail_trig) if direction == "LONG" else (entry_spot - trail_trig), 2
+            )
+            if trade_meta.get("trail_trig_spot") != _trig_spot_new:
                 sl_updated = True
 
             # Update peak (best spot seen in the trade's favor)
@@ -798,9 +808,12 @@ class CommodityOptionsLearning:
             # peak_spot is persisted on every new high/low so a restart doesn't
             # lose the trailing reference point.
             if sl_updated or peak_updated:
-                trade_meta["sl_price"]   = sl_price
-                trade_meta["peak_spot"]  = round(peak_spot, 2)
-                trade_meta["target_pct"] = target_pct
+                trade_meta["sl_price"]        = sl_price
+                trade_meta["peak_spot"]       = round(peak_spot, 2)
+                trade_meta["target_pct"]      = target_pct
+                trade_meta["trail_trig_spot"] = round(
+                    (entry_spot + trail_trig) if direction == "LONG" else (entry_spot - trail_trig), 2
+                )
                 trade["metadata"] = trade_meta
                 self._db_update_sl(trade["id"], trade_meta)
 

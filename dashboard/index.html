@@ -681,17 +681,22 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
             const atmLiveEst  = (spotMove != null && atmPremEntry > 0)
               ? Math.max(0, round2(atmPremEntry + spotMove * ATM_DELTA))
               : null;
-            const slPrice     = meta.sl_price    || null;
-            const tgtPct      = meta.target_pct  || 0.50;
-            const trailActive = meta.trail_active === true;
+            const slPrice        = meta.sl_price       || null;
+            const tgtPct         = meta.target_pct     || 0.50;
+            const trailActive    = meta.trail_active   === true;
+            const trailTrigSpot  = meta.trail_trig_spot || null;
             // Estimated loss in INR if spot hits the current SL level
             const slMove  = slPrice && spotEntry ? (t.direction==="LONG" ? spotEntry-slPrice : slPrice-spotEntry) : 0;
             const slInr   = round2(Math.max(0, slMove * 0.35 * lot));
             const tgtInr  = round2((t.max_profit||0) * tgtPct * lot);
-            // Target spot level derived from SL distance × RR
-            const rr      = t.rr || t.rr_planned || 1;
-            const tgtSpot = (slPrice && spotEntry && slMove > 0)
-              ? Math.round(spotEntry + (t.direction==="LONG" ? 1 : -1) * slMove * rr)
+            // Target spot level: inverse of P&L estimate (tgtInr = move × SPREAD_DELTA × lot)
+            const tgtSpot = (tgtInr > 0 && spotEntry)
+              ? Math.round(spotEntry + (t.direction==="LONG" ? 1 : -1) * tgtInr / (SPREAD_DELTA * lot))
+              : null;
+            // How far spot still needs to move before trail kicks in
+            const ltp2 = ltp || spotEntry;
+            const trailGap = trailTrigSpot && !trailActive
+              ? Math.round(Math.abs(trailTrigSpot - ltp2))
               : null;
             return (
               <tr key={t.id}>
@@ -767,6 +772,15 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
                     {slPrice ? `@ ${Math.round(slPrice)}` : "—"}
                     {slPrice && <span style={{color:"#9f1239",marginLeft:4}}>~-₹{slInr.toFixed(0)}</span>}
                   </div>
+                  {trailActive
+                    ? <div style={{fontSize:8,color:"#f97316",marginTop:1}}>trail active — SL moves with price</div>
+                    : trailTrigSpot
+                      ? <div style={{fontSize:8,color:"#64748b",marginTop:1}}>
+                          trail activates @ {trailTrigSpot}
+                          {trailGap != null && <span style={{color:"#475569"}}> ({trailGap} pts away)</span>}
+                        </div>
+                      : null
+                  }
                 </td>
                 <td style={{fontFamily:"monospace"}}>{(t.rr||t.rr_planned||0).toFixed(1)}</td>
                 <td style={{fontFamily:"monospace",color:rsiColor,fontSize:10}}>{meta.rsi ? Number(meta.rsi).toFixed(1) : "—"}</td>
