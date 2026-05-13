@@ -7,17 +7,20 @@ This is the most critical missing piece for autonomous trading.
 Rules enforced:
   1. Stop loss hit        → exit immediately at market
   2. Target 1 hit         → exit 50%, move SL to breakeven
-  3. Target 2 hit         → exit remaining 50%
+  3. Target 2 hit         → exit remaining 50% (skipped if dynamic target active)
   4. Trailing stop        → after 1R profit, trail by 1×ATR
   5. Breakeven move       → after T1 hit, SL moves to entry price
   6. EOD forced exit      → close all intraday positions at 3:15 PM IST
   7. Max holding period   → force exit after 20 trading days
   8. Catastrophic gap     → if price gaps past SL by >3%, exit immediately
+  9. Dynamic target       → after T1 hit, target extends by 1R at each milestone;
+                            trailing stop becomes the sole exit mechanism
 
 Called by main.py fast loop every 5 seconds.
 """
 
 import logging
+import math
 import threading
 from datetime import date, datetime, time, timezone
 from typing import Optional
@@ -35,9 +38,11 @@ IST = ZoneInfo("Asia/Kolkata")
 # Exit rules configuration
 EOD_EXIT_TIME      = time(15, 15)    # 3:15 PM IST — close intraday positions
 MAX_HOLDING_DAYS   = 20              # force exit after this many calendar days
-BREAKEVEN_TRIGGER  = 1.0             # move SL to BE after 1R profit
-TRAIL_TRIGGER      = 1.5             # start trailing after 1.5R profit
-PARTIAL_EXIT_PCT   = 0.5             # exit 50% at T1
+BREAKEVEN_TRIGGER       = 1.0   # move SL to BE after 1R profit
+TRAIL_TRIGGER           = 1.5   # start trailing after 1.5R profit
+PARTIAL_EXIT_PCT        = 0.5   # exit 50% at T1
+DYNAMIC_TARGET_START_R  = 3.0   # first dynamic milestone after T1 (~2R)
+DYNAMIC_TARGET_STEP     = 1.0   # advance target by this many R per milestone
 
 # Options-specific exit thresholds
 OPTIONS_DEBIT_STOP_PCT   = 0.50     # exit debit spread when premium drops to 50% of entry
@@ -57,6 +62,7 @@ class PositionManager:
         self._breakeven_applied: set[str] = set()   # symbols where SL moved to BE
         self._partial_exited:    set[str] = set()   # symbols where 50% already exited
         self._trailing_stops:    dict[str, float] = {}  # symbol → current trail SL
+        self._dynamic_target_r:  dict[str, float] = {}  # symbol → next R-milestone target
 
     def check_all(self) -> None:
         """
@@ -113,6 +119,20 @@ class PositionManager:
             already_partial = symbol in self._partial_exited
             already_be      = symbol in self._breakeven_applied
 
+        # ── Reconstruct in-memory state after a service restart ───
+        # If none of our tracking dicts know about this symbol yet, infer from
+        # the persisted stop_loss: if SL has already been moved to/past breakeven
+        # it means T1 was hit in a previous session.
+        with self._lock:
+            untracked = (symbol not in self._partial_exited
+                         and symbol not in self._breakeven_applied
+                         and symbol not in self._trailing_stops)
+        if untracked:
+            self._reconstruct_state_from_position(symbol, direction, entry, stop, ltp)
+            with self._lock:
+                already_partial = symbol in self._partial_exited
+                already_be      = symbol in self._breakeven_applied
+
         # Use trailing stop if set, else original stop
         effective_stop = self._trailing_stops.get(symbol, stop)
 
@@ -144,6 +164,8 @@ class PositionManager:
             if risk <= 0:
                 return
 
+            profit_r = (ltp - entry) / risk
+
             # Stop loss hit
             if ltp <= effective_stop:
                 logger.info(f"[PositionManager] STOP HIT {symbol}: "
@@ -151,15 +173,20 @@ class PositionManager:
                 self._exit_position(symbol, remaining_size, "STOP", ltp)
                 return
 
-            # Target 2 hit — exit remaining position (only after T1 partial exit)
-            if target_2 > 0 and ltp >= target_2 and already_partial:
-                logger.info(f"[PositionManager] T2 HIT {symbol}: "
-                            f"ltp={ltp:.2f} >= t2={target_2:.2f} — "
-                            f"exiting remaining {remaining_size} shares")
-                self._exit_position(symbol, remaining_size, "TARGET2", ltp)
-                return
+            # Dynamic target — advance milestone after T1 is hit
+            if already_partial:
+                self._update_dynamic_target(symbol, profit_r, entry, risk, direction)
 
-            # Target 1 hit — partial exit + move SL to breakeven
+            # Target 2 hit — skipped when dynamic target is active (trailing stop exits instead)
+            if target_2 > 0 and ltp >= target_2 and already_partial:
+                if symbol not in self._dynamic_target_r:
+                    logger.info(f"[PositionManager] T2 HIT {symbol}: "
+                                f"ltp={ltp:.2f} >= t2={target_2:.2f} — "
+                                f"exiting remaining {remaining_size} shares")
+                    self._exit_position(symbol, remaining_size, "TARGET2", ltp)
+                    return
+
+            # Target 1 hit — partial exit + move SL to breakeven + activate dynamic target
             if target_1 > 0 and ltp >= target_1 and not already_partial:
                 partial_size = max(1, int(remaining_size * PARTIAL_EXIT_PCT))
                 logger.info(f"[PositionManager] T1 HIT {symbol}: "
@@ -168,6 +195,7 @@ class PositionManager:
                 self._partial_exit(symbol, partial_size, "TARGET1", ltp)
                 with self._lock:
                     self._partial_exited.add(symbol)
+                    self._dynamic_target_r[symbol] = DYNAMIC_TARGET_START_R
                 if not already_be:
                     self._move_stop_to_breakeven(symbol, entry)
                     with self._lock:
@@ -175,7 +203,6 @@ class PositionManager:
                 return
 
             # Trailing stop — after 1.5R profit
-            profit_r = (ltp - entry) / risk
             if profit_r >= TRAIL_TRIGGER:
                 self._update_trailing_stop(symbol, ltp, direction, risk)
 
@@ -191,6 +218,8 @@ class PositionManager:
             if risk <= 0:
                 return
 
+            profit_r = (entry - ltp) / risk
+
             # Stop loss hit
             if ltp >= effective_stop:
                 logger.info(f"[PositionManager] STOP HIT SHORT {symbol}: "
@@ -198,21 +227,27 @@ class PositionManager:
                 self._exit_position(symbol, remaining_size, "STOP", ltp)
                 return
 
-            # Target 2 hit — exit remaining (only after T1 partial exit)
-            if target_2 > 0 and ltp <= target_2 and already_partial:
-                logger.info(f"[PositionManager] T2 HIT SHORT {symbol}: "
-                            f"ltp={ltp:.2f} <= t2={target_2:.2f} — "
-                            f"exiting remaining {remaining_size} shares")
-                self._exit_position(symbol, remaining_size, "TARGET2", ltp)
-                return
+            # Dynamic target — advance milestone after T1 is hit
+            if already_partial:
+                self._update_dynamic_target(symbol, profit_r, entry, risk, direction)
 
-            # Target 1 hit — partial exit + move SL to breakeven
+            # Target 2 hit — skipped when dynamic target is active (trailing stop exits instead)
+            if target_2 > 0 and ltp <= target_2 and already_partial:
+                if symbol not in self._dynamic_target_r:
+                    logger.info(f"[PositionManager] T2 HIT SHORT {symbol}: "
+                                f"ltp={ltp:.2f} <= t2={target_2:.2f} — "
+                                f"exiting remaining {remaining_size} shares")
+                    self._exit_position(symbol, remaining_size, "TARGET2", ltp)
+                    return
+
+            # Target 1 hit — partial exit + move SL to breakeven + activate dynamic target
             if target_1 > 0 and ltp <= target_1 and not already_partial:
                 partial_size = max(1, int(remaining_size * PARTIAL_EXIT_PCT))
                 logger.info(f"[PositionManager] T1 HIT SHORT {symbol}")
                 self._partial_exit(symbol, partial_size, "TARGET1", ltp)
                 with self._lock:
                     self._partial_exited.add(symbol)
+                    self._dynamic_target_r[symbol] = DYNAMIC_TARGET_START_R
                 if not already_be:
                     self._move_stop_to_breakeven(symbol, entry)
                     with self._lock:
@@ -220,7 +255,6 @@ class PositionManager:
                 return
 
             # Trailing stop for short
-            profit_r = (entry - ltp) / risk
             if profit_r >= TRAIL_TRIGGER:
                 self._update_trailing_stop(symbol, ltp, direction, risk)
 
@@ -423,6 +457,7 @@ class PositionManager:
                 self._breakeven_applied.discard(symbol)
                 self._partial_exited.discard(symbol)
                 self._trailing_stops.pop(symbol, None)
+                self._dynamic_target_r.pop(symbol, None)
         else:
             logger.error(
                 f"[PositionManager] OPTIONS EXIT ORDER FAILED for {symbol} — "
@@ -519,6 +554,7 @@ class PositionManager:
                 self._breakeven_applied.discard(symbol)
                 self._partial_exited.discard(symbol)
                 self._trailing_stops.pop(symbol, None)
+                self._dynamic_target_r.pop(symbol, None)
         else:
             logger.error(f"[PositionManager] EXIT ORDER FAILED for {symbol} — "
                          f"MANUAL INTERVENTION REQUIRED")
@@ -577,6 +613,7 @@ class PositionManager:
     def _move_stop_to_breakeven(self, symbol: str, entry_price: float) -> None:
         """Move stop loss to breakeven (entry price)."""
         self._trailing_stops[symbol] = entry_price
+        portfolio_tracker.update_stop_loss(symbol, entry_price)
         logger.info(f"[PositionManager] SL moved to breakeven: "
                     f"{symbol} → ₹{entry_price:.2f}")
 
@@ -600,13 +637,95 @@ class PositionManager:
         # Only move stop in profitable direction (ratchet — never move backward)
         if direction == "LONG" and new_sl > current_sl:
             self._trailing_stops[symbol] = round(new_sl, 2)
+            portfolio_tracker.update_stop_loss(symbol, new_sl)
             logger.info(f"[PositionManager] Trail SL updated: {symbol} → ₹{new_sl:.2f}")
             self._update_broker_sl(symbol, new_sl)
 
         elif direction == "SHORT" and (current_sl == 0 or new_sl < current_sl):
             self._trailing_stops[symbol] = round(new_sl, 2)
+            portfolio_tracker.update_stop_loss(symbol, new_sl)
             logger.info(f"[PositionManager] Trail SL updated SHORT: {symbol} → ₹{new_sl:.2f}")
             self._update_broker_sl(symbol, new_sl)
+
+    def _reconstruct_state_from_position(
+        self, symbol: str, direction: str, entry: float, original_stop: float, ltp: float
+    ) -> None:
+        """
+        Rebuild in-memory tracking state from the persisted stop_loss after a restart.
+
+        If stop_loss has been moved to/past breakeven (T1 was hit), restore:
+          - _partial_exited, _breakeven_applied
+          - _trailing_stops (set to persisted stop_loss value)
+          - _dynamic_target_r (inferred from current profit_r)
+        """
+        pos = portfolio_tracker.get_position(symbol)
+        if not pos:
+            return
+
+        persisted_sl = pos.stop_loss
+        risk = abs(entry - original_stop)
+        if risk <= 0:
+            return
+
+        # T1 was already hit if SL was moved to/past breakeven
+        t1_was_hit = (direction == "LONG"  and persisted_sl >= entry) or \
+                     (direction == "SHORT" and persisted_sl <= entry)
+
+        if not t1_was_hit:
+            return
+
+        if direction == "LONG":
+            profit_r = (ltp - entry) / risk
+        else:
+            profit_r = (entry - ltp) / risk
+
+        next_milestone = max(DYNAMIC_TARGET_START_R, math.ceil(profit_r) + 1)
+
+        with self._lock:
+            self._partial_exited.add(symbol)
+            self._breakeven_applied.add(symbol)
+            self._trailing_stops[symbol]   = persisted_sl
+            self._dynamic_target_r[symbol] = next_milestone
+
+        logger.info(
+            f"[PositionManager] State restored after restart: {symbol} | "
+            f"T1 hit | trail SL=₹{persisted_sl:.2f} | "
+            f"profit={profit_r:.1f}R | next target={next_milestone:.0f}R"
+        )
+
+    def _update_dynamic_target(
+        self, symbol: str, profit_r: float, entry: float, risk: float, direction: str
+    ) -> None:
+        """
+        Advance the dynamic target milestone each time the trade gains another R.
+        Called every tick after T1 partial exit. Trailing stop remains the exit trigger.
+        """
+        with self._lock:
+            current_milestone = self._dynamic_target_r.get(symbol)
+        if current_milestone is None:
+            return
+
+        if profit_r >= current_milestone:
+            next_milestone = current_milestone + DYNAMIC_TARGET_STEP
+            with self._lock:
+                self._dynamic_target_r[symbol] = next_milestone
+
+            if direction == "LONG":
+                next_price = entry + next_milestone * risk
+            else:
+                next_price = entry - next_milestone * risk
+
+            logger.info(
+                f"[PositionManager] DYNAMIC TARGET {symbol}: "
+                f"{current_milestone:.0f}R hit → target extended to "
+                f"{next_milestone:.0f}R = ₹{next_price:.2f}"
+            )
+            alert_service.info(
+                f"🎯 {symbol.replace('NSE:','').replace('-EQ','')}: "
+                f"{current_milestone:.0f}R milestone hit\n"
+                f"Target extended → {next_milestone:.0f}R = ₹{next_price:.2f}\n"
+                f"Trailing stop riding the move"
+            )
 
     def _update_broker_sl(self, symbol: str, new_sl: float) -> None:
         """
@@ -667,6 +786,7 @@ class PositionManager:
             self._breakeven_applied.discard(symbol)
             self._partial_exited.discard(symbol)
             self._trailing_stops.pop(symbol, None)
+            self._dynamic_target_r.pop(symbol, None)
 
 
 # ── Module-level singleton ────────────────────────────────────────

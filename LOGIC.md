@@ -3,7 +3,7 @@
 > Single source of truth for every strategy rule, parameter, threshold, formula,
 > and exit condition in the bot. Update this file whenever logic changes in code.
 >
-> Last updated: 2026-04-08
+> Last updated: 2026-05-13
 
 ---
 
@@ -15,15 +15,20 @@
 4. [Strategy Selector — Routing Logic](#4-strategy-selector--routing-logic)
 5. [Trend Follow Strategy](#5-trend-follow-strategy)
 6. [Mean Reversion Strategy](#6-mean-reversion-strategy)
-7. [Options Income Strategy (Short Strangle)](#7-options-income-strategy-short-strangle)
-8. [Directional Options Strategy (Debit Spread)](#8-directional-options-strategy-debit-spread)
-9. [Iron Condor Strategy](#9-iron-condor-strategy)
-10. [Signal Validation Rules](#10-signal-validation-rules)
-11. [Risk Manager — Trade Approval Pipeline](#11-risk-manager--trade-approval-pipeline)
-12. [Position Manager — Exit Rules](#12-position-manager--exit-rules)
-13. [Paper Trading Engine](#13-paper-trading-engine)
-14. [Cooldown System](#14-cooldown-system)
-15. [Known Bugs & Fixes (Incident Log)](#15-known-bugs--fixes-incident-log)
+7. [Momentum Reversal Strategy](#7-momentum-reversal-strategy)
+8. [Gap Fade Strategy](#8-gap-fade-strategy)
+9. [Simple Momentum Strategy](#9-simple-momentum-strategy)
+10. [Options Income Strategy (Short Strangle)](#10-options-income-strategy-short-strangle)
+11. [Directional Options Strategy (Debit Spread)](#11-directional-options-strategy-debit-spread)
+12. [Institutional Momentum Strategy](#12-institutional-momentum-strategy)
+13. [Iron Condor Strategy](#13-iron-condor-strategy)
+14. [Signal Validation Rules](#14-signal-validation-rules)
+15. [Risk Manager — Trade Approval Pipeline](#15-risk-manager--trade-approval-pipeline)
+16. [Position Manager — Exit Rules](#16-position-manager--exit-rules)
+17. [Persistence & State Recovery](#17-persistence--state-recovery)
+18. [Paper Trading Engine](#18-paper-trading-engine)
+19. [Cooldown System](#19-cooldown-system)
+20. [Known Bugs & Fixes (Incident Log)](#20-known-bugs--fixes-incident-log)
 
 ---
 
@@ -337,7 +342,159 @@ This looks inverted when scanning the database but is correct behaviour.
 
 ---
 
-## 7. Options Income Strategy (Short Strangle)
+## 7. Momentum Reversal Strategy
+
+**File:** `strategies/momentum_reversal.py`
+**Active Regime:** RANGING, VOLATILE
+**Signal Timeframe:** 1H
+**Hold Type:** Intraday
+
+### Parameters
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| RSI_OVERBOUGHT | 82 | SHORT reversal trigger |
+| RSI_OVERSOLD | 18 | LONG reversal trigger |
+| MAX_ADX | 25 | ADX must be below — no strong trend |
+| ATR_STOP_BUFFER | 0.5 | ATR buffer beyond swing extreme |
+| TARGET_1_R | 1.5 | First target at 1.5R |
+| TARGET_2_R | 2.5 | Second target at 2.5R |
+| LOOKBACK_BARS | 10 | Bars checked for RSI extremity duration |
+| MIN_RVOL | 1.3 | Volume spike required for capitulation signal |
+
+### Entry Conditions (ALL must pass)
+
+```
+1. Regime = RANGING or VOLATILE (extremes extend in trending markets)
+2. RSI >= 82 (SHORT) or <= 18 (LONG)
+3. RSI has been extreme for >= 2 consecutive bars (exhaustion)
+4. ADX < 25 (low trend strength)
+5. RVOL >= 1.3 (volume spike = capitulation / euphoria)
+6. R:R >= 1.5
+7. Confidence >= 0.65
+```
+
+### SL and Target Calculation
+
+```
+LONG:
+  swing_low = min(high[-10:-1])
+  stop      = min(swing_low, entry) - (0.5 × ATR)
+  risk      = entry - stop
+  target_1  = entry + (1.5 × risk)
+  target_2  = min(EMA21, entry + (2.5 × risk))   ← EMA21 as mean target if closer
+
+SHORT:
+  swing_high = max(high[-10:-1])
+  stop       = max(swing_high, entry) + (0.5 × ATR)
+  risk       = stop - entry
+  target_1   = entry - (1.5 × risk)
+  target_2   = max(EMA21, entry - (2.5 × risk))   ← EMA21 as mean target if closer
+```
+
+T2 anchors to EMA21 (the mean this reversal is snapping back to) rather than a pure R-multiple.
+
+### Confidence Scoring
+
+| Factor | Max Weight | Thresholds |
+|--------|-----------|------------|
+| RSI extremity | 0.30 | SHORT: ≥90: 0.30 / ≥85: 0.22 / ≥82: 0.14 |
+| ADX weakness | 0.20 | <15: 0.20 / <20: 0.13 / <25: 0.07 |
+| Volume spike | 0.20 | ≥3.0: 0.20 / ≥2.0: 0.14 / ≥1.5: 0.09 / else: 0.04 |
+| Exhaustion bars | 0.15 | ≥5: 0.15 / ≥3: 0.09 / ≥2: 0.05 |
+| Regime bonus | 0.15 | RANGING: 0.15 / VOLATILE: 0.08 |
+| **Total** | **1.0** | Capped at 1.0 |
+
+---
+
+## 8. Gap Fade Strategy
+
+**File:** `strategies/gap_fade.py`
+**Active Regime:** Any (gap is the setup, not regime)
+**Signal Timeframe:** 5m (first 15 min candles), filtered by 1H regime
+**Hold Type:** Intraday
+
+### Parameters
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| MIN_GAP_PCT | 0.5% | Minimum gap size to consider fading |
+| RSI_OVERBOUGHT | 70 | Gap-up short requires RSI above this |
+| RSI_OVERSOLD | 30 | Gap-down long requires RSI below this |
+| TARGET_1_R | 1.5 | Fallback T1 if gap fill is inside entry |
+| TARGET_2_R | 2.5 | Second target |
+| STOP_ATR_BUFFER | 0.3 | ATR buffer beyond gap extreme |
+
+### Entry Conditions (ALL must pass)
+
+```
+Gap-Up SHORT:
+  1. Today open > yesterday close by >= 0.5%
+  2. RSI >= 70 (overbought into the gap)
+  3. Price is near today's high (inside the gap)
+  4. R:R >= 1.5
+
+Gap-Down LONG:
+  1. Today open < yesterday close by >= 0.5%
+  2. RSI <= 30 (oversold into the gap)
+  3. Price near today's low
+  4. R:R >= 1.5
+```
+
+### SL and Target Calculation
+
+```
+Gap-Up SHORT:
+  stop     = today_high (first 3 bars) + (0.3 × ATR)
+  risk     = stop - entry
+  target_1 = prev_close                 ← gap fill (statistical primary target)
+  target_2 = entry - (2.5 × risk)
+  [if target_1 >= entry: target_1 = entry - (1.5 × risk)]  ← fallback
+
+Gap-Down LONG:
+  stop     = today_low (first 3 bars) - (0.3 × ATR)
+  risk     = entry - stop
+  target_1 = prev_close                 ← gap fill
+  target_2 = entry + (2.5 × risk)
+  [if target_1 <= entry: target_1 = entry + (1.5 × risk)]  ← fallback
+```
+
+T1 is structural — gaps fill ~70% of the time, so `prev_close` is the primary exit. T2 is a pure R-multiple fallback.
+
+---
+
+## 9. Simple Momentum Strategy
+
+**File:** `strategies/simple_momentum.py`
+**Active Regime:** TRENDING, BREAKOUT
+**Signal Timeframe:** 1H
+**Hold Type:** Intraday
+
+### Parameters
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| ATR_MULT | 1.5 | Stop = entry ± (1.5 × ATR) |
+| TARGET_R | 3.0 | Single target at 3R |
+| MIN_BARS | 30 | Minimum candles required |
+
+### SL and Target Calculation
+
+```
+LONG:
+  stop   = ltp - (1.5 × ATR)
+  target = ltp + (3.0 × risk)   ← single target, no partial exit
+
+SHORT:
+  stop   = ltp + (1.5 × ATR)
+  target = ltp - (3.0 × risk)
+```
+
+No T2 — simpler single-target structure. Exit is all-or-nothing at 3R.
+
+---
+
+## 10. Options Income Strategy (Short Strangle)
 
 **File:** `strategies/options_income.py`  
 **Active Regime:** RANGING  
@@ -385,7 +542,7 @@ confidence = min(0.50 + (iv_rank - 50) / 100, 0.85)
 
 ---
 
-## 8. Directional Options Strategy (Debit Spread)
+## 11. Directional Options Strategy (Debit Spread)
 
 **File:** `strategies/directional_options.py`  
 **Active Regime:** TRENDING, BREAKOUT  
@@ -432,7 +589,42 @@ confidence = min(regime.confidence × 0.90, 0.85)
 
 ---
 
-## 9. Iron Condor Strategy
+## 12. Institutional Momentum Strategy
+
+**File:** `strategies/institutional_momentum.py`
+**Active Regime:** TRENDING, BREAKOUT
+**Signal Timeframe:** 1H
+**Hold Type:** Intraday (options)
+**Structure:** Single ATM call or put (directional conviction trade)
+
+### Overview
+
+Uses the conviction scorer (FII/DII data, OI analysis, macro) to determine
+institutional directional bias. Buys ATM options when conviction is high.
+
+### SL and Target Calculation
+
+```
+Entry   = current ATM option premium (LTP)
+Stop    = premium × 0.70     ← exit at 30% premium loss
+Target1 = premium × 0.55     ← exit at 55% premium gain (profit expressed per unit)
+```
+
+These are **percentage-of-premium** gates, not R-multiples. The entire premium is
+at risk, so the stop is tighter (30% loss exits) and target is asymmetric (55% gain).
+
+### Position Sizing
+
+```
+capital_pct = conviction_score × scaling_factor   (35–50% of capital at high conviction)
+lots        = min(capital_pct × TOTAL_CAPITAL / (premium × lot_size),
+                  MAX_FO_CAPITAL_PCT-based cap,
+                  MAX_OPTIONS_LOTS_PER_TRADE)
+```
+
+---
+
+## 13. Iron Condor Strategy
 
 **File:** `strategies/iron_condor.py`  
 **Active Regime:** RANGING  
@@ -485,7 +677,7 @@ confidence  = min(0.55 + iv_score × 0.30, 0.85)
 
 ---
 
-## 10. Signal Validation Rules
+## 14. Signal Validation Rules
 
 **File:** `strategies/base_strategy.py` → `Signal.is_valid()`
 
@@ -519,7 +711,7 @@ rr_ratio = reward / risk   (0.0 if risk == 0)
 
 ---
 
-## 11. Risk Manager — Trade Approval Pipeline
+## 15. Risk Manager — Trade Approval Pipeline
 
 **File:** `risk/risk_manager.py`
 
@@ -576,7 +768,7 @@ Reset:          Manual only — via dashboard /kill-switch/reset endpoint
 
 ---
 
-## 12. Position Manager — Exit Rules
+## 16. Position Manager — Exit Rules
 
 **File:** `execution/position_manager.py`
 
@@ -591,6 +783,8 @@ Runs on the **fast loop (every 5 seconds)** via `position_manager.check_all()`.
 | PARTIAL_EXIT_PCT | 50% | Exit half at Target 1 |
 | BREAKEVEN_TRIGGER | 1.0R profit | Move SL to entry price |
 | TRAIL_TRIGGER | 1.5R profit | Begin trailing stop |
+| DYNAMIC_TARGET_START_R | 3.0R | First dynamic milestone after T1 |
+| DYNAMIC_TARGET_STEP | 1.0R | Advance target by this many R per milestone |
 
 ### LONG Position — Exit Decision Tree
 
@@ -598,10 +792,11 @@ Runs on the **fast loop (every 5 seconds)** via `position_manager.check_all()`.
 1. time >= 15:15 IST          → EOD_FORCED exit (100%)
 2. days_held >= 20            → MAX_HOLD exit (100%)
 3. ltp <= effective_stop      → STOP exit (100%)
-4. ltp >= target_2 (post T1)  → TARGET2 exit (remaining 50%)
-5. ltp >= target_1 (first)    → TARGET1 partial exit (50%) + SL to breakeven
-6. profit >= 1.5R             → update trailing stop
-7. profit >= 1.0R             → move SL to breakeven (once)
+4. [after T1] advance dynamic target milestone if profit_r >= milestone
+5. ltp >= target_2 (post T1)  → TARGET2 exit ONLY if dynamic target not active
+6. ltp >= target_1 (first)    → TARGET1 partial exit (50%) + SL to BE + activate dynamic target
+7. profit >= 1.5R             → update trailing stop (ratchet)
+8. profit >= 1.0R             → move SL to breakeven (once)
 ```
 
 ### SHORT Position — Exit Decision Tree
@@ -610,10 +805,11 @@ Runs on the **fast loop (every 5 seconds)** via `position_manager.check_all()`.
 1. time >= 15:15 IST          → EOD_FORCED exit (100%)
 2. days_held >= 20            → MAX_HOLD exit (100%)
 3. ltp >= effective_stop      → STOP exit (100%)
-4. ltp <= target_2 (post T1)  → TARGET2 exit (remaining 50%)
-5. ltp <= target_1 (first)    → TARGET1 partial exit (50%) + SL to breakeven
-6. profit >= 1.5R             → update trailing stop
-7. profit >= 1.0R             → move SL to breakeven (once)
+4. [after T1] advance dynamic target milestone if profit_r >= milestone
+5. ltp <= target_2 (post T1)  → TARGET2 exit ONLY if dynamic target not active
+6. ltp <= target_1 (first)    → TARGET1 partial exit (50%) + SL to BE + activate dynamic target
+7. profit >= 1.5R             → update trailing stop (ratchet)
+8. profit >= 1.0R             → move SL to breakeven (once)
 ```
 
 ### Trailing Stop Calculation
@@ -626,6 +822,35 @@ LONG:  new_sl = ltp - trail_distance
 
 SHORT: new_sl = ltp + trail_distance
        apply only if new_sl < current_sl  (ratchet — never moves up)
+```
+
+The trailing stop is **persisted to SQLite** via `portfolio_tracker.update_stop_loss()` on every advance. On restart, it is restored from the persisted `stop_loss` field — no loss of protection.
+
+### Dynamic Target (Ratcheting)
+
+After T1 partial exit, the static T2 is replaced by a ratcheting milestone system:
+
+```
+On T1 hit:
+  _dynamic_target_r[symbol] = 3.0   ← activate at 3R milestone
+
+Each tick (when already_partial):
+  if profit_r >= current_milestone:
+    current_milestone += 1.0        ← advance: 3R → 4R → 5R → ...
+    log alert: "Target extended to {N}R = ₹{price}"
+```
+
+The trailing stop remains the **sole exit trigger** once dynamic target is active.
+The dynamic target only advances the milestone and fires a notification — it never
+directly exits the position. This lets the bot ride strong moves (e.g. 8R) without
+locking in an exit at a premature static T2.
+
+```
+Example — entry ₹100, SL ₹98 (risk=₹2):
+  T1=₹104 hit  → sell 50%, SL→BE, dynamic target activated at 3R
+  ₹106 (3R)   → milestone hit → alert "target extended to 4R = ₹108"
+  ₹108 (4R)   → alert "target extended to 5R = ₹110"
+  ₹107        → trailing stop (0.8R below ₹108 = ₹106.40) hit → STOP exit
 ```
 
 ### Options Position — Exit Rules
@@ -648,6 +873,8 @@ SHORT: new_sl = ltp + trail_distance
 4. position_value <= entry × 0.50 → TARGET (50% decay captured)
 ```
 
+Options do **not** use trailing stops or dynamic targets (theta decay changes the math).
+
 ### Cooldown After Exit
 
 After every STOP, EOD_FORCED, or MAX_HOLD close, a 60-minute cooldown is applied
@@ -662,7 +889,66 @@ TARGET1 / TARGET2 exits do NOT apply cooldown — trade worked, symbol is re-eva
 
 ---
 
-## 13. Paper Trading Engine
+## 17. Persistence & State Recovery
+
+**Files:** `execution/position_manager.py`, `risk/risk_manager.py`, `risk/options_risk.py`
+
+### Position Manager State
+
+All in-memory tracking is persisted so restarts do not lose protection:
+
+| State | How persisted | Restored on restart |
+|-------|--------------|---------------------|
+| Trailing SL / breakeven level | `portfolio_tracker.update_stop_loss()` writes to SQLite `stop_loss` column | Yes — `_reconstruct_state_from_position()` reads persisted `stop_loss` on first tick |
+| `_partial_exited` | Inferred: LONG `stop_loss >= entry_price` = T1 was hit | Yes — reconstructed |
+| `_breakeven_applied` | Same inference as above | Yes — reconstructed |
+| `_trailing_stops` | Set to persisted `stop_loss` value on reconstruction | Yes |
+| `_dynamic_target_r` | Set to `ceil(current_profit_r) + 1` on reconstruction | Yes — inferred from live price |
+
+**Reconstruction logic (first tick per position after restart):**
+```python
+t1_was_hit = (direction == "LONG"  and pos.stop_loss >= entry) or
+             (direction == "SHORT" and pos.stop_loss <= entry)
+if t1_was_hit:
+    restore _partial_exited, _breakeven_applied, _trailing_stops, _dynamic_target_r
+```
+
+### Risk Manager State
+
+Persisted to `db/risk_state.json` on every mutation:
+
+```json
+{
+  "kill_switch_active": true,
+  "kill_switch_reason": "Daily loss 3.1% hit limit 3%",
+  "daily_pnl": -15000.0,
+  "daily_reset_date": "2026-05-13"
+}
+```
+
+**Restore rules:**
+- Kill switch → always restored regardless of date (stays active until manual reset)
+- Daily P&L → only restored if `daily_reset_date == today` (new day = fresh start)
+
+### Options Risk Gate State
+
+Same pattern, persisted to `db/options_risk_state.json`:
+
+```json
+{
+  "kill_switch_active": false,
+  "kill_switch_reason": "",
+  "daily_pnl": -2500.0,
+  "daily_reset_date": "2026-05-13"
+}
+```
+
+**Critical:** Without this persistence, a bot restart after hitting the daily loss limit
+would silently clear the kill switch and resume trading.
+
+---
+
+## 18. Paper Trading Engine
 
 **File:** `paper_trading.py`  
 **Enabled via:** `PAPER_TRADING=true` in `.env`
@@ -694,7 +980,7 @@ net P&L         = gross P&L - brokerage
 
 ---
 
-## 14. Cooldown System
+## 19. Cooldown System
 
 **File:** `strategies/strategy_selector.py`
 
@@ -723,7 +1009,7 @@ if the bot restarts — this is acceptable since restarts also reload data.
 
 ---
 
-## 15. Known Bugs & Fixes (Incident Log)
+## 20. Known Bugs & Fixes (Incident Log)
 
 ### Bug 1 — `_is_market_hours()` ran NSE strategies during US market hours
 
@@ -832,6 +1118,71 @@ entries across 2026-04-01 night and 2026-04-02.
 
 ---
 
+### Bug 5 — `target_2` missing from `get_open_positions()` — T2 never triggered
+
+**Discovered:** 2026-05-13
+**File:** `risk/portfolio_tracker.py` → `get_open_positions()`
+**Severity:** High — T2 exit never fired for any position
+
+**What happened:**
+`get_open_positions()` returned a dict for each position that omitted `target_2`.
+In `_check_position()`, `pos_dict.get("target_2", 0)` always returned 0.
+The T2 check `if target_2 > 0 and ltp >= target_2` never fired.
+All positions were either trailing-stopped out or waited for a static T2 that was
+effectively disabled. After T1, the remaining 50% had no exit trigger except the trailing stop.
+
+**Fix:** Added `"target_2": pos.target_2` to the dict returned by `get_open_positions()`.
+
+---
+
+### Bug 6 — Trailing SL and breakeven not persisted — SL reverted to original on restart
+
+**Discovered:** 2026-05-13
+**Files:** `execution/position_manager.py`, `risk/portfolio_tracker.py`
+**Severity:** Critical — bot restarts during a live trade reverted the stop to the original risky level
+
+**What happened:**
+`_move_stop_to_breakeven()` and `_update_trailing_stop()` updated only the
+in-memory `_trailing_stops` dict. The `Position.stop_loss` field in the dataclass
+(and in SQLite) was never updated. On restart, `_load_open_positions()` reloaded the
+original entry-time SL from the DB — all trailing stop progress was lost.
+
+Example: entered at ₹100, SL ₹98. After trailing to SL=₹105, bot restarted.
+SL reverted to ₹98. Price then fell from ₹107 to ₹99 — should have stopped at ₹105,
+instead the position was held through a ₹6 adverse move.
+
+Additionally, `_partial_exited` and `_breakeven_applied` were lost on restart, causing
+the bot to attempt a second partial exit on T1 for positions already past T1.
+
+**Fix:**
+1. `portfolio_tracker.update_stop_loss(symbol, new_sl)` now called from both
+   `_move_stop_to_breakeven()` and `_update_trailing_stop()` — writes to Position object + DB.
+2. `_reconstruct_state_from_position()` runs on first tick per symbol after restart.
+   Infers T1-was-hit from `stop_loss >= entry_price` (LONG) and restores all tracking sets.
+
+---
+
+### Bug 7 — Kill switch and daily P&L not persisted — reset silently on restart
+
+**Discovered:** 2026-05-13
+**Files:** `risk/risk_manager.py`, `risk/options_risk.py`
+**Severity:** Critical — daily loss limit protection was neutralised by any restart
+
+**What happened:**
+Both `_kill_switch_active` and `_daily_realised_pnl` were pure in-memory variables.
+If the daily loss limit (3%) triggered the kill switch at 10:30 AM and the bot
+(or watchdog) restarted at 11:00 AM, all protection reset to zero:
+- Kill switch → inactive (trading resumes immediately)
+- Daily P&L → ₹0 (as if no losses occurred yet today)
+
+**Fix:** Both modules now write `db/risk_state.json` and `db/options_risk_state.json`
+on every mutation (kill switch trigger/reset, daily P&L update, new-day reset).
+On startup, state is loaded from file:
+- Kill switch active → **always** restored (stays locked until manual reset)
+- Daily P&L → **only** restored if `daily_reset_date == today`
+
+---
+
 ## Quick Reference — All Thresholds
 
 | Category | Parameter | Value |
@@ -850,7 +1201,7 @@ entries across 2026-04-01 night and 2026-04-02.
 | | Min R:R | 1.5 |
 | | Cooldown After Loss | 60 min |
 | **Trend Follow** | Breakout Lookback | 20 bars |
-| | Min RVOL | 1.4 |
+| | Min RVOL | 1.4× |
 | | ATR Stop | 1.5× ATR |
 | | Target 1 | 2R |
 | | Target 2 | 3R |
@@ -861,6 +1212,23 @@ entries across 2026-04-01 night and 2026-04-02.
 | | BB Proximity | 0.5% |
 | | ATR Stop Buffer | 0.5× ATR |
 | | Opening Blackout | Until 09:45 IST |
+| **Momentum Reversal** | RSI Overbought | ≥ 82 (SHORT) |
+| | RSI Oversold | ≤ 18 (LONG) |
+| | Max ADX | 25 |
+| | ATR Stop Buffer | 0.5× ATR (beyond swing extreme) |
+| | Target 1 | 1.5R |
+| | Target 2 | EMA21 or 2.5R (whichever closer) |
+| | Min RVOL | 1.3× |
+| **Gap Fade** | Min Gap Size | 0.5% |
+| | RSI Overbought (short) | ≥ 70 |
+| | RSI Oversold (long) | ≤ 30 |
+| | ATR Stop Buffer | 0.3× ATR |
+| | Target 1 | prev_close (gap fill) |
+| | Target 2 | 2.5R |
+| **Simple Momentum** | ATR Stop | 1.5× ATR |
+| | Single Target | 3R |
+| **Institutional Momentum** | Stop | −30% of premium |
+| | Target 1 | +55% of premium |
 | **Options Income** | Min IV Rank | 50 |
 | | DTE Range | 20–45 days |
 | | Short Delta | 0.16 |
@@ -879,3 +1247,5 @@ entries across 2026-04-01 night and 2026-04-02.
 | | Breakeven Trigger | 1.0R profit |
 | | Trailing Stop Trigger | 1.5R profit |
 | | Trail Distance | 0.8R |
+| | Dynamic Target Start | 3.0R (after T1) |
+| | Dynamic Target Step | 1.0R per milestone |

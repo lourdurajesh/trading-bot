@@ -24,7 +24,9 @@ Safety checks enforced here:
 Used by: risk_manager.validate()
 """
 
+import json
 import logging
+import os
 import threading
 from datetime import date, datetime
 from typing import Optional
@@ -44,6 +46,9 @@ from config.settings import (
 )
 
 logger = logging.getLogger(__name__)
+
+from config.settings import DB_PATH as _DB_PATH
+_OPTIONS_RISK_STATE_PATH = os.path.join(os.path.dirname(_DB_PATH) or "db", "options_risk_state.json")
 
 # VIX symbol on Fyers / NSE India
 INDIA_VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
@@ -66,6 +71,7 @@ class OptionsRiskGate:
         self._daily_reset_date        = datetime.now(tz=IST).date()
         self._options_kill_switch     = False
         self._options_kill_reason     = ""
+        self._load_state()
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
@@ -158,6 +164,7 @@ class OptionsRiskGate:
         self._reset_daily_if_needed()
         with self._lock:
             self._daily_options_pnl += pnl_change
+        self._save_state()
 
         loss_pct = abs(self._daily_options_pnl / capital) * 100
         if self._daily_options_pnl < 0 and loss_pct >= DAILY_OPTIONS_LOSS_LIMIT_PCT:
@@ -171,6 +178,7 @@ class OptionsRiskGate:
         with self._lock:
             self._options_kill_switch = False
             self._options_kill_reason = ""
+        self._save_state()
         logger.warning("[OptionsRisk] Kill switch manually reset")
 
     @property
@@ -331,23 +339,21 @@ class OptionsRiskGate:
             if not self._options_kill_switch:
                 self._options_kill_switch = True
                 self._options_kill_reason = reason
-                logger.critical(f"[OptionsRisk] OPTIONS KILL SWITCH: {reason}")
-                try:
-                    from audit_log import audit_log
-                    audit_log.kill_switch(
-                        activated=True,
-                        reason=f"OPTIONS: {reason}",
-                    )
-                except Exception:
-                    pass
-                try:
-                    from notifications.alert_service import alert_service
-                    alert_service.info(
-                        f"🚨 OPTIONS TRADING HALTED\n{reason}\n"
-                        f"Manual reset required via dashboard."
-                    )
-                except Exception:
-                    pass
+        self._save_state()
+        logger.critical(f"[OptionsRisk] OPTIONS KILL SWITCH: {reason}")
+        try:
+            from audit_log import audit_log
+            audit_log.kill_switch(activated=True, reason=f"OPTIONS: {reason}")
+        except Exception:
+            pass
+        try:
+            from notifications.alert_service import alert_service
+            alert_service.info(
+                f"🚨 OPTIONS TRADING HALTED\n{reason}\n"
+                f"Manual reset required via dashboard."
+            )
+        except Exception:
+            pass
 
     def _reset_daily_if_needed(self) -> None:
         today = datetime.now(tz=IST).date()
@@ -360,7 +366,47 @@ class OptionsRiskGate:
                     )
                     self._daily_options_pnl = 0.0
                     self._daily_reset_date  = today
-                    # Kill switch must be manually reset each morning
+            self._save_state()
+            # Kill switch must be manually reset each morning
+
+    def _load_state(self) -> None:
+        """Restore options kill switch and daily P&L from disk on startup."""
+        try:
+            if not os.path.exists(_OPTIONS_RISK_STATE_PATH):
+                return
+            with open(_OPTIONS_RISK_STATE_PATH) as f:
+                data = json.load(f)
+            today      = datetime.now(tz=IST).date()
+            saved_date = date.fromisoformat(data.get("daily_reset_date", "2000-01-01"))
+            if saved_date == today:
+                self._daily_options_pnl = float(data.get("daily_pnl", 0.0))
+                self._daily_reset_date  = today
+            if data.get("kill_switch_active", False):
+                self._options_kill_switch = True
+                self._options_kill_reason = data.get("kill_switch_reason", "Restored on restart")
+                logger.warning(
+                    f"[OptionsRisk] Kill switch RESTORED after restart: {self._options_kill_reason}"
+                )
+            if saved_date == today and self._daily_options_pnl != 0.0:
+                logger.info(
+                    f"[OptionsRisk] Daily options P&L restored: ₹{self._daily_options_pnl:,.0f}"
+                )
+        except Exception as e:
+            logger.warning(f"[OptionsRisk] Could not load state file: {e}")
+
+    def _save_state(self) -> None:
+        """Persist options kill switch and daily P&L to disk."""
+        try:
+            os.makedirs(os.path.dirname(_OPTIONS_RISK_STATE_PATH) or ".", exist_ok=True)
+            with open(_OPTIONS_RISK_STATE_PATH, "w") as f:
+                json.dump({
+                    "kill_switch_active": self._options_kill_switch,
+                    "kill_switch_reason": self._options_kill_reason,
+                    "daily_pnl":          self._daily_options_pnl,
+                    "daily_reset_date":   self._daily_reset_date.isoformat(),
+                }, f)
+        except Exception as e:
+            logger.warning(f"[OptionsRisk] Could not save state file: {e}")
 
 
 # ── Module-level singleton ────────────────────────────────────────

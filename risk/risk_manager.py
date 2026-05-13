@@ -13,7 +13,9 @@ Responsibilities:
   - Options allocation cap
 """
 
+import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -35,6 +37,9 @@ from risk.options_risk import options_risk_gate
 from strategies.base_strategy import Direction, Signal, SignalType
 
 logger = logging.getLogger(__name__)
+
+from config.settings import DB_PATH as _DB_PATH
+_RISK_STATE_PATH = os.path.join(os.path.dirname(_DB_PATH) or "db", "risk_state.json")
 
 
 @dataclass
@@ -62,6 +67,7 @@ class RiskManager:
         self._kill_switch_reason = ""
         self._daily_realised_pnl  = 0.0   # updated by portfolio_tracker
         self._daily_reset_date    = datetime.now(tz=IST).date()
+        self._load_state()
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
@@ -166,6 +172,7 @@ class RiskManager:
         """
         self._check_daily_reset()
         self._daily_realised_pnl += pnl_change
+        self._save_state()
 
         # Forward options P&L to options-specific gate
         if signal_type == "OPTIONS":
@@ -185,6 +192,7 @@ class RiskManager:
         """Manual override to re-enable trading. Use carefully."""
         self._kill_switch_active = False
         self._kill_switch_reason = ""
+        self._save_state()
         logger.warning("[RiskManager] Kill switch manually reset.")
 
     @property
@@ -264,6 +272,7 @@ class RiskManager:
         if not self._kill_switch_active:
             self._kill_switch_active = True
             self._kill_switch_reason = reason
+            self._save_state()
             logger.critical(f"[RiskManager] KILL SWITCH TRIGGERED: {reason}")
             try:
                 from audit_log import audit_log
@@ -281,7 +290,47 @@ class RiskManager:
             )
             self._daily_realised_pnl = 0.0
             self._daily_reset_date   = today
+            self._save_state()
             # Kill switch does NOT auto-reset — requires manual reset each morning
+
+    def _load_state(self) -> None:
+        """Restore kill switch and daily P&L from disk on startup."""
+        try:
+            if not os.path.exists(_RISK_STATE_PATH):
+                return
+            with open(_RISK_STATE_PATH) as f:
+                data = json.load(f)
+            today      = datetime.now(tz=IST).date()
+            saved_date = date.fromisoformat(data.get("daily_reset_date", "2000-01-01"))
+            if saved_date == today:
+                self._daily_realised_pnl = float(data.get("daily_pnl", 0.0))
+                self._daily_reset_date   = today
+            if data.get("kill_switch_active", False):
+                self._kill_switch_active = True
+                self._kill_switch_reason = data.get("kill_switch_reason", "Restored on restart")
+                logger.warning(
+                    f"[RiskManager] Kill switch RESTORED after restart: {self._kill_switch_reason}"
+                )
+            if saved_date == today and self._daily_realised_pnl != 0.0:
+                logger.info(
+                    f"[RiskManager] Daily P&L restored: ₹{self._daily_realised_pnl:,.0f}"
+                )
+        except Exception as e:
+            logger.warning(f"[RiskManager] Could not load state file: {e}")
+
+    def _save_state(self) -> None:
+        """Persist kill switch and daily P&L to disk."""
+        try:
+            os.makedirs(os.path.dirname(_RISK_STATE_PATH) or ".", exist_ok=True)
+            with open(_RISK_STATE_PATH, "w") as f:
+                json.dump({
+                    "kill_switch_active": self._kill_switch_active,
+                    "kill_switch_reason": self._kill_switch_reason,
+                    "daily_pnl":          self._daily_realised_pnl,
+                    "daily_reset_date":   self._daily_reset_date.isoformat(),
+                }, f)
+        except Exception as e:
+            logger.warning(f"[RiskManager] Could not save state file: {e}")
 
 
 # ── Module-level singleton ────────────────────────────────────────

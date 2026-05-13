@@ -105,30 +105,96 @@ ALL_MCX_SHORTS = list(MCX_CONTRACTS.keys())
 # cooldown_enabled / cooldown_hours are editable at runtime via API.
 MCX_STRATEGY_CONFIG: dict = {
     "TrendSpread": {
-        "priority":         1,
-        "risk":             "MEDIUM",
-        "risk_label":       "Trend-following EMA crossover — well-defined conditions, lower failure rate",
-        "risk_color":       "#f59e0b",
-        "cooldown_enabled": True,
-        "cooldown_hours":   2,
+        "priority":             1,
+        "risk":                 "MEDIUM",
+        "risk_label":           "Trend-following EMA crossover — well-defined conditions, lower failure rate",
+        "risk_color":           "#f59e0b",
+        "cooldown_enabled":     True,
+        "cooldown_hours":       2,
+        # SL / trailing / target — all expressed as % of net_debit so the spot
+        # distance scales with what was actually paid (cheap spread = tight SL;
+        # expensive spread = more room). Configurable at runtime via /commodity/config.
+        "sl_debit_pct":         0.40,   # exit when spread loses 40% of debit in spot-equivalent terms
+        "trail_debit_pct":      0.30,   # trailing SL distance = 30% of debit below/above peak
+        "trail_trigger_pct":    0.50,   # trailing activates once gain = 50% of debit in spot-equivalent terms
+        "target_pct":           0.50,   # initial exit target = 50% of max profit
+        "target_upgraded_pct":  0.75,   # target raised to 75% when strong momentum
+        "target_upgrade_mult":  2.0,    # upgrade after favorable move ≥ 2× SL distance
     },
     "RSIReversalSpread": {
-        "priority":         2,
-        "risk":             "HIGH",
-        "risk_label":       "Counter-trend reversal — may catch a falling knife if trend continues",
-        "risk_color":       "#f97316",
-        "cooldown_enabled": True,
-        "cooldown_hours":   3,
+        "priority":             2,
+        "risk":                 "HIGH",
+        "risk_label":           "Counter-trend reversal — may catch a falling knife if trend continues",
+        "risk_color":           "#f97316",
+        "cooldown_enabled":     True,
+        "cooldown_hours":       3,
+        "sl_debit_pct":         0.35,   # tighter SL — counter-trend trades fail faster
+        "trail_debit_pct":      0.25,
+        "trail_trigger_pct":    0.45,
+        "target_pct":           0.50,
+        "target_upgraded_pct":  0.70,   # lower upgrade ceiling — reversal momentum is less sustained
+        "target_upgrade_mult":  2.0,
     },
     "BreakoutSpread": {
-        "priority":         3,
-        "risk":             "HIGH",
-        "risk_label":       "Price breakout — frequent false signals, high failure rate",
-        "risk_color":       "#ef4444",
-        "cooldown_enabled": True,
-        "cooldown_hours":   3,
+        "priority":             3,
+        "risk":                 "HIGH",
+        "risk_label":           "Price breakout — frequent false signals, high failure rate",
+        "risk_color":           "#ef4444",
+        "cooldown_enabled":     True,
+        "cooldown_hours":       3,
+        "sl_debit_pct":         0.40,   # FALSE_BREAKOUT fires first; STOP_SPOT is the fallback
+        "trail_debit_pct":      0.30,
+        "trail_trigger_pct":    0.50,
+        "target_pct":           0.50,
+        "target_upgraded_pct":  0.75,
+        "target_upgrade_mult":  2.0,
     },
 }
+
+# ─────────────────────────────────────────────────────────────────
+# STRATEGY CONFIG PERSISTENCE
+# Editable params are saved here so they survive bot restarts.
+# Read-only fields (priority, risk, risk_label, risk_color) are
+# never written to the file.
+# ─────────────────────────────────────────────────────────────────
+_STRATEGY_CONFIG_PATH = "config/commodity_strategy_config.json"
+_READONLY_FIELDS = frozenset({"priority", "risk", "risk_label", "risk_color"})
+
+
+def _load_strategy_config() -> None:
+    """Overlay persisted user edits onto MCX_STRATEGY_CONFIG at startup."""
+    try:
+        with open(_STRATEGY_CONFIG_PATH, "r") as f:
+            saved = json.load(f)
+        for strat, params in saved.items():
+            if strat in MCX_STRATEGY_CONFIG:
+                for k, v in params.items():
+                    if k not in _READONLY_FIELDS:
+                        MCX_STRATEGY_CONFIG[strat][k] = v
+        logger.info(f"[CommOpts] Strategy config loaded from {_STRATEGY_CONFIG_PATH}")
+    except FileNotFoundError:
+        pass  # first run — file written on first update
+    except Exception as exc:
+        logger.warning(f"[CommOpts] Could not load strategy config: {exc}")
+
+
+def _save_strategy_config() -> None:
+    """Persist editable fields of MCX_STRATEGY_CONFIG to disk."""
+    import os
+    saveable = {
+        strat: {k: v for k, v in cfg.items() if k not in _READONLY_FIELDS}
+        for strat, cfg in MCX_STRATEGY_CONFIG.items()
+    }
+    try:
+        os.makedirs(os.path.dirname(_STRATEGY_CONFIG_PATH), exist_ok=True)
+        with open(_STRATEGY_CONFIG_PATH, "w") as f:
+            json.dump(saveable, f, indent=2)
+    except Exception as exc:
+        logger.error(f"[CommOpts] Could not save strategy config: {exc}")
+
+
+# Apply any previously saved overrides now (module-level, runs on import)
+_load_strategy_config()
 
 _MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
 
@@ -214,6 +280,20 @@ def _atm_strike(spot: float, step: int) -> int:
 
 # ─────────────────────────────────────────────────────────────────
 # COMMODITY OPTIONS LEARNING ENGINE
+_SPREAD_DELTA = 0.35  # debit spread net-delta estimate used for debit→spot conversion
+
+
+def _debit_sl_price(spot: float, direction: str, net_debit: float, strat_cfg: dict) -> float:
+    """Compute initial SL spot level from debit cost.
+
+    sl_spot_dist = (sl_debit_pct × net_debit) / spread_delta
+    High-IV spreads (large debit) get more spot room; cheap spreads get tighter SL.
+    """
+    sl_pct = strat_cfg.get("sl_debit_pct", 0.40)
+    dist   = round((sl_pct * net_debit) / _SPREAD_DELTA, 2) if net_debit > 0 else round(spot * 0.015, 2)
+    return round(spot - dist, 2) if direction == "LONG" else round(spot + dist, 2)
+
+
 # ─────────────────────────────────────────────────────────────────
 
 class CommodityOptionsLearning:
@@ -246,6 +326,19 @@ class CommodityOptionsLearning:
                     trade["metadata"] = json.loads(trade.get("metadata") or "{}")
                 except Exception:
                     trade["metadata"] = {}
+                # Restore SL state from DB metadata; recompute if missing
+                meta_d    = trade["metadata"]
+                direction = trade.get("direction", "LONG")
+                ep        = trade.get("spot_at_entry", 0)
+                if "sl_price" not in meta_d:
+                    net_debit = trade.get("net_debit", 0)
+                    strategy  = trade.get("strategy", "")
+                    strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
+                    meta_d["sl_price"]    = _debit_sl_price(ep, direction, net_debit, strat_cfg)
+                    meta_d["peak_spot"]   = ep
+                    meta_d["target_pct"]  = strat_cfg.get("target_pct", 0.50)
+                    meta_d["trail_active"] = False
+
                 key = f"{trade['instrument']}:{trade['direction']}"
                 if key not in self._open_positions:
                     self._open_positions[key] = trade
@@ -296,6 +389,7 @@ class CommodityOptionsLearning:
         except (ValueError, TypeError) as e:
             return False, f"Type error: {e}"
         MCX_STRATEGY_CONFIG[strategy][param] = value
+        _save_strategy_config()
         logger.info(f"[CommOpts] Strategy config updated: {strategy}.{param} = {value}")
         return True, ""
 
@@ -344,7 +438,7 @@ class CommodityOptionsLearning:
                 _row = _conn.execute(
                     "SELECT exit_reason, exit_time, strategy FROM commodity_learning_trades "
                     "WHERE instrument=? AND status='CLOSED' "
-                    "AND exit_reason IN ('FALSE_BREAKOUT','STOP_60PCT','MANUAL_CLOSE') "
+                    "AND exit_reason IN ('FALSE_BREAKOUT','STOP_SPOT','STOP_60PCT','MANUAL_CLOSE') "
                     "ORDER BY exit_time DESC LIMIT 1",
                     (short,),
                 ).fetchone()
@@ -588,7 +682,15 @@ class CommodityOptionsLearning:
                 "signal_reason":   signal_reason,
                 "atm_symbol":      atm_sym,
                 "otm_symbol":      otm_sym,
-                "breakout_level":  breakout_level,  # None for non-breakout strategies
+                "breakout_level":  breakout_level,
+                # SL / trailing state — updated by _check_exits as trade evolves.
+                # sl_price is derived from debit cost so expensive spreads (high IV)
+                # get more room and cheap spreads get tighter protection.
+                "sl_price":    _debit_sl_price(spot, direction, net_debit,
+                                               MCX_STRATEGY_CONFIG.get(strategy_name, {})),
+                "peak_spot":   round(spot, 2),
+                "target_pct":  MCX_STRATEGY_CONFIG.get(strategy_name, {}).get("target_pct", 0.50),
+                "trail_active": False,
             },
         }
 
@@ -599,19 +701,18 @@ class CommodityOptionsLearning:
     def _check_exits(self, store, now: datetime) -> None:
         closed = []
         for key, trade in list(self._open_positions.items()):
-            instrument = trade["instrument"]        # "CRUDEOIL"
-            stored_sym = trade["symbol"]            # symbol at entry (may be old contract)
-            # Always use the current active contract for live spot — handles rollover
+            instrument = trade["instrument"]
+            stored_sym = trade["symbol"]
             symbol = _fyers_sym(instrument)
             spot   = store.get_ltp(symbol)
             if not spot and symbol != stored_sym:
-                spot = store.get_ltp(stored_sym)   # last-resort: try stored symbol
+                spot = store.get_ltp(stored_sym)
             if not spot:
                 continue
-            # Validate spot is in expected range for this commodity
-            meta  = MCX_CONTRACTS.get(instrument, {})
-            min_p = meta.get("min_price", 0)
-            max_p = meta.get("max_price", float("inf"))
+
+            cfg   = MCX_CONTRACTS.get(instrument, {})
+            min_p = cfg.get("min_price", 0)
+            max_p = cfg.get("max_price", float("inf"))
             if spot < min_p or spot > max_p:
                 logger.warning(
                     f"[CommOpts] Spot {spot:.1f} out of range [{min_p}-{max_p}] "
@@ -628,17 +729,78 @@ class CommodityOptionsLearning:
             exit_reason = None
             pnl_approx  = None
 
-            # Approximate option P&L from underlying move
-            # Debit spread delta ≈ 0.3–0.4; use 0.35 as estimate
+            # Delta-based P&L estimate (per unit, used for reporting only)
             spot_move = spot - entry_spot if direction == "LONG" else entry_spot - spot
-            est_delta = 0.35
-            est_pnl   = round(spot_move * est_delta, 2)  # per unit, not per lot
+            est_pnl   = round(spot_move * 0.35, 2)
 
-            # ── False-breakout invalidation (BreakoutSpread only) ──────────────────
-            # Exit immediately if price reverses back through the original breakout
-            # level — the signal was wrong and holding just adds to the loss.
-            if strategy == "BreakoutSpread" and exit_reason is None:
-                # Prefer the stored breakout level; fall back to entry spot for old trades
+            # ── Trailing SL & Dynamic Target ──────────────────────────────────────
+            strat_cfg       = MCX_STRATEGY_CONFIG.get(strategy, {})
+            sl_debit_pct    = strat_cfg.get("sl_debit_pct",        0.40)
+            trail_debit_pct = strat_cfg.get("trail_debit_pct",     0.30)
+            trail_trig_pct  = strat_cfg.get("trail_trigger_pct",   0.50)
+            tgt_up_pct      = strat_cfg.get("target_upgraded_pct", 0.75)
+            tgt_up_mult     = strat_cfg.get("target_upgrade_mult", 2.0)
+
+            # Convert debit-% params to spot-point distances for this trade
+            sl_dist    = round((sl_debit_pct    * net_debit) / _SPREAD_DELTA, 2) if net_debit > 0 else round(entry_spot * 0.015, 2)
+            trail_dist = round((trail_debit_pct * net_debit) / _SPREAD_DELTA, 2) if net_debit > 0 else round(entry_spot * 0.011, 2)
+            trail_trig = round((trail_trig_pct  * net_debit) / _SPREAD_DELTA, 2) if net_debit > 0 else sl_dist
+
+            sl_price   = trade_meta.get("sl_price")
+            peak_spot  = trade_meta.get("peak_spot", entry_spot)
+            target_pct = trade_meta.get("target_pct", strat_cfg.get("target_pct", 0.50))
+            sl_updated = False
+
+            # First-time setup for trades opened before this feature
+            if sl_price is None:
+                sl_price   = _debit_sl_price(entry_spot, direction, net_debit, strat_cfg)
+                sl_updated = True
+
+            # Update peak (best spot seen in the trade's favor)
+            peak_updated = False
+            if direction == "LONG":
+                if spot > peak_spot:
+                    peak_spot    = spot
+                    peak_updated = True
+            else:
+                if spot < peak_spot:
+                    peak_spot    = spot
+                    peak_updated = True
+
+            # Advance trailing SL once favorable move ≥ trail_trig
+            favorable_move = (peak_spot - entry_spot) if direction == "LONG" else (entry_spot - peak_spot)
+            if favorable_move >= trail_trig:
+                if direction == "LONG":
+                    new_sl = round(peak_spot - trail_dist, 2)   # fixed distance below peak
+                    if new_sl > sl_price:
+                        sl_price = new_sl
+                        trade_meta["trail_active"] = True
+                        sl_updated = True
+                else:
+                    new_sl = round(peak_spot + trail_dist, 2)   # fixed distance above peak (trough)
+                    if new_sl < sl_price:
+                        sl_price = new_sl
+                        trade_meta["trail_active"] = True
+                        sl_updated = True
+
+            # Upgrade target once momentum is ≥ tgt_up_mult × SL distance
+            if favorable_move >= tgt_up_mult * sl_dist and target_pct < tgt_up_pct:
+                target_pct = tgt_up_pct
+                sl_updated = True
+                logger.info(f"[CommOpts] {instrument} target upgraded to {int(tgt_up_pct*100)}% — strong momentum")
+
+            # Persist SL state to DB whenever anything relevant changed.
+            # peak_spot is persisted on every new high/low so a restart doesn't
+            # lose the trailing reference point.
+            if sl_updated or peak_updated:
+                trade_meta["sl_price"]   = sl_price
+                trade_meta["peak_spot"]  = round(peak_spot, 2)
+                trade_meta["target_pct"] = target_pct
+                trade["metadata"] = trade_meta
+                self._db_update_sl(trade["id"], trade_meta)
+
+            # ── False-breakout exit (BreakoutSpread only) ────────────────────────
+            if strategy == "BreakoutSpread":
                 breakout_level = trade_meta.get("breakout_level") or entry_spot
                 if direction == "LONG" and spot < breakout_level:
                     exit_reason = "FALSE_BREAKOUT"
@@ -655,23 +817,36 @@ class CommodityOptionsLearning:
                         f"spot {spot:.2f} > breakout {breakout_level:.2f}"
                     )
 
-            # Exit at 50% profit or 60% loss (stop early — don't let every loser go to -1R)
+            # ── Spot-based SL ────────────────────────────────────────────────────
             if exit_reason is None:
-                if est_pnl >= max_profit * 0.50:
-                    exit_reason = "TARGET_50PCT"
-                    pnl_approx  = round(net_debit * 0.50, 2)
-                elif est_pnl <= -net_debit * 0.60:
-                    exit_reason = "STOP_60PCT"
-                    pnl_approx  = round(-net_debit * 0.60, 2)
-                elif now.time() >= dtime(23, 15):
-                    exit_reason = "EOD_MCX"
+                sl_type = "trail" if trade_meta.get("trail_active") else "initial"
+                if direction == "LONG" and spot <= sl_price:
+                    exit_reason = "STOP_SPOT"
                     pnl_approx  = round(est_pnl, 2)
+                    logger.info(
+                        f"[CommOpts] {instrument} SL hit: spot {spot:.2f} ≤ sl {sl_price:.2f} ({sl_type})"
+                    )
+                elif direction == "SHORT" and spot >= sl_price:
+                    exit_reason = "STOP_SPOT"
+                    pnl_approx  = round(est_pnl, 2)
+                    logger.info(
+                        f"[CommOpts] {instrument} SL hit: spot {spot:.2f} ≥ sl {sl_price:.2f} ({sl_type})"
+                    )
+
+            # ── Dynamic target ───────────────────────────────────────────────────
+            if exit_reason is None:
+                if est_pnl >= max_profit * target_pct:
+                    exit_reason = "TARGET_PCT"
+                    pnl_approx  = round(max_profit * target_pct, 2)
+
+            # ── EOD ─────────────────────────────────────────────────────────────
+            if exit_reason is None and now.time() >= dtime(23, 15):
+                exit_reason = "EOD_MCX"
+                pnl_approx  = round(est_pnl, 2)
 
             if exit_reason:
                 lot_size   = trade.get("lot_size", 1)
-                # pnl_r is per-unit ratio (dimensionless) — compute before scaling
                 pnl_r      = round(pnl_approx / net_debit, 2) if net_debit > 0 else 0
-                # pnl_approx stored as actual INR (per-unit × lot_size)
                 pnl_approx = round(pnl_approx * lot_size, 2)
                 self._db_close(trade["id"], spot, exit_reason, pnl_approx, pnl_r)
                 closed.append(key)
@@ -680,9 +855,7 @@ class CommodityOptionsLearning:
                     f"{exit_reason} spot={spot:.2f} pnl=₹{pnl_approx:+.0f} "
                     f"({pnl_r:+.1f}R)"
                 )
-                # After a bad exit, impose a re-entry cooldown so the engine doesn't
-                # immediately pile back into the same hostile market.
-                if exit_reason in ("FALSE_BREAKOUT", "STOP_60PCT"):
+                if exit_reason in ("FALSE_BREAKOUT", "STOP_SPOT"):
                     strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
                     if strat_cfg.get("cooldown_enabled", True):
                         hours = strat_cfg.get("cooldown_hours", 3)
@@ -699,14 +872,26 @@ class CommodityOptionsLearning:
         key = f"{trade['instrument']}:{trade['direction']}"
         self._open_positions[key] = trade
         self._db_insert(trade)
+        meta = trade.get("metadata", {})
         logger.info(
             f"[CommOpts] OPEN {trade['id']} | {trade['instrument']} "
             f"{trade['direction']} debit spread | "
             f"spot={trade['spot_at_entry']:.2f} "
             f"ATM={trade['atm_strike']} OTM={trade['otm_strike']} "
             f"debit={trade['net_debit']:.2f} maxP={trade['max_profit']:.2f} "
-            f"R:R={trade['rr']:.2f} | src={trade['data_source']}"
+            f"R:R={trade['rr']:.2f} SL@{meta.get('sl_price','?')} | src={trade['data_source']}"
         )
+
+    def _db_update_sl(self, trade_id: str, metadata: dict) -> None:
+        """Persist trailing SL / dynamic target state to DB metadata column."""
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "UPDATE commodity_learning_trades SET metadata=? WHERE id=?",
+                    (json.dumps(metadata), trade_id),
+                )
+        except Exception as exc:
+            logger.debug(f"[CommOpts] SL state persist error for {trade_id}: {exc}")
 
     # ─────────────────────────────────────────────────────────────
     # FYERS CHAIN FETCH

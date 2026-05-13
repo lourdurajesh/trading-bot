@@ -202,6 +202,7 @@ class PortfolioTracker:
                 "ltp":             ltp,
                 "stop_loss":       pos.stop_loss,
                 "target_1":        pos.target_1,
+                "target_2":        pos.target_2,
                 "position_size":   pos.position_size,
                 "capital_at_risk": pos.capital_at_risk,
                 "unrealised_pnl":  round(unrealised, 2),
@@ -291,6 +292,13 @@ class PortfolioTracker:
 
     def get_position(self, symbol: str) -> Optional[Position]:
         return self._open_positions.get(symbol)
+
+    def update_stop_loss(self, symbol: str, new_sl: float) -> None:
+        """Persist an updated stop loss (trailing or breakeven) into the Position and DB."""
+        pos = self._open_positions.get(symbol)
+        if pos:
+            pos.stop_loss = round(new_sl, 2)
+            self._update_position_db(pos)
 
     # ─────────────────────────────────────────────────────────────
     # INTERNAL — SQLite persistence
