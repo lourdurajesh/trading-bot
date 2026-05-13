@@ -649,7 +649,8 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
             <th style={{color:"#f59e0b"}}>Spot Now / Opt.Est.</th>
             <th>Entry Prem (ATM)</th>
             <th>Debit (Cost)</th>
-            <th>Target / SL</th>
+            <th style={{color:"#86efac"}}>Target</th>
+            <th style={{color:"#fca5a5"}}>SL</th>
             <th>RR</th>
             <th style={{color:"#94a3b8"}}>RSI</th>
             <th style={{color:"#94a3b8"}}>IV%</th>
@@ -757,30 +758,32 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
                   {(t.net_debit||0).toFixed(2)} × {lot}
                   <div style={{fontSize:9,color:"#94a3b8",marginTop:1}}>= ₹{round2((t.net_debit||0)*lot).toFixed(0)} cost</div>
                 </td>
-                <td style={{fontFamily:"monospace"}}>
-                  <div style={{color:"#86efac"}}>
-                    Tgt{tgtPct>0.50 ? <span style={{color:"#a3e635"}}> ↑</span> : ""}:{" "}
+                {/* ── Target ── */}
+                <td style={{fontFamily:"monospace",whiteSpace:"nowrap"}}>
+                  <div style={{color:"#86efac",fontWeight:600}}>
                     {tgtSpot ? `@ ${tgtSpot}` : `+₹${tgtInr.toFixed(0)}`}
-                    {tgtSpot && <span style={{fontSize:9,color:"#4ade80",marginLeft:4}}>(+₹{tgtInr.toFixed(0)})</span>}
+                    {tgtPct > 0.50 && <span style={{color:"#a3e635",marginLeft:3,fontSize:9}}>↑</span>}
                   </div>
-                  <div style={{fontSize:9,color:"#94a3b8",marginTop:1}}>
-                    Max: {t.otm_strike ? `@ ${t.otm_strike}` : `+₹${round2((t.max_profit||0)*lot).toFixed(0)}`}
-                    {t.otm_strike && <span style={{color:"#64748b",marginLeft:4}}>(+₹{round2((t.max_profit||0)*lot).toFixed(0)})</span>}
+                  <div style={{fontSize:9,color:"#4ade80",marginTop:1}}>+₹{tgtInr.toFixed(0)}</div>
+                  <div style={{fontSize:9,color:"#475569",marginTop:2}}>
+                    max {t.otm_strike ? `@ ${t.otm_strike}` : `+₹${round2((t.max_profit||0)*lot).toFixed(0)}`}
                   </div>
-                  <div style={{fontSize:9,color:"#fca5a5",marginTop:3}}>
-                    SL{trailActive ? <span style={{color:"#f97316"}}> ↑T</span> : ""}:{" "}
+                </td>
+                {/* ── SL ── */}
+                <td style={{fontFamily:"monospace",whiteSpace:"nowrap"}}>
+                  <div style={{color:"#fca5a5",fontWeight:600}}>
                     {slPrice ? `@ ${Math.round(slPrice)}` : "—"}
-                    {slPrice && <span style={{color:"#9f1239",marginLeft:4}}>~-₹{slInr.toFixed(0)}</span>}
+                    {trailActive && <span style={{color:"#f97316",marginLeft:4,fontSize:9}}>↑T</span>}
                   </div>
-                  {trailActive
-                    ? <div style={{fontSize:8,color:"#f97316",marginTop:1}}>trail active — SL moves with price</div>
-                    : trailTrigSpot
-                      ? <div style={{fontSize:8,color:"#64748b",marginTop:1}}>
-                          trail activates @ {trailTrigSpot}
-                          {trailGap != null && <span style={{color:"#475569"}}> ({trailGap} pts away)</span>}
-                        </div>
-                      : null
-                  }
+                  {slPrice && <div style={{fontSize:9,color:"#f87171",marginTop:1}}>~-₹{slInr.toFixed(0)}</div>}
+                  <div style={{fontSize:8,marginTop:2}}>
+                    {trailActive
+                      ? <span style={{color:"#f97316"}}>trailing</span>
+                      : trailTrigSpot
+                        ? <span style={{color:"#475569"}}>trail @ {trailTrigSpot}{trailGap!=null ? ` (${trailGap}↑)` : ""}</span>
+                        : null
+                    }
+                  </div>
                 </td>
                 <td style={{fontFamily:"monospace"}}>{(t.rr||t.rr_planned||0).toFixed(1)}</td>
                 <td style={{fontFamily:"monospace",color:rsiColor,fontSize:10}}>{meta.rsi ? Number(meta.rsi).toFixed(1) : "—"}</td>
