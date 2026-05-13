@@ -688,6 +688,11 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
             const slMove  = slPrice && spotEntry ? (t.direction==="LONG" ? spotEntry-slPrice : slPrice-spotEntry) : 0;
             const slInr   = round2(Math.max(0, slMove * 0.35 * lot));
             const tgtInr  = round2((t.max_profit||0) * tgtPct * lot);
+            // Target spot level derived from SL distance × RR
+            const rr      = t.rr || t.rr_planned || 1;
+            const tgtSpot = (slPrice && spotEntry && slMove > 0)
+              ? Math.round(spotEntry + (t.direction==="LONG" ? 1 : -1) * slMove * rr)
+              : null;
             return (
               <tr key={t.id}>
                 <td className="sym">
@@ -746,14 +751,22 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
                 <td style={{fontFamily:"monospace",color:"#fca5a5"}}>
                   {(t.net_debit||0).toFixed(2)} × {lot}
                   <div style={{fontSize:9,color:"#94a3b8",marginTop:1}}>= ₹{round2((t.net_debit||0)*lot).toFixed(0)} cost</div>
-                  <div style={{fontSize:9,color:"#9f1239",marginTop:1}}>
-                    SL{trailActive ? <span style={{color:"#f97316"}}> ↑T</span> : ""}: {slPrice ? `@ ${Math.round(slPrice)}` : "—"}
-                  </div>
-                  {slPrice && <div style={{fontSize:8,color:"#7f1d1d",marginTop:0}}>~-₹{slInr.toFixed(0)} est</div>}
                 </td>
-                <td style={{fontFamily:"monospace",color:"#86efac"}}>
-                  <div>Tgt{tgtPct>0.50 ? <span style={{color:"#a3e635"}}> ↑</span> : ""}: +₹{tgtInr.toFixed(0)}</div>
-                  <div style={{fontSize:9,color:"#64748b",marginTop:1}}>Max: +₹{round2((t.max_profit||0)*lot).toFixed(0)}</div>
+                <td style={{fontFamily:"monospace"}}>
+                  <div style={{color:"#86efac"}}>
+                    Tgt{tgtPct>0.50 ? <span style={{color:"#a3e635"}}> ↑</span> : ""}:{" "}
+                    {tgtSpot ? `@ ${tgtSpot}` : `+₹${tgtInr.toFixed(0)}`}
+                    {tgtSpot && <span style={{fontSize:9,color:"#4ade80",marginLeft:4}}>(+₹{tgtInr.toFixed(0)})</span>}
+                  </div>
+                  <div style={{fontSize:9,color:"#94a3b8",marginTop:1}}>
+                    Max: {t.otm_strike ? `@ ${t.otm_strike}` : `+₹${round2((t.max_profit||0)*lot).toFixed(0)}`}
+                    {t.otm_strike && <span style={{color:"#64748b",marginLeft:4}}>(+₹{round2((t.max_profit||0)*lot).toFixed(0)})</span>}
+                  </div>
+                  <div style={{fontSize:9,color:"#fca5a5",marginTop:3}}>
+                    SL{trailActive ? <span style={{color:"#f97316"}}> ↑T</span> : ""}:{" "}
+                    {slPrice ? `@ ${Math.round(slPrice)}` : "—"}
+                    {slPrice && <span style={{color:"#9f1239",marginLeft:4}}>~-₹{slInr.toFixed(0)}</span>}
+                  </div>
                 </td>
                 <td style={{fontFamily:"monospace"}}>{(t.rr||t.rr_planned||0).toFixed(1)}</td>
                 <td style={{fontFamily:"monospace",color:rsiColor,fontSize:10}}>{meta.rsi ? Number(meta.rsi).toFixed(1) : "—"}</td>
