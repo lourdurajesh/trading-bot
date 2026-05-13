@@ -644,10 +644,10 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
         <thead>
           <tr>
             <th>Instrument</th>
-            <th>Dir</th>
-            <th>Entry Spot</th>
-            <th style={{color:"#f59e0b"}}>Spot Now / Opt.Est.</th>
-            <th>Entry Prem (ATM)</th>
+            <th style={{width:"42px",textAlign:"center"}}>Dir</th>
+            <th>Entry</th>
+            <th style={{color:"#f59e0b",width:"90px"}}>Spot Now</th>
+            <th style={{width:"80px"}}>ATM Prem</th>
             <th>Debit (Cost)</th>
             <th style={{color:"#86efac"}}>Target</th>
             <th style={{color:"#fca5a5"}}>SL</th>
@@ -724,7 +724,7 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
                     );
                   })()}
                 </td>
-                <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
+                <td style={{textAlign:"center",padding:"0 4px"}}><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
                 <td style={{fontFamily:"monospace",color:"#94a3b8"}}>{spotEntry ? spotEntry.toFixed(0) : "—"}</td>
                 <td style={{fontFamily:"monospace"}}>
                   {ltp != null ? (
@@ -741,18 +741,14 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
                         </div>
                       )}
                       {!ltpStale && atmLiveEst != null && (
-                        <div style={{fontSize:9,color:"#a3e635",marginTop:2}}>
-                          ATM ~{atmLiveEst.toFixed(1)} est.
-                        </div>
+                        <div style={{fontSize:9,color:"#a3e635",marginTop:2}}>~{atmLiveEst.toFixed(1)}</div>
                       )}
                     </>
                   ) : "—"}
                 </td>
-                <td style={{fontFamily:"monospace",color:"#e2e8f0"}}>
+                <td style={{fontFamily:"monospace",color:"#e2e8f0",whiteSpace:"nowrap"}}>
                   {atmPremEntry > 0 ? atmPremEntry.toFixed(2) : (t.net_debit||0).toFixed(2)}
-                  <div style={{fontSize:9,color:"#64748b",marginTop:1}}>
-                    OTM: {(meta.otm_prem||0).toFixed(2)}
-                  </div>
+                  <div style={{fontSize:9,color:"#64748b",marginTop:1}}>{(meta.otm_prem||0).toFixed(2)}</div>
                 </td>
                 <td style={{fontFamily:"monospace",color:"#fca5a5"}}>
                   {(t.net_debit||0).toFixed(2)} × {lot}
