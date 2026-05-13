@@ -307,6 +307,7 @@ class CommodityOptionsLearning:
         self._chain_cache:    dict[str, tuple] = {}  # symbol → (data, fetched_at)
         # Cooldown after a bad exit — blocks all re-entry on that instrument
         self._entry_cooldown: dict[str, datetime] = {}  # instrument → resume_at
+        self._cooldown_cleared: set[str] = set()        # instruments manually force-cleared via API
         self._init_db()
         self._reload_open_positions()
 
@@ -455,14 +456,18 @@ class CommodityOptionsLearning:
                     if _cd_enabled:
                         _resume = _exit_time + timedelta(hours=_cd_hours)
                         if now < _resume:
-                            _remaining = int((_resume - now).total_seconds() / 60)
-                            logger.info(
-                                f"[CommOpts] {short} entry blocked (DB cooldown after {_exit_reason}) "
-                                f"— {_remaining}min remaining (resumes {_resume.strftime('%H:%M')} IST)"
-                            )
-                            # Re-populate in-memory dict so next cycle skips the DB query
-                            self._entry_cooldown[short] = _resume
-                            return
+                            if short in self._cooldown_cleared:
+                                # User manually force-cleared — skip DB re-application
+                                logger.info(f"[CommOpts] {short} cooldown was manually cleared — allowing entry")
+                            else:
+                                _remaining = int((_resume - now).total_seconds() / 60)
+                                logger.info(
+                                    f"[CommOpts] {short} entry blocked (DB cooldown after {_exit_reason}) "
+                                    f"— {_remaining}min remaining (resumes {_resume.strftime('%H:%M')} IST)"
+                                )
+                                # Re-populate in-memory dict so next cycle skips the DB query
+                                self._entry_cooldown[short] = _resume
+                                return
         except Exception as _e:
             logger.debug(f"[CommOpts] DB cooldown check error for {short}: {_e}")
 

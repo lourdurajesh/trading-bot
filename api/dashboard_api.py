@@ -1277,10 +1277,10 @@ def clear_commodity_cooldown(instrument: str):
     """Manually clear an active entry cooldown for a commodity instrument."""
     try:
         from commodity_options_learning import commodity_options
-        cleared = instrument in commodity_options._entry_cooldown
-        if cleared:
-            del commodity_options._entry_cooldown[instrument]
-        return {"ok": True, "cleared": cleared, "instrument": instrument}
+        was_active = instrument in commodity_options._entry_cooldown
+        commodity_options._entry_cooldown.pop(instrument, None)
+        commodity_options._cooldown_cleared.add(instrument)
+        return {"ok": True, "cleared": was_active, "instrument": instrument}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
