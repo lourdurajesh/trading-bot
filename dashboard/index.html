@@ -17,16 +17,16 @@
     .pulse.off{background:#ef4444;animation:none}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
     .tabs{display:flex;gap:4px;background:#151a28;border-radius:8px;padding:4px;margin-bottom:20px;flex-wrap:wrap}
-    .tab{padding:7px 16px;border-radius:6px;border:none;cursor:pointer;background:transparent;color:#64748b;font-size:13px;transition:all .15s}
+    .tab{padding:7px 16px;border-radius:6px;border:none;cursor:pointer;background:transparent;color:#94a3b8;font-size:13px;transition:all .15s}
     .tab.active{background:#1e293b;color:#f1f5f9;border:1px solid #334155}
     .tab:hover:not(.active){color:#94a3b8}
     .card{background:#1e2433;border:1px solid #2d3748;border-radius:12px;padding:18px;margin-bottom:16px}
-    .card h2{font-size:12px;color:#64748b;letter-spacing:.08em;text-transform:uppercase;margin-bottom:14px;font-weight:500}
+    .card h2{font-size:12px;color:#94a3b8;letter-spacing:.08em;text-transform:uppercase;margin-bottom:14px;font-weight:500}
     .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
     .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
     .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}
     .metric{background:#151a28;border-radius:8px;padding:12px 14px}
-    .metric .lbl{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px}
+    .metric .lbl{font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px}
     .metric .val{font-size:20px;font-weight:600;font-family:'Courier New',monospace}
     .up{color:#22c55e}.down{color:#ef4444}.neutral{color:#94a3b8}.amber{color:#f59e0b}.orange{color:#f97316}
     .badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
@@ -42,7 +42,7 @@
     .signal-card{background:#151a28;border:1px solid #f59e0b44;border-radius:8px;padding:14px;margin-bottom:10px}
     .signal-levels{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:10px 0}
     .level{background:#1e2433;border-radius:6px;padding:8px;text-align:center}
-    .level .lbl{font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:3px}
+    .level .lbl{font-size:9px;color:#94a3b8;text-transform:uppercase;margin-bottom:3px}
     .level .val{font-size:13px;font-weight:600;font-family:monospace}
     .btn-row{display:flex;gap:8px}
     .btn{padding:7px 18px;border-radius:6px;border:none;cursor:pointer;font-size:12px;font-weight:500}
@@ -52,12 +52,12 @@
     .kill-banner{background:#7f1d1d;border:1px solid #dc2626;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}
     .risk-bar{height:5px;background:#1e2433;border-radius:3px;overflow:hidden;margin-top:6px}
     .risk-bar-fill{height:100%;border-radius:3px;transition:width .5s}
-    .empty{color:#475569;font-size:12px;text-align:center;padding:20px}
+    .empty{color:#64748b;font-size:12px;text-align:center;padding:20px}
     .pos-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #1e2433;font-size:12px}
     .pos-row:last-child{border-bottom:none}
     .log-box{background:#0a0e17;border:1px solid #1e2433;border-radius:8px;padding:12px;height:320px;overflow-y:auto;font-family:'Courier New',monospace;font-size:11px;line-height:1.6}
     .log-line{padding:1px 0;white-space:pre-wrap;word-break:break-all}
-    .log-line.info{color:#64748b}
+    .log-line.info{color:#94a3b8}
     .log-line.warn{color:#f59e0b}
     .log-line.error{color:#ef4444}
     .log-line.critical{color:#ff0000;font-weight:bold}
@@ -67,7 +67,7 @@
     .svc-row:last-child{border-bottom:none}
     .svc-dot{width:8px;height:8px;border-radius:50%;margin-right:8px;display:inline-block;flex-shrink:0}
     .bt-table{width:100%;border-collapse:collapse;font-size:11px}
-    .bt-table th{color:#64748b;text-align:left;padding:6px 8px;border-bottom:1px solid #1e2433;font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+    .bt-table th{color:#94a3b8;text-align:left;padding:6px 8px;border-bottom:1px solid #1e2433;font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
     .bt-table td{padding:6px 8px;border-bottom:1px solid #111827;color:#cbd5e1}
     .bt-table tr:hover td{background:#151a28}
     .bt-table .good{color:#22c55e}
@@ -95,11 +95,11 @@
     .health-drought{font-size:28px;font-weight:700;font-family:'Courier New',monospace;line-height:1;flex-shrink:0;min-width:48px;text-align:center}
     .health-blocker{background:#0f1117;border-radius:6px;padding:7px 10px;margin-top:6px;font-size:11px}
     .health-blocker .cat{color:#94a3b8;font-weight:500}
-    .health-blocker .hint{color:#64748b;margin-top:2px}
+    .health-blocker .hint{color:#94a3b8;margin-top:2px}
 
     /* ── Learning & Commodity tables ── */
     .data-table{width:100%;border-collapse:collapse;font-size:11px}
-    .data-table th{color:#64748b;text-align:left;padding:6px 8px;border-bottom:1px solid #1e2433;font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
+    .data-table th{color:#94a3b8;text-align:left;padding:6px 8px;border-bottom:1px solid #1e2433;font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
     .data-table td{padding:6px 8px;border-bottom:1px solid #111827;color:#cbd5e1;vertical-align:middle}
     .data-table tr:hover td{background:#151a28}
     .data-table .good{color:#22c55e}
@@ -113,7 +113,7 @@
     .outcome-small_loss{color:#fca5a5}
     .outcome-large_loss{color:#ef4444;font-weight:600}
     .sub-tabs{display:flex;gap:4px;margin-bottom:14px}
-    .sub-tab{padding:4px 12px;border-radius:5px;border:1px solid #2d3748;background:transparent;color:#64748b;font-size:12px;cursor:pointer}
+    .sub-tab{padding:4px 12px;border-radius:5px;border:1px solid #2d3748;background:transparent;color:#94a3b8;font-size:12px;cursor:pointer}
     .sub-tab.active{background:#1e293b;color:#f1f5f9;border-color:#334155}
     .source-live{color:#22c55e;font-size:10px}
     .source-sim{color:#f59e0b;font-size:10px}
@@ -121,7 +121,7 @@
     /* ── Options chain table ── */
     .chain-wrap{overflow-x:auto}
     .chain-table{width:100%;border-collapse:collapse;font-size:11px;font-family:'Courier New',monospace}
-    .chain-table th{color:#64748b;padding:5px 8px;text-align:right;font-size:9px;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid #1e2433;font-weight:500;white-space:nowrap}
+    .chain-table th{color:#94a3b8;padding:5px 8px;text-align:right;font-size:9px;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid #1e2433;font-weight:500;white-space:nowrap}
     .chain-table th.ctr{text-align:center}
     .chain-table td{padding:5px 8px;border-bottom:1px solid #111827;text-align:right;color:#cbd5e1;white-space:nowrap}
     .chain-table td.ctr{text-align:center;font-weight:700;color:#f1f5f9;font-size:12px;background:#151a28}
@@ -130,7 +130,7 @@
     .chain-table tr:hover td{background:#151a28}
     .chain-table tr.atm:hover td{background:#122540}
     .chain-table tr.atm:hover td.ctr{background:#0d1f35}
-    .chain-sym-btn{padding:3px 10px;border-radius:4px;border:1px solid #2d3748;background:transparent;color:#64748b;font-size:11px;cursor:pointer;margin-right:4px;font-family:'Courier New',monospace;transition:all .1s}
+    .chain-sym-btn{padding:3px 10px;border-radius:4px;border:1px solid #2d3748;background:transparent;color:#94a3b8;font-size:11px;cursor:pointer;margin-right:4px;font-family:'Courier New',monospace;transition:all .1s}
     .chain-sym-btn.active{border-color:#3b82f6;background:#1e3a5f;color:#93c5fd}
 
     /* ── Daily Journal ── */
@@ -151,8 +151,8 @@
     .outcome-signal_generated{background:#1e3a5f;color:#93c5fd}
     .journal-reason{font-size:11px;color:#94a3b8;margin-top:3px;line-height:1.4}
     .journal-events{margin-top:8px;border-left:1px solid #1e2433;padding-left:10px}
-    .journal-event{display:flex;gap:8px;font-size:10px;padding:2px 0;color:#64748b}
-    .journal-event-time{color:#475569;font-family:monospace;flex-shrink:0;width:58px}
+    .journal-event{display:flex;gap:8px;font-size:10px;padding:2px 0;color:#94a3b8}
+    .journal-event-time{color:#64748b;font-family:monospace;flex-shrink:0;width:58px}
     .journal-event-type{font-weight:600;flex-shrink:0;width:140px}
     .journal-event-type.SIGNAL_GENERATED{color:#3b82f6}
     .journal-event-type.INTELLIGENCE_VETO{color:#ef4444}
@@ -160,7 +160,7 @@
     .journal-event-type.ORDER_PLACED,.journal-event-type.POSITION_OPENED{color:#22c55e}
     .journal-event-type.PAPER_TRADE{color:#f59e0b}
     .journal-event-reason{color:#94a3b8;flex:1}
-    .journal-section-hdr{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin:16px 0 8px;font-weight:500}
+    .journal-section-hdr{font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.08em;margin:16px 0 8px;font-weight:500}
     .rejection-pills{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
     .rejection-pill{background:#1e2433;border-radius:6px;padding:5px 10px;font-size:11px;display:flex;gap:6px;align-items:center}
     .rejection-pill .rp-count{font-weight:700;color:#f1f5f9;font-family:monospace}
@@ -176,20 +176,20 @@
     .conviction-direction{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
     .conviction-direction.bullish{color:#22c55e}.conviction-direction.bearish{color:#ef4444}.conviction-direction.neutral{color:#f59e0b}
     .conviction-tradeable{font-size:10px;margin-top:2px}
-    .conviction-timestamp{font-size:10px;color:#475569;margin-top:1px}
+    .conviction-timestamp{font-size:10px;color:#64748b;margin-top:1px}
     .conviction-signals{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
     .conviction-signal{background:#151a28;border-radius:6px;padding:8px 10px}
-    .conviction-signal-label{font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px}
+    .conviction-signal-label{font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px}
     .conviction-signal-row{display:flex;align-items:baseline;gap:6px}
     .conviction-signal-score{font-family:monospace;font-weight:800;font-size:14px}
-    .conviction-signal-score.pos{color:#22c55e}.conviction-signal-score.neg{color:#ef4444}.conviction-signal-score.zero{color:#475569}
-    .conviction-signal-reason{font-size:10px;color:#64748b;margin-top:2px;line-height:1.35}
+    .conviction-signal-score.pos{color:#22c55e}.conviction-signal-score.neg{color:#ef4444}.conviction-signal-score.zero{color:#64748b}
+    .conviction-signal-reason{font-size:10px;color:#94a3b8;margin-top:2px;line-height:1.35}
     .journal-filter-btns{display:flex;gap:4px;flex-wrap:wrap}
-    .journal-filter-btn{padding:3px 10px;border-radius:5px;border:1px solid #2d3748;background:transparent;color:#64748b;font-size:11px;cursor:pointer}
+    .journal-filter-btn{padding:3px 10px;border-radius:5px;border:1px solid #2d3748;background:transparent;color:#94a3b8;font-size:11px;cursor:pointer}
     .journal-filter-btn.active{background:#1e293b;color:#f1f5f9;border-color:#334155}
     .journal-trade-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #111827;font-size:12px}
     .journal-trade-row:last-child{border-bottom:none}
-    .journal-empty{color:#475569;font-size:12px;text-align:center;padding:28px 0}
+    .journal-empty{color:#64748b;font-size:12px;text-align:center;padding:28px 0}
   </style>
 </head>
 <body>
@@ -299,7 +299,7 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
               ✕ Clear
             </button>
           )}
-          <span style={{marginLeft:"auto",color:"#475569",fontSize:11}}>{rows.length} / {trades.length} rows</span>
+          <span style={{marginLeft:"auto",color:"#64748b",fontSize:11}}>{rows.length} / {trades.length} rows</span>
         </div>
       )}
       <div style={{overflowX:"auto"}}>
@@ -346,11 +346,11 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
                 <tr key={t.id}>
                   <td className="sym">
                     <span>{dispSym}</span>
-                    {idxLabel && <div style={{fontSize:9,color:"#64748b",marginTop:1}}>{idxLabel}</div>}
+                    {idxLabel && <div style={{fontSize:9,color:"#94a3b8",marginTop:1}}>{idxLabel}</div>}
                     {t.strategy && <div style={{marginTop:2}}><span style={{fontSize:9,color:"#93c5fd",fontFamily:"sans-serif",fontWeight:400}}>{t.strategy}</span></div>}
                   </td>
                   <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
-                  <td style={{color:"#64748b",fontSize:10}}>{dateStr}</td>
+                  <td style={{color:"#94a3b8",fontSize:10}}>{dateStr}</td>
                   <td style={{fontFamily:"monospace"}}>{(t.entry_price||0).toFixed(2)}</td>
                   <td style={{fontFamily:"monospace",color:ltpColor,fontWeight:open?"600":"400"}}>
                     {ltp != null ? ltp.toFixed(2) : "—"}
@@ -372,7 +372,7 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
                   <td className={open?"neutral-cell":r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{open?"open":fmtR(r)}</td>
                   <td style={{fontFamily:"monospace",color:"#fca5a5",fontSize:10}}>{(t.mae_pts||0)>0?`-${(t.mae_pts||0).toFixed(2)}`:"—"}</td>
                   <td style={{fontFamily:"monospace",color:"#86efac",fontSize:10}}>{(t.mfe_pts||0)>0?`+${(t.mfe_pts||0).toFixed(2)}`:"—"}</td>
-                  <td style={{color:"#64748b",fontSize:10}}>{t.exit_reason||"—"}</td>
+                  <td style={{color:"#94a3b8",fontSize:10}}>{t.exit_reason||"—"}</td>
                   <td><span className={`badge ${open?"manual":"ok"}`} style={{fontSize:9}}>{t.status}</span></td>
                 </tr>
               );
@@ -414,7 +414,7 @@ const LearningReviewView = React.memo(function LearningReviewView({trades}) {
           <div key={b} style={{marginBottom:16}}>
             <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
               <span className={`outcome-${b}`} style={{fontWeight:600,fontSize:13}}>{outcomeLabel(b)}</span>
-              <span style={{color:"#475569",fontSize:11}}>{bTrades.length} trade{bTrades.length!==1?"s":""}</span>
+              <span style={{color:"#64748b",fontSize:11}}>{bTrades.length} trade{bTrades.length!==1?"s":""}</span>
             </div>
             <LearningTradesTable trades={bTrades.slice(0,10)} showControls={false}/>
           </div>
@@ -516,7 +516,7 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
             ✕ Clear
           </button>
         )}
-        <span style={{marginLeft:"auto",color:"#475569",fontSize:11}}>
+        <span style={{marginLeft:"auto",color:"#64748b",fontSize:11}}>
           {isFiltered ? `${filtered.length} / ${allTrades.length} rows` : `${allTrades.length} trades`}
         </span>
       </div>
@@ -558,7 +558,7 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
                   ["Wins / Losses", `${s.wins} / ${s.total-s.wins}`, "neutral"],
                 ].map(([lbl,val,cls])=>(
                   <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-                    <span style={{color:"#64748b"}}>{lbl}</span>
+                    <span style={{color:"#94a3b8"}}>{lbl}</span>
                     <span className={cls}>{val}</span>
                   </div>
                 ))}
@@ -617,7 +617,7 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
                   ["Worst trade",`${learnStats.worst_trade_r}R`,"down"],
                 ].map(([lbl,val,cls])=>(
                   <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-                    <span style={{color:"#64748b"}}>{lbl}</span>
+                    <span style={{color:"#94a3b8"}}>{lbl}</span>
                     <span className={cls} style={{fontFamily:"monospace"}}>{val}</span>
                   </div>
                 ))}
@@ -739,13 +739,13 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
                 </td>
                 <td style={{fontFamily:"monospace",color:"#e2e8f0"}}>
                   {atmPremEntry > 0 ? atmPremEntry.toFixed(2) : (t.net_debit||0).toFixed(2)}
-                  <div style={{fontSize:9,color:"#475569",marginTop:1}}>
+                  <div style={{fontSize:9,color:"#64748b",marginTop:1}}>
                     OTM: {(meta.otm_prem||0).toFixed(2)}
                   </div>
                 </td>
                 <td style={{fontFamily:"monospace",color:"#fca5a5"}}>
                   {(t.net_debit||0).toFixed(2)} × {lot}
-                  <div style={{fontSize:9,color:"#64748b",marginTop:1}}>= ₹{round2((t.net_debit||0)*lot).toFixed(0)} cost</div>
+                  <div style={{fontSize:9,color:"#94a3b8",marginTop:1}}>= ₹{round2((t.net_debit||0)*lot).toFixed(0)} cost</div>
                   <div style={{fontSize:9,color:"#9f1239",marginTop:1}}>
                     SL{trailActive ? <span style={{color:"#f97316"}}> ↑T</span> : ""}: {slPrice ? `@ ${Math.round(slPrice)}` : "—"}
                   </div>
@@ -753,27 +753,27 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
                 </td>
                 <td style={{fontFamily:"monospace",color:"#86efac"}}>
                   <div>Tgt{tgtPct>0.50 ? <span style={{color:"#a3e635"}}> ↑</span> : ""}: +₹{tgtInr.toFixed(0)}</div>
-                  <div style={{fontSize:9,color:"#475569",marginTop:1}}>Max: +₹{round2((t.max_profit||0)*lot).toFixed(0)}</div>
+                  <div style={{fontSize:9,color:"#64748b",marginTop:1}}>Max: +₹{round2((t.max_profit||0)*lot).toFixed(0)}</div>
                 </td>
                 <td style={{fontFamily:"monospace"}}>{(t.rr||t.rr_planned||0).toFixed(1)}</td>
                 <td style={{fontFamily:"monospace",color:rsiColor,fontSize:10}}>{meta.rsi ? Number(meta.rsi).toFixed(1) : "—"}</td>
-                <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{meta.iv_pct ? meta.iv_pct+"%" : "—"}</td>
-                <td style={{fontFamily:"monospace",fontSize:10,color:"#64748b"}}>{entryHHMM}</td>
+                <td style={{fontFamily:"monospace",fontSize:10,color:"#94a3b8"}}>{meta.iv_pct ? meta.iv_pct+"%" : "—"}</td>
+                <td style={{fontFamily:"monospace",fontSize:10,color:"#94a3b8"}}>{entryHHMM}</td>
                 <td style={{fontFamily:"monospace",fontWeight:600,color:pnlColor}}>
                   {isOpen && estPnlLot != null
                     ? <>
                         <span>{estPnlLot>=0?"+":""}₹{Math.abs(estPnlLot).toFixed(0)}</span>
-                        <div style={{fontSize:9,color:"#475569",marginTop:1}}>spread × {lot} lot</div>
+                        <div style={{fontSize:9,color:"#64748b",marginTop:1}}>spread × {lot} lot</div>
                       </>
                     : !isOpen && t.pnl_approx != null
                       ? <>
                           <span className={t.pnl_approx>=0?"good":"bad"}>{t.pnl_approx>=0?"+":""}₹{Math.abs(t.pnl_approx).toFixed(0)}</span>
-                          <div style={{fontSize:9,color:"#475569",marginTop:1}}>× {lot} lot</div>
+                          <div style={{fontSize:9,color:"#64748b",marginTop:1}}>× {lot} lot</div>
                         </>
                       : "—"}
                 </td>
                 <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{isOpen?"open":fmtR(r)}</td>
-                <td style={{color:"#64748b",fontSize:10}}>
+                <td style={{color:"#94a3b8",fontSize:10}}>
                   {t.exit_reason||"—"}
                   {isOpen && onManualClose && (
                     <div style={{marginTop:4}}>
@@ -888,7 +888,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
     return (
       <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
         <div style={{flexShrink:0,width:130,background:"#0f1623",border:"1px solid #1e2433",borderRadius:8,overflow:"hidden"}}>
-          <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",letterSpacing:".08em",padding:"8px 12px 6px",borderBottom:"1px solid #1e2433"}}>Commodity</div>
+          <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:".08em",padding:"8px 12px 6px",borderBottom:"1px solid #1e2433"}}>Commodity</div>
           {SYMS.map(s => (
             <div key={s}
               onClick={() => { setCommChainSym(s); setCommChainExpIdx(0); setCommChain(null); fetchChain(s, 0); }}
@@ -906,7 +906,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
           <div style={{display:"flex",flexWrap:"wrap",gap:12,marginBottom:14,alignItems:"center"}}>
             {chain?.expiries?.length > 1 && (
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <span style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em"}}>Expiry</span>
+                <span style={{fontSize:10,color:"#94a3b8",textTransform:"uppercase",letterSpacing:".06em"}}>Expiry</span>
                 <select value={commChainExpIdx}
                   onChange={e => { const i=Number(e.target.value); setCommChainExpIdx(i); fetchChain(commChainSym,i); }}
                   style={{background:"#0f1623",border:"1px solid #1e2433",borderRadius:4,color:"#e2e8f0",padding:"3px 7px",fontSize:11,colorScheme:"dark"}}>
@@ -921,16 +921,16 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
           </div>
           {chain && (
             <div style={{display:"flex",gap:14,marginBottom:12,fontSize:11,flexWrap:"wrap",alignItems:"center",padding:"8px 12px",background:"#151a28",borderRadius:8,border:"1px solid #1e2433"}}>
-              <span style={{color:"#64748b"}}>Spot</span>
+              <span style={{color:"#94a3b8"}}>Spot</span>
               <span style={{fontFamily:"monospace",fontWeight:700,color:"#f1f5f9",fontSize:16}}>
                 {chain.spot ? chain.spot.toLocaleString("en-IN",{maximumFractionDigits:2}) : "—"}
               </span>
-              <span style={{color:"#64748b",marginLeft:6}}>ATM</span>
+              <span style={{color:"#94a3b8",marginLeft:6}}>ATM</span>
               <span style={{fontFamily:"monospace",fontWeight:600,color:"#f59e0b"}}>
                 {chain.atm_strike ? chain.atm_strike.toLocaleString("en-IN") : "—"}
               </span>
               {chain.source && (
-                <span style={{marginLeft:"auto",fontSize:9,color:"#475569",fontStyle:"italic"}}>
+                <span style={{marginLeft:"auto",fontSize:9,color:"#64748b",fontStyle:"italic"}}>
                   {chain.source==="live_chain" ? "● live chain" : "◌ bs estimate"}
                 </span>
               )}
@@ -1026,7 +1026,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
             ✕ Clear
           </button>
         )}
-        <span style={{marginLeft:"auto",color:"#475569",fontSize:11}}>
+        <span style={{marginLeft:"auto",color:"#64748b",fontSize:11}}>
           {isFiltered ? `${filtered.length} / ${allTrades.length} rows` : `${allTrades.length} trades`}
         </span>
       </div>
@@ -1061,7 +1061,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
       {commStats?.by_strategy && Object.keys(commStats.by_strategy).length > 0 && !isFiltered && (
         <div className="card" style={{marginBottom:16}}>
           <h2>Strategy P&L attribution
-            <span style={{marginLeft:8,fontWeight:400,color:"#475569",fontSize:10,textTransform:"none",letterSpacing:0}}>
+            <span style={{marginLeft:8,fontWeight:400,color:"#64748b",fontSize:10,textTransform:"none",letterSpacing:0}}>
               identify which strategy is losing
             </span>
           </h2>
@@ -1172,7 +1172,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
                   ["Total R", `${(commStats.total_r||0)>=0?"+":""}${(commStats.total_r||0).toFixed(1)}R`, (commStats.total_r||0)>=0?"up":"down"],
                 ].map(([lbl,val,cls])=>(
                   <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-                    <span style={{color:"#64748b"}}>{lbl}</span>
+                    <span style={{color:"#94a3b8"}}>{lbl}</span>
                     <span className={cls} style={{fontFamily:"monospace"}}>{val}</span>
                   </div>
                 ))}
@@ -1186,7 +1186,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
       {subTab==="chain" && (
         <div className="card">
           <h2>Live Options Chain
-            <span style={{marginLeft:8,fontWeight:400,color:"#475569",fontSize:10,textTransform:"none",letterSpacing:0}}>
+            <span style={{marginLeft:8,fontWeight:400,color:"#64748b",fontSize:10,textTransform:"none",letterSpacing:0}}>
               CE (calls) ← Strike → PE (puts) · Green=CE · Red=PE · Blue highlight=ATM
             </span>
           </h2>
@@ -1211,7 +1211,7 @@ function CooldownHoursInput({ value, onChange }) {
   };
   return (
     <div style={{display:"flex",alignItems:"center",gap:6,fontSize:11}}>
-      <span style={{color:"#64748b"}}>Duration:</span>
+      <span style={{color:"#94a3b8"}}>Duration:</span>
       {editing ? (
         <input type="number" value={val}
           onChange={e=>setVal(e.target.value)} onBlur={commit}
@@ -1245,14 +1245,14 @@ function PctParamField({ strategy, param, value, label, desc, onUpdate }) {
   };
   return (
     <div style={{background:"#0f172a",borderRadius:6,padding:"8px 12px",border:"1px solid #1e293b",minWidth:160}}>
-      <div style={{fontSize:9,color:"#475569",marginBottom:3}}>{label}</div>
+      <div style={{fontSize:9,color:"#64748b",marginBottom:3}}>{label}</div>
       <div style={{display:"flex",alignItems:"center",gap:6}}>
         {editing ? (
           <><input type="number" value={raw} onChange={e=>setRaw(e.target.value)} onBlur={commit}
               onKeyDown={e=>{if(e.key==="Enter")commit();if(e.key==="Escape"){setEditing(false);setRaw(String(Math.round((value||0)*100)));}}}
               autoFocus min={1} max={200} style={{width:56,background:"#1e293b",color:"#f1f5f9",
               border:"1px solid #3b82f6",borderRadius:3,padding:"2px 6px",fontSize:11,textAlign:"center"}}/>
-            <span style={{fontSize:11,color:"#64748b"}}>%</span></>
+            <span style={{fontSize:11,color:"#94a3b8"}}>%</span></>
         ) : (
           <button onClick={()=>setEditing(true)} style={{background:"#1e293b",color:"#f1f5f9",border:"1px solid #334155",
               borderRadius:3,padding:"2px 10px",fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>
@@ -1278,14 +1278,14 @@ function MultParamField({ strategy, param, value, label, desc, onUpdate }) {
   };
   return (
     <div style={{background:"#0f172a",borderRadius:6,padding:"8px 12px",border:"1px solid #1e293b",minWidth:160}}>
-      <div style={{fontSize:9,color:"#475569",marginBottom:3}}>{label}</div>
+      <div style={{fontSize:9,color:"#64748b",marginBottom:3}}>{label}</div>
       <div style={{display:"flex",alignItems:"center",gap:6}}>
         {editing ? (
           <><input type="number" step="0.1" value={raw} onChange={e=>setRaw(e.target.value)} onBlur={commit}
               onKeyDown={e=>{if(e.key==="Enter")commit();if(e.key==="Escape"){setEditing(false);setRaw(String(value));}}}
               autoFocus min={0.5} style={{width:56,background:"#1e293b",color:"#f1f5f9",
               border:"1px solid #3b82f6",borderRadius:3,padding:"2px 6px",fontSize:11,textAlign:"center"}}/>
-            <span style={{fontSize:11,color:"#64748b"}}>×</span></>
+            <span style={{fontSize:11,color:"#94a3b8"}}>×</span></>
         ) : (
           <button onClick={()=>setEditing(true)} style={{background:"#1e293b",color:"#f1f5f9",border:"1px solid #334155",
               borderRadius:3,padding:"2px 10px",fontSize:11,cursor:"pointer",fontFamily:"monospace"}}>
@@ -1323,7 +1323,7 @@ function McxConfigPage({ config, onUpdate, onRefresh }) {
 
   return (
     <div>
-      <div style={{color:"#64748b",fontSize:11,marginBottom:16}}>
+      <div style={{color:"#94a3b8",fontSize:11,marginBottom:16}}>
         Strategies are evaluated in priority order — first match wins. Risk reflects historical false-signal rate.
         Cooldown blocks re-entry on an instrument after a bad exit.
         All changes are saved to disk and survive bot restarts — they apply on the next MCX cycle.
@@ -1337,7 +1337,7 @@ function McxConfigPage({ config, onUpdate, onRefresh }) {
           return (
             <div key={key} style={{background:riskBg,border:`1px solid ${riskBc}`,borderRadius:10,padding:"14px 16px"}}>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:10}}>
-                <span style={{background:"#1e293b",border:"1px solid #334155",color:"#475569",
+                <span style={{background:"#1e293b",border:"1px solid #334155",color:"#64748b",
                               borderRadius:4,padding:"2px 8px",fontSize:10,fontWeight:700,fontFamily:"monospace"}}>
                   #{cfg.priority}
                 </span>
@@ -1346,7 +1346,7 @@ function McxConfigPage({ config, onUpdate, onRefresh }) {
                               borderRadius:3,padding:"2px 8px",fontSize:10,fontWeight:700}}>
                   {cfg.risk==="HIGH" ? "⚠ HIGH RISK" : `● ${cfg.risk} RISK`}
                 </span>
-                <span style={{color:"#64748b",fontSize:10,flex:1,minWidth:120}}>{cfg.risk_label}</span>
+                <span style={{color:"#94a3b8",fontSize:10,flex:1,minWidth:120}}>{cfg.risk_label}</span>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:16,background:"#0f172a",borderRadius:6,padding:"10px 14px",flexWrap:"wrap"}}>
                 <span style={{fontSize:11,color:"#94a3b8",fontWeight:500}}>Cooldown after bad exit:</span>
@@ -1366,7 +1366,7 @@ function McxConfigPage({ config, onUpdate, onRefresh }) {
 
               {/* SL / Trailing / Target config */}
               <div style={{marginTop:8}}>
-                <div style={{fontSize:10,color:"#475569",marginBottom:6,fontWeight:600,letterSpacing:"0.05em",textTransform:"uppercase"}}>
+                <div style={{fontSize:10,color:"#64748b",marginBottom:6,fontWeight:600,letterSpacing:"0.05em",textTransform:"uppercase"}}>
                   Stop-Loss &amp; Target
                   <span style={{marginLeft:8,fontSize:9,color:"#334155",textTransform:"none",fontWeight:400}}>
                     SL distance = (% × net_debit) ÷ 0.35 — scales with what you paid, not a blind % of spot
@@ -1402,7 +1402,7 @@ function McxConfigPage({ config, onUpdate, onRefresh }) {
       <div className="card" style={{marginTop:16}}>
         <h2 style={{marginBottom:10}}>Active Entry Cooldowns</h2>
         {Object.keys(cooldowns).length === 0 ? (
-          <div style={{color:"#475569",fontSize:11}}>No active cooldowns — all instruments available for entry.</div>
+          <div style={{color:"#64748b",fontSize:11}}>No active cooldowns — all instruments available for entry.</div>
         ) : (
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
             {Object.entries(cooldowns).map(([instr, cd]) => (
@@ -1411,7 +1411,7 @@ function McxConfigPage({ config, onUpdate, onRefresh }) {
                 border:"1px solid #f9731644",flexWrap:"wrap"}}>
                 <span style={{fontSize:13,color:"#f59e0b",fontWeight:700,fontFamily:"monospace"}}>{instr}</span>
                 <span style={{fontSize:11,color:"#f97316"}}>⏳ {cd.remaining_min}min remaining</span>
-                <span style={{fontSize:10,color:"#64748b",flex:1}}>resumes {cd.resume_at.substring(11,16)} IST</span>
+                <span style={{fontSize:10,color:"#94a3b8",flex:1}}>resumes {cd.resume_at.substring(11,16)} IST</span>
                 <button onClick={()=>clearCooldown(instr)}
                   style={{background:"transparent",border:"1px solid #334155",color:"#94a3b8",
                           borderRadius:3,fontSize:10,padding:"2px 8px",cursor:"pointer"}}>
@@ -1441,7 +1441,7 @@ function ParamField({ strategy, param, entry, onUpdate }) {
 
   return (
     <div style={{background:"#0f172a",borderRadius:6,padding:"8px 12px",border:"1px solid #1e293b"}}>
-      <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>{entry.description || param}</div>
+      <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>{entry.description || param}</div>
       <div style={{display:"flex",alignItems:"center",gap:8}}>
         <code style={{fontSize:11,color:"#94a3b8",flex:1}}>{param}</code>
         {editing ? (
@@ -1462,7 +1462,7 @@ function ParamField({ strategy, param, entry, onUpdate }) {
         )}
       </div>
       {entry.min!==undefined && (
-        <div style={{fontSize:9,color:"#475569",marginTop:2}}>range: {entry.min} – {entry.max}</div>
+        <div style={{fontSize:9,color:"#64748b",marginTop:2}}>range: {entry.min} – {entry.max}</div>
       )}
     </div>
   );
@@ -1499,7 +1499,7 @@ function StrategyConfigPage({ config, onUpdate }) {
 
   return (
     <div>
-      <div style={{color:"#64748b",fontSize:11,marginBottom:16}}>
+      <div style={{color:"#94a3b8",fontSize:11,marginBottom:16}}>
         Changes take effect on the next evaluation cycle — no bot restart needed.
         Click a value to edit it; press Enter or click away to apply.
       </div>
@@ -1527,7 +1527,7 @@ function StrategyConfigPage({ config, onUpdate }) {
                       entry={entry} onUpdate={updateParam}/>
                   ))}
                 {Object.keys(params).filter(k=>k!=="enabled").length===0 && (
-                  <div style={{fontSize:11,color:"#475569"}}>No configurable params — toggle enabled above.</div>
+                  <div style={{fontSize:11,color:"#64748b"}}>No configurable params — toggle enabled above.</div>
                 )}
               </div>
             </div>
@@ -1701,7 +1701,7 @@ function App() {
     if (drought_status === "OK") return (
       <div className="health-banner ok" style={{marginBottom:14}}>
         <span style={{color:"#22c55e",fontWeight:600}}>✓ Signals healthy</span>
-        <span style={{color:"#475569",marginLeft:10,fontSize:11}}>Last trade: {last_trade||"—"}</span>
+        <span style={{color:"#64748b",marginLeft:10,fontSize:11}}>Last trade: {last_trade||"—"}</span>
       </div>
     );
     const cls = (drought_status||"warning").toLowerCase();
@@ -1710,12 +1710,12 @@ function App() {
       <div className={`health-banner ${cls}`}>
         <div style={{textAlign:"center",flexShrink:0}}>
           <div className="health-drought" style={{color:col}}>{drought_days}</div>
-          <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",marginTop:2}}>days dry</div>
+          <div style={{fontSize:9,color:"#94a3b8",textTransform:"uppercase",marginTop:2}}>days dry</div>
         </div>
         <div style={{flex:1}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
             <span style={{fontWeight:600,fontSize:13,color:col}}>{drought_status}</span>
-            <span style={{fontSize:11,color:"#475569"}}>No trades fired · Last: {last_trade||"—"}</span>
+            <span style={{fontSize:11,color:"#64748b"}}>No trades fired · Last: {last_trade||"—"}</span>
           </div>
           {(top_3_reasons||[]).map((b,i)=>(
             <div key={i} className="health-blocker">
@@ -1736,7 +1736,7 @@ function App() {
         <div>
           <span className={`pulse ${wsOk?"":"off"}`}/>
           <span style={{fontSize:18,fontWeight:600,color:"#f1f5f9"}}>AlphaLens Trading Bot</span>
-          <span style={{fontSize:11,color:"#475569",marginLeft:10}}>{wsOk?"● Live":"○ Reconnecting..."}</span>
+          <span style={{fontSize:11,color:"#64748b",marginLeft:10}}>{wsOk?"● Live":"○ Reconnecting..."}</span>
           {isPaper && <span className="badge paper" style={{marginLeft:10}}>PAPER TRADING</span>}
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -1835,15 +1835,15 @@ function App() {
                 <div key={p.id} className="pos-row">
                   <div>
                     <span style={{fontWeight:600,fontFamily:"monospace",color:"#f1f5f9"}}>{dispSym}</span>
-                    {idxSym && <span style={{fontSize:9,color:"#64748b",marginLeft:4}}>{idxSym}</span>}
+                    {idxSym && <span style={{fontSize:9,color:"#94a3b8",marginLeft:4}}>{idxSym}</span>}
                     <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
-                    <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{p.strategy} · {p.position_size} {p.signal_type==="OPTIONS"?"units":"shares"}</div>
+                    <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{p.strategy} · {p.position_size} {p.signal_type==="OPTIONS"?"units":"shares"}</div>
                   </div>
                   <div style={{textAlign:"right",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
                     <div className={p.unrealised_pnl>=0?"up":"down"} style={{fontSize:15,fontWeight:600}}>
                       {p.unrealised_pnl>=0?"+":""}₹{fmt(Math.abs(p.unrealised_pnl))}
                     </div>
-                    <div style={{fontSize:10,color:"#64748b"}}>₹{p.entry_price} → ₹{p.ltp}</div>
+                    <div style={{fontSize:10,color:"#94a3b8"}}>₹{p.entry_price} → ₹{p.ltp}</div>
                     <button
                       onClick={forceClose}
                       title="Mark as closed — use when broker already closed this but dashboard shows stale data"
@@ -1859,7 +1859,7 @@ function App() {
               <div style={{display:"grid",gap:10}}>
                 <div>
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-                    <span style={{color:"#64748b"}}>Portfolio heat</span>
+                    <span style={{color:"#94a3b8"}}>Portfolio heat</span>
                     <span className={heat>50?"down":"neutral"}>{heat.toFixed(1)}%</span>
                   </div>
                   <div className="risk-bar"><div className="risk-bar-fill" style={{width:`${Math.min(heat,100)}%`,background:heat>50?"#ef4444":heat>30?"#f59e0b":"#22c55e"}}/></div>
@@ -1872,7 +1872,7 @@ function App() {
                   ["Avg R:R",stats?.avg_rr?.toFixed(2)||"—","neutral"],
                 ].map(([lbl,val,cls])=>(
                   <div key={lbl} style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-                    <span style={{color:"#64748b"}}>{lbl}</span>
+                    <span style={{color:"#94a3b8"}}>{lbl}</span>
                     <span className={cls}>{val}</span>
                   </div>
                 ))}
@@ -1892,13 +1892,13 @@ function App() {
                     <span className="badge manual">{s.strategy}</span>
                   </div>
                 </div>
-                <div style={{fontSize:11,color:"#64748b",margin:"6px 0"}}>{s.reason}</div>
+                <div style={{fontSize:11,color:"#94a3b8",margin:"6px 0"}}>{s.reason}</div>
                 <div className="signal-levels">
                   <div className="level"><div className="lbl">Entry</div><div className="val" style={{color:"#93c5fd"}}>₹{s.entry}</div></div>
                   <div className="level"><div className="lbl">Stop</div><div className="val" style={{color:"#fca5a5"}}>₹{s.stop_loss}</div></div>
                   <div className="level"><div className="lbl">Target</div><div className="val" style={{color:"#86efac"}}>₹{s.target_1}</div></div>
                 </div>
-                <div style={{fontSize:11,color:"#64748b",marginBottom:10}}>R:R {s.risk_reward} · {s.position_size} shares · ₹{(s.capital_at_risk||0).toLocaleString("en-IN")}</div>
+                <div style={{fontSize:11,color:"#94a3b8",marginBottom:10}}>R:R {s.risk_reward} · {s.position_size} shares · ₹{(s.capital_at_risk||0).toLocaleString("en-IN")}</div>
                 <div className="btn-row">
                   <button className="btn btn-confirm" onClick={()=>confirm(s.signal_id)}>✓ Confirm</button>
                   <button className="btn btn-reject" onClick={()=>reject(s.signal_id)}>✕ Reject</button>
@@ -1965,7 +1965,7 @@ function App() {
                     ["Open positions",paperStats.open_positions||0,"neutral"],
                   ].map(([lbl,val,cls])=>(
                     <div key={lbl} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #111827",fontSize:12}}>
-                      <span style={{color:"#64748b"}}>{lbl}</span>
+                      <span style={{color:"#94a3b8"}}>{lbl}</span>
                       <span className={cls}>{val}</span>
                     </div>
                   ))}
@@ -1980,15 +1980,15 @@ function App() {
                     <div key={p.id} className="pos-row">
                       <div>
                         <span style={{fontWeight:600,fontFamily:"monospace"}}>{dispSym}</span>
-                        {idxSym && <span style={{fontSize:9,color:"#64748b",marginLeft:4}}>{idxSym}</span>}
+                        {idxSym && <span style={{fontSize:9,color:"#94a3b8",marginLeft:4}}>{idxSym}</span>}
                         <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
-                        <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{p.strategy} · <span style={{color:"#94a3b8"}}>{p.position_size} {p.instrument_type==="nse_options"?"units":"shares"}</span></div>
+                        <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{p.strategy} · <span style={{color:"#94a3b8"}}>{p.position_size} {p.instrument_type==="nse_options"?"units":"shares"}</span></div>
                       </div>
                       <div style={{textAlign:"right"}}>
                         <div className={p.unrealised_pnl>=0?"up":"down"} style={{fontWeight:600}}>
                           {p.unrealised_pnl>=0?"+":""}₹{fmt(Math.abs(p.unrealised_pnl))}
                         </div>
-                        <div style={{fontSize:10,color:"#64748b"}}>₹{p.entry_price} → ₹{p.ltp}</div>
+                        <div style={{fontSize:10,color:"#94a3b8"}}>₹{p.entry_price} → ₹{p.ltp}</div>
                       </div>
                     </div>
                   )})}
@@ -2029,14 +2029,14 @@ function App() {
               <h2 style={{margin:0}}>Live bot log</h2>
               <div style={{display:"flex",gap:8}}>
                 <button className="mode-btn" onClick={()=>setLogs([])}>Clear</button>
-                <span style={{fontSize:11,color:"#475569"}}>{logs.length} lines</span>
+                <span style={{fontSize:11,color:"#64748b"}}>{logs.length} lines</span>
               </div>
             </div>
             <div className="log-box" ref={logRef}>
               {logs.map((line,i)=>(
                 <div key={i} className={`log-line ${logColor(line)}`}>{line}</div>
               ))}
-              {!logs.length && <div style={{color:"#475569"}}>Connecting to log stream...</div>}
+              {!logs.length && <div style={{color:"#64748b"}}>Connecting to log stream...</div>}
             </div>
           </div>
           <div className="card">
@@ -2077,7 +2077,7 @@ function App() {
                 })
               ) : <div className="empty">Loading...</div>}
               {services?.uptime && (
-                <div style={{marginTop:12,fontSize:11,color:"#475569"}}>Bot uptime: {services.uptime}</div>
+                <div style={{marginTop:12,fontSize:11,color:"#64748b"}}>Bot uptime: {services.uptime}</div>
               )}
             </div>
             <div className="card">
@@ -2089,10 +2089,10 @@ function App() {
                     <div key={key} className="svc-row">
                       <div>
                         <div style={{color:"#e2e8f0",fontSize:12}}>{label}</div>
-                        <div style={{color:"#475569",fontSize:10}}>{schedule}</div>
+                        <div style={{color:"#64748b",fontSize:10}}>{schedule}</div>
                       </div>
                       <div style={{textAlign:"right"}}>
-                        <div style={{fontSize:10,color:"#64748b"}}>Last run</div>
+                        <div style={{fontSize:10,color:"#94a3b8"}}>Last run</div>
                         <div style={{fontSize:11,color:"#94a3b8"}}>{svc?.last_run||"Never"}</div>
                       </div>
                     </div>
@@ -2118,7 +2118,7 @@ function App() {
                     }).catch(e=>alert(`Error: ${e}`));
                   }}>
                   <div style={{fontWeight:500,color:"#e2e8f0"}}>{label}</div>
-                  <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{note}</div>
+                  <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{note}</div>
                 </button>
               ))}
             </div>
@@ -2137,7 +2137,7 @@ function App() {
               <div className="empty" style={{padding:40}}>
                 <div style={{fontSize:24,marginBottom:12}}>📊</div>
                 <div style={{color:"#94a3b8",marginBottom:8}}>{backtest.message||"No backtest results yet"}</div>
-                <div style={{fontSize:11,color:"#475569"}}>Run weekly_agent.py to generate backtest results</div>
+                <div style={{fontSize:11,color:"#64748b"}}>Run weekly_agent.py to generate backtest results</div>
                 <button className="mode-btn" style={{marginTop:14}}
                   onClick={()=>fetch(`${API}/agents/nightly`,{method:"POST"}).then(r=>r.json()).then(d=>alert(d.message||"Started — check Live Logs tab"))}>
                   Run nightly agent (generates backtest results)
@@ -2147,7 +2147,7 @@ function App() {
           ) : (
             <div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-                <div style={{fontSize:12,color:"#64748b"}}>Week ending: {backtest.week_ending}</div>
+                <div style={{fontSize:12,color:"#94a3b8"}}>Week ending: {backtest.week_ending}</div>
                 <div style={{display:"flex",gap:6}}>
                   {Object.keys(backtest.strategies||{}).map(s=>(
                     <button key={s} className={`mode-btn ${btStrat===s?"active":""}`}
@@ -2255,8 +2255,8 @@ function App() {
               <button className="mode-btn" onClick={handleDateSearch} style={{fontSize:12}}>Load</button>
               <button className="mode-btn" onClick={()=>{setJDate("");loadJournal();}} style={{fontSize:12}}>Today</button>
               <button className="mode-btn" onClick={()=>loadJournal(jDate||undefined)} style={{fontSize:12}}>Refresh</button>
-              {journalLoading && <span style={{fontSize:11,color:"#64748b"}}>Loading...</span>}
-              {j && <span style={{fontSize:11,color:"#475569",marginLeft:4}}>{j.date}</span>}
+              {journalLoading && <span style={{fontSize:11,color:"#94a3b8"}}>Loading...</span>}
+              {j && <span style={{fontSize:11,color:"#64748b",marginLeft:4}}>{j.date}</span>}
             </div>
 
             {!j ? (
@@ -2281,8 +2281,8 @@ function App() {
                     <div className="conviction-card">
                       <div className="conviction-header">
                         <div>
-                          <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>Pre-market Conviction Score</div>
-                          <div className={`conviction-score-big ${scoreClass}`}>{cv.score > 0 ? `+${cv.score}` : cv.score}<span style={{fontSize:14,color:"#475569"}}>/10</span></div>
+                          <div style={{fontSize:10,color:"#94a3b8",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>Pre-market Conviction Score</div>
+                          <div className={`conviction-score-big ${scoreClass}`}>{cv.score > 0 ? `+${cv.score}` : cv.score}<span style={{fontSize:14,color:"#64748b"}}>/10</span></div>
                         </div>
                         <div className="conviction-meta">
                           <div className={`conviction-direction ${scoreClass}`}>{cv.direction}</div>
@@ -2292,8 +2292,8 @@ function App() {
                           <div className="conviction-timestamp">{cv.timestamp || cv.date}</div>
                         </div>
                         <div style={{textAlign:"right"}}>
-                          <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>Threshold</div>
-                          <div style={{fontFamily:"monospace",fontWeight:700,fontSize:16,color:"#475569"}}>±7</div>
+                          <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>Threshold</div>
+                          <div style={{fontFamily:"monospace",fontWeight:700,fontSize:16,color:"#64748b"}}>±7</div>
                         </div>
                       </div>
                       <div className="conviction-signals">
@@ -2306,7 +2306,7 @@ function App() {
                               <div className="conviction-signal-label">{sig.label}</div>
                               <div className="conviction-signal-row">
                                 <span className={`conviction-signal-score ${cls}`}>{sc>0?`+${sc}`:sc}</span>
-                                <span style={{fontSize:9,color:"#475569"}}>
+                                <span style={{fontSize:9,color:"#64748b"}}>
                                   {sig.label==="FII F&O"?"max ±3":sig.label==="OI / PCR"||sig.label==="Pre-open IEP"?"max ±2":"max ±1"}
                                 </span>
                               </div>
@@ -2340,7 +2340,7 @@ function App() {
                     <h2>Session events</h2>
                     {(s.session_events||[]).filter(e=>e.type!=="TOKEN_REFRESH").map((e,i)=>(
                       <div key={i} style={{display:"flex",gap:12,fontSize:11,padding:"3px 0",borderBottom:"1px solid #1e2433"}}>
-                        <span style={{color:"#475569",fontFamily:"monospace",flexShrink:0}}>{e.time}</span>
+                        <span style={{color:"#64748b",fontFamily:"monospace",flexShrink:0}}>{e.time}</span>
                         <span style={{color:"#f59e0b",fontWeight:600,minWidth:100}}>{e.type.replace("_"," ")}</span>
                         <span style={{color:"#94a3b8"}}>{e.reason}</span>
                       </div>
@@ -2373,12 +2373,12 @@ function App() {
                           <span style={{fontFamily:"monospace",fontWeight:700,color:"#f1f5f9"}}>{t.display}</span>
                           <span className={`badge ${(t.direction||"").toLowerCase()}`} style={{marginLeft:6}}>{t.direction}</span>
                           {t.paper && <span className="badge paper" style={{marginLeft:4}}>PAPER</span>}
-                          <span style={{fontSize:10,color:"#64748b",marginLeft:8}}>{t.strategy}</span>
+                          <span style={{fontSize:10,color:"#94a3b8",marginLeft:8}}>{t.strategy}</span>
                         </div>
                         <div style={{textAlign:"right",fontFamily:"monospace"}}>
                           <span style={{color:"#94a3b8"}}>{t.qty} qty @ </span>
                           <span style={{color:"#f1f5f9"}}>₹{(t.price||0).toFixed(2)}</span>
-                          <span style={{color:"#475569",fontSize:10,marginLeft:8}}>{t.time}</span>
+                          <span style={{color:"#64748b",fontSize:10,marginLeft:8}}>{t.time}</span>
                         </div>
                       </div>
                     ))}
@@ -2405,11 +2405,11 @@ function App() {
                       <div className="journal-sym-header" onClick={()=>setJExpanded(p=>({...p,[sym.symbol]:!p[sym.symbol]}))} style={{cursor:"pointer"}}>
                         <div>
                           <span className="journal-sym-name">{sym.display}</span>
-                          <span style={{fontSize:10,color:"#475569",marginLeft:8,fontFamily:"monospace"}}>{sym.symbol}</span>
+                          <span style={{fontSize:10,color:"#64748b",marginLeft:8,fontFamily:"monospace"}}>{sym.symbol}</span>
                         </div>
                         <div style={{display:"flex",gap:8,alignItems:"center"}}>
                           <span className={`journal-outcome-badge outcome-${oc}`}>{outcomeLabels[oc]||oc}</span>
-                          <span style={{color:"#475569",fontSize:12}}>{isOpen?"▲":"▼"}</span>
+                          <span style={{color:"#64748b",fontSize:12}}>{isOpen?"▲":"▼"}</span>
                         </div>
                       </div>
                       {sym.final_reason && (
@@ -2423,7 +2423,7 @@ function App() {
                               <span className={`journal-event-type ${ev.type}`}>{ev.type.replace(/_/g," ")}</span>
                               <span className="journal-event-reason">
                                 {ev.direction && <span style={{color:"#3b82f6",marginRight:4}}>{ev.direction}</span>}
-                                {ev.strategy && <span style={{color:"#64748b",marginRight:4}}>[{ev.strategy}]</span>}
+                                {ev.strategy && <span style={{color:"#94a3b8",marginRight:4}}>[{ev.strategy}]</span>}
                                 {ev.reason}
                                 {ev.price > 0 && <span style={{color:"#94a3b8",marginLeft:4}}>@ ₹{ev.price.toFixed(2)}</span>}
                               </span>
