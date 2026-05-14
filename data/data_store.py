@@ -76,6 +76,9 @@ class DataStore:
         # Latest traded price (LTP) per symbol
         self._ltp: dict[str, float] = {}
 
+        # Wall-clock time we last received an LTP update for each symbol
+        self._ltp_received_at: dict[str, datetime] = {}
+
         # Track which symbols have been initialised with historical data
         self._initialised: set = set()
 
@@ -104,6 +107,7 @@ class DataStore:
 
             ltp = float(tick["ltp"])
             self._ltp[symbol] = ltp
+            self._ltp_received_at[symbol] = datetime.now(tz=IST)
             self._ticks[symbol].append(tick)
 
             # Update OHLCV candles for every timeframe
@@ -153,6 +157,19 @@ class DataStore:
         with self._lock:
             ticks = self._ticks.get(symbol)
             return ticks[-1] if ticks else None
+
+    def get_ltp_age(self, symbol: str) -> Optional[float]:
+        """
+        Seconds since this bot last received an LTP update for symbol.
+        Based on wall-clock receipt time, not exchange timestamp, so slow
+        markets (metals, midday) don't show false staleness.
+        Returns None if we have never received a tick for this symbol.
+        """
+        with self._lock:
+            received_at = self._ltp_received_at.get(symbol)
+        if received_at is None:
+            return None
+        return (datetime.now(tz=IST) - received_at).total_seconds()
 
     def get_active_symbols(self) -> list[str]:
         """Returns all symbols currently receiving ticks."""

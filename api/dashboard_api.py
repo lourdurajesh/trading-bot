@@ -1541,19 +1541,17 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
                     )
                     ltp = None
                     tick_sym = None
-            # Compute tick age so the frontend can warn on stale data
+            # Age = seconds since bot received an LTP update (wall-clock, not exchange ts)
             if ltp and tick_sym:
                 try:
-                    last_tick = store.get_latest_tick(tick_sym)
-                    if last_tick and last_tick.get("timestamp"):
-                        age_s = (_now_ist - last_tick["timestamp"]).total_seconds()
+                    age_s = store.get_ltp_age(tick_sym)
                 except Exception:
                     pass
             # Key by instrument name so the frontend lookup is rollover-safe
             if ltp:
                 commodity_ltps[instrument] = {"ltp": ltp, "age_s": age_s}
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[Dashboard] commodity_ltps error: {_e}")
 
     # Learning trades+stats — only when changed (per-connection hash)
     learning, new_hash = _get_learning_payload(conn_learning_hash)

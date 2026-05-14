@@ -670,7 +670,14 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
             const ltpEntry    = (lps && isOpen) ? (lps[t.instrument]||null) : null;
             const ltp         = ltpEntry ? ltpEntry.ltp : null;
             const ltpAgeS     = ltpEntry ? ltpEntry.age_s : null;
-            const ltpStale    = ltpAgeS != null && ltpAgeS > 300;
+            // Stale threshold: energy contracts tick frequently; metals can be quiet for 10+ min
+            const MCX_ENERGY  = ["CRUDEOIL","NATURALGAS"];
+            const staleLimit  = MCX_ENERGY.includes(t.instrument) ? 180 : 600;
+            // Suppress stale warning outside MCX trading hours (09:00–23:30 IST)
+            const nowH = new Date().getUTCHours() * 60 + new Date().getUTCMinutes() + 330; // approx IST
+            const istMin = nowH % 1440;
+            const mcxOpen = istMin >= 9*60 && istMin < 23*60+30;
+            const ltpStale = mcxOpen && ltpAgeS != null && ltpAgeS > staleLimit;
             const spotMove    = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
             const estPnlLot   = spotMove != null ? round2(spotMove * SPREAD_DELTA * lot) : null;
             const pnlColor    = estPnlLot == null ? "#64748b" : estPnlLot > 0 ? "#22c55e" : estPnlLot < 0 ? "#ef4444" : "#94a3b8";
@@ -737,8 +744,11 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
                       )}
                       {ltpStale && (
                         <div style={{fontSize:9,color:"#f97316",marginTop:2}}>
-                          ⚠ stale {ltpAgeS!=null?Math.floor(ltpAgeS/60)+"min":""}
+                          ⚠ no tick {Math.floor(ltpAgeS/60)}min
                         </div>
+                      )}
+                      {!mcxOpen && ltpAgeS != null && ltpAgeS > 60 && (
+                        <div style={{fontSize:9,color:"#475569",marginTop:2}}>mkt closed</div>
                       )}
                       {!ltpStale && atmLiveEst != null && (
                         <div style={{fontSize:9,color:"#a3e635",marginTop:2}}>~{atmLiveEst.toFixed(1)}</div>

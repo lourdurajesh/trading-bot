@@ -178,6 +178,65 @@ _MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DE
 # _ROLLOVER_BUFFER and _VALID_MONTHS are populated from DB — see _load_contracts_from_db().
 
 
+def _bootstrap_contracts() -> None:
+    """
+    Populate MCX_CONTRACTS, _ROLLOVER_BUFFER, _VALID_MONTHS at module import time.
+
+    Priority:
+      1. commodity_instruments DB table  (user edits + dynamic adds)
+      2. _INSTRUMENT_SEEDS fallback      (first run / DB missing)
+
+    Called once at module load so that fyers_stream.py and other early importers
+    see a fully-populated contract list before CommodityOptionsLearning is instantiated.
+    """
+    import os
+    loaded = False
+    if os.path.exists(DB_PATH):
+        try:
+            with sqlite3.connect(DB_PATH) as _conn:
+                _conn.row_factory = sqlite3.Row
+                _rows = _conn.execute(
+                    "SELECT * FROM commodity_instruments"
+                ).fetchall()
+            if _rows:
+                for _r in _rows:
+                    _n = _r["name"]
+                    MCX_CONTRACTS[_n] = {
+                        "lot_size":    _r["lot_size"],
+                        "strike_step": _r["strike_step"],
+                        "typical_iv":  _r["typical_iv"],
+                        "price_unit":  _r["price_unit"],
+                        "min_price":   _r["min_price"],
+                        "max_price":   _r["max_price"],
+                    }
+                    _ROLLOVER_BUFFER[_n] = _r["rollover_buffer"]
+                    _months = json.loads(_r["valid_months"] or "[]")
+                    if _months:
+                        _VALID_MONTHS[_n] = _months
+                loaded = True
+        except Exception:
+            pass
+
+    if not loaded:
+        # First run or DB not yet created — use seed defaults
+        for _n, _ls, _ss, _iv, _pu, _mn, _mx, _rb, _vm in _INSTRUMENT_SEEDS:
+            MCX_CONTRACTS[_n] = {
+                "lot_size": _ls, "strike_step": _ss, "typical_iv": _iv,
+                "price_unit": _pu, "min_price": _mn, "max_price": _mx,
+            }
+            _ROLLOVER_BUFFER[_n] = _rb
+            if _vm:
+                _VALID_MONTHS[_n] = _vm
+
+
+_bootstrap_contracts()
+
+# ALL_MCX_SHORTS: simple list, rebuilt whenever _load_contracts_from_db() runs.
+# Imported by fyers_stream.py — must be a real list, not a lazy proxy,
+# because fyers_stream captures it by reference at subscription time.
+ALL_MCX_SHORTS: list = list(MCX_CONTRACTS.keys())
+
+
 def _fyers_sym(short: str) -> str:
     """Return the active front-month MCX futures symbol for today.
 
@@ -326,7 +385,8 @@ class CommodityOptionsLearning:
     # ─────────────────────────────────────────────────────────────
 
     def _load_contracts_from_db(self) -> None:
-        """Reload MCX_CONTRACTS, _ROLLOVER_BUFFER, _VALID_MONTHS from DB."""
+        """Reload MCX_CONTRACTS, _ROLLOVER_BUFFER, _VALID_MONTHS, ALL_MCX_SHORTS from DB."""
+        global ALL_MCX_SHORTS
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM commodity_instruments").fetchall()
@@ -347,6 +407,8 @@ class CommodityOptionsLearning:
             months = json.loads(r["valid_months"] or "[]")
             if months:
                 _VALID_MONTHS[name] = months
+        # Keep ALL_MCX_SHORTS list in sync (fyers_stream re-reads it on reconnect)
+        ALL_MCX_SHORTS[:] = list(MCX_CONTRACTS.keys())
         # Refresh enabled set from DB enabled column
         self._enabled_commodities = {
             r["name"] for r in rows if r["enabled"]
