@@ -28,6 +28,11 @@ from data.data_store import store
 
 logger = logging.getLogger(__name__)
 
+# Module-level set of Fyers symbols confirmed invalid by the broker (-300 error).
+# Persists for the lifetime of the process so resubscribes and add-instrument
+# validation can both consult it without circular imports.
+KNOWN_INVALID_SYMBOLS: set[str] = set()
+
 
 class FyersStream:
     """
@@ -47,6 +52,8 @@ class FyersStream:
         self._reconnect_delay = 5
         self._max_reconnects  = 10
         self._gap_start       = None
+        # Symbols rejected by Fyers (-300); excluded from future subscriptions
+        self._invalid_symbols: set[str] = set()
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
@@ -144,10 +151,21 @@ class FyersStream:
 
     def _on_error(self, error) -> None:
         logger.error(f"Fyers WebSocket error: {error}")
-        # -300 = invalid symbol — non-fatal, do not trigger reconnect
         if isinstance(error, dict) and error.get("code") == -300:
             invalid = error.get("invalid_symbols", [])
-            logger.warning(f"Ignoring invalid symbols: {invalid}. Remove from watchlist.")
+            if invalid:
+                self._invalid_symbols.update(invalid)
+                KNOWN_INVALID_SYMBOLS.update(invalid)
+                logger.warning(
+                    f"[FyersStream] Invalid symbols dropped: {invalid}. "
+                    f"Resubscribing without them."
+                )
+                # Resubscribe immediately with the bad symbols removed
+                threading.Thread(
+                    target=self._resubscribe_clean,
+                    daemon=True,
+                    name="FyersResubscribe",
+                ).start()
             return
 
     def _on_message(self, message: dict) -> None:
@@ -200,13 +218,38 @@ class FyersStream:
                 logger.debug(f"Gap fill failed for {symbol}: {e}")
 
     def _subscribe(self) -> None:
-        """Subscribe to NSE + MCX symbols."""
+        """Subscribe to NSE + MCX symbols, excluding any known-invalid symbols."""
         import config.watchlist as _wl
         from commodity_options_learning import _fyers_sym, ALL_MCX_SHORTS
         mcx_symbols = [_fyers_sym(s) for s in ALL_MCX_SHORTS]
-        symbols = list(set(_wl.ALL_NSE_SYMBOLS + mcx_symbols))
-        self._ws_client.subscribe(symbols=symbols, data_type="SymbolUpdate")
-        logger.info(f"Subscribed to {len(symbols)} symbols — NSE: {len(_wl.ALL_NSE_SYMBOLS)}, MCX: {len(mcx_symbols)} {mcx_symbols}")
+        all_symbols = list(set(_wl.ALL_NSE_SYMBOLS + mcx_symbols))
+        # Drop symbols already confirmed invalid by a prior -300 error
+        if self._invalid_symbols:
+            before = len(all_symbols)
+            all_symbols = [s for s in all_symbols if s not in self._invalid_symbols]
+            logger.info(f"[FyersStream] Skipped {before - len(all_symbols)} known-invalid symbol(s).")
+        self._ws_client.subscribe(symbols=all_symbols, data_type="SymbolUpdate")
+        logger.info(
+            f"Subscribed to {len(all_symbols)} symbols — "
+            f"NSE: {len(_wl.ALL_NSE_SYMBOLS)}, MCX: {len(mcx_symbols)} {mcx_symbols}"
+        )
+
+    def _resubscribe_clean(self) -> None:
+        """Called after a -300 error to re-issue subscription without invalid symbols."""
+        try:
+            if self._ws_client is None:
+                return
+            import config.watchlist as _wl
+            from commodity_options_learning import _fyers_sym, ALL_MCX_SHORTS
+            mcx_symbols = [_fyers_sym(s) for s in ALL_MCX_SHORTS]
+            all_symbols = [
+                s for s in set(_wl.ALL_NSE_SYMBOLS + mcx_symbols)
+                if s not in self._invalid_symbols
+            ]
+            self._ws_client.subscribe(symbols=all_symbols, data_type="SymbolUpdate")
+            logger.info(f"[FyersStream] Resubscribed to {len(all_symbols)} valid symbols.")
+        except Exception as e:
+            logger.error(f"[FyersStream] Resubscribe failed: {e}")
 
     # ─────────────────────────────────────────────────────────────
     # INTERNAL — historical data seeding

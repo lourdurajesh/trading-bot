@@ -510,9 +510,24 @@ def commodity_add_instrument(body: dict):
            min_price, max_price, rollover_buffer?, valid_months?}
     """
     try:
-        from commodity_options_learning import commodity_options
+        from commodity_options_learning import commodity_options, _fyers_sym
+        from data.fyers_stream import KNOWN_INVALID_SYMBOLS
+
+        name = str(body["name"]).upper().strip()
+
+        # Check if the generated Fyers symbol was already rejected by the broker
+        candidate_sym = _fyers_sym(name)
+        if candidate_sym in KNOWN_INVALID_SYMBOLS:
+            return {
+                "error": (
+                    f"'{candidate_sym}' was rejected by Fyers as an invalid symbol. "
+                    f"Check the instrument name matches a real MCX contract."
+                ),
+                "status": "invalid",
+            }
+
         commodity_options.add_instrument(
-            name            = body["name"],
+            name            = name,
             lot_size        = int(body["lot_size"]),
             strike_step     = float(body["strike_step"]),
             typical_iv      = float(body.get("typical_iv", 0.30)),
@@ -522,7 +537,7 @@ def commodity_add_instrument(body: dict):
             rollover_buffer = int(body.get("rollover_buffer", 5)),
             valid_months    = body.get("valid_months") or [],
         )
-        return {"status": "ok", "name": body["name"].upper()}
+        return {"status": "ok", "name": name}
     except (KeyError, TypeError) as e:
         return {"error": f"Missing or invalid field: {e}", "status": "invalid"}
     except ValueError as e:
