@@ -67,8 +67,8 @@ MCX_CONTRACTS = {
         "strike_step": 500,
         "typical_iv":  0.18,
         "price_unit":  "INR/10g",
-        "min_price":   50000,
-        "max_price":   120000,
+        "min_price":   80000,
+        "max_price":   250000,
     },
     "SILVER": {
         "lot_size":    30,         # kg
@@ -76,7 +76,7 @@ MCX_CONTRACTS = {
         "typical_iv":  0.28,
         "price_unit":  "INR/kg",
         "min_price":   60000,
-        "max_price":   120000,
+        "max_price":   500000,
     },
     "COPPER": {
         "lot_size":    2500,       # kg (2.5 MT)
@@ -84,7 +84,7 @@ MCX_CONTRACTS = {
         "typical_iv":  0.25,
         "price_unit":  "INR/kg",
         "min_price":   400,
-        "max_price":   1200,
+        "max_price":   2500,
     },
     "NATURALGAS": {
         "lot_size":    1250,       # mmBtu
