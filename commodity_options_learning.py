@@ -51,52 +51,25 @@ MCX_MARKET_CLOSE = dtime(23, 30)
 # Stop taking new entries 30 min before close (spread widens)
 MCX_ENTRY_CUTOFF = dtime(20, 0)   # stop new entries at 8 PM — spreads widen after that
 
-# Keyed by short commodity name.  Full Fyers symbol is built dynamically
-# via _fyers_sym() so contracts never expire silently.
-MCX_CONTRACTS = {
-    "CRUDEOIL": {
-        "lot_size":    100,        # barrels per lot
-        "strike_step": 100,        # INR per barrel
-        "typical_iv":  0.40,
-        "price_unit":  "INR/bbl",
-        "min_price":   3000,
-        "max_price":   12000,
-    },
-    "GOLD": {
-        "lot_size":    100,        # 1 unit = 10g
-        "strike_step": 500,
-        "typical_iv":  0.18,
-        "price_unit":  "INR/10g",
-        "min_price":   80000,
-        "max_price":   250000,
-    },
-    "SILVER": {
-        "lot_size":    30,         # kg
-        "strike_step": 1000,
-        "typical_iv":  0.28,
-        "price_unit":  "INR/kg",
-        "min_price":   60000,
-        "max_price":   500000,
-    },
-    "COPPER": {
-        "lot_size":    2500,       # kg (2.5 MT)
-        "strike_step": 10,
-        "typical_iv":  0.25,
-        "price_unit":  "INR/kg",
-        "min_price":   400,
-        "max_price":   2500,
-    },
-    "NATURALGAS": {
-        "lot_size":    1250,       # mmBtu
-        "strike_step": 10,
-        "typical_iv":  0.55,
-        "price_unit":  "INR/mmBtu",
-        "min_price":   100,
-        "max_price":   600,
-    },
-}
+# Populated at startup from the commodity_instruments DB table.
+# Code throughout this module reads these dicts; they are refreshed whenever
+# an instrument is added, updated, or removed via the API.
+MCX_CONTRACTS:    dict[str, dict] = {}
+_ROLLOVER_BUFFER: dict[str, int]  = {}
+_VALID_MONTHS:    dict[str, list] = {}
 
-ALL_MCX_SHORTS = list(MCX_CONTRACTS.keys())
+# Built-in seed rows — written to DB with INSERT OR IGNORE so user edits are never lost.
+# Columns: name, lot_size, strike_step, typical_iv, price_unit,
+#          min_price, max_price, rollover_buffer, valid_months (JSON list)
+_INSTRUMENT_SEEDS = [
+    ("CRUDEOIL",    100,  100, 0.40, "INR/bbl",    3000,  12000, 14, []),
+    ("GOLD",        100,  500, 0.18, "INR/10g",   80000, 250000, 28, []),
+    ("SILVER",       30, 1000, 0.28, "INR/kg",    60000, 500000, 28, [3,5,7,9,12]),
+    ("COPPER",     2500,   10, 0.25, "INR/kg",      400,   2500,  5, []),
+    ("NATURALGAS", 1250,   10, 0.55, "INR/mmBtu",   100,    600, 32, []),
+    ("SILVERMICRO",   5, 1000, 0.28, "INR/kg",    60000, 500000, 28, [3,5,7,9,12]),
+    ("COPPERMINI",  250,    5, 0.25, "INR/kg",      400,   2500,  5, []),
+]
 
 # ─────────────────────────────────────────────────────────────────
 # MCX STRATEGY CONFIGURATION — risk profiles and cooldown settings
@@ -202,19 +175,7 @@ _MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DE
 # Rule: roll when calendar day >= (days_in_month - buffer).
 # NATURALGAS uses 32 (> any month) so it always resolves to next month —
 # MCX NG expires ~25th of the month PRIOR to the contract month.
-_ROLLOVER_BUFFER = {
-    "CRUDEOIL":   14,   # expires ~19th; roll by ~17th
-    "GOLD":       28,   # expires ~5th; next month active most of current month
-    "SILVER":     28,   # expires ~5th; next valid month (see _VALID_MONTHS)
-    "COPPER":     5,    # last Thursday; roll last 5 days
-    "NATURALGAS": 32,   # always next month (expires 25th of prior month)
-}
-
-# MCX Silver only has contracts for these months — Fyers rejects all others.
-# All other commodities trade every calendar month so no restriction needed.
-_VALID_MONTHS: dict[str, list[int]] = {
-    "SILVER": [3, 5, 7, 9, 12],   # MAR, MAY, JUL, SEP, DEC
-}
+# _ROLLOVER_BUFFER and _VALID_MONTHS are populated from DB — see _load_contracts_from_db().
 
 
 def _fyers_sym(short: str) -> str:
@@ -282,6 +243,12 @@ def _atm_strike(spot: float, step: int) -> int:
 # COMMODITY OPTIONS LEARNING ENGINE
 _SPREAD_DELTA = 0.35  # debit spread net-delta estimate used for debit→spot conversion
 
+# Real-trade execution constants
+_MCX_PRODUCT        = "INTRADAY"  # MCX options — broker auto-squares at session end
+_MAX_LOTS_PER_TRADE = 3           # hard cap per spread trade
+_MAX_CAPITAL_PCT    = 0.10        # max 10% of free capital per new trade
+_FILL_POLL_SECS     = 30          # order fill confirmation timeout (seconds)
+
 
 def _debit_sl_price(spot: float, direction: str, net_debit: float, strat_cfg: dict) -> float:
     """Compute initial SL spot level from debit cost.
@@ -308,8 +275,13 @@ class CommodityOptionsLearning:
         # Cooldown after a bad exit — blocks all re-entry on that instrument
         self._entry_cooldown: dict[str, datetime] = {}  # instrument → resume_at
         self._cooldown_cleared: set[str] = set()        # instruments manually force-cleared via API
+        self._trade_mode: str = "PAPER"                 # "PAPER" or "REAL"
+        self._enabled_commodities: set[str] = set()
         self._init_db()
+        self._load_trade_mode()
+        self._load_enabled_commodities()
         self._reload_open_positions()
+        self._reconcile_positions()
 
     def _reload_open_positions(self) -> None:
         """Re-populate _open_positions from DB on startup so SL/TP monitoring
@@ -348,6 +320,450 @@ class CommodityOptionsLearning:
                 logger.info(f"[CommOpts] Reloaded {count} open position(s) from DB — SL monitoring resumed")
         except Exception as exc:
             logger.error(f"[CommOpts] Failed to reload open positions: {exc}")
+
+    # ─────────────────────────────────────────────────────────────
+    # TRADE MODE (PAPER ↔ REAL)
+    # ─────────────────────────────────────────────────────────────
+
+    def _load_contracts_from_db(self) -> None:
+        """Reload MCX_CONTRACTS, _ROLLOVER_BUFFER, _VALID_MONTHS from DB."""
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM commodity_instruments").fetchall()
+        MCX_CONTRACTS.clear()
+        _ROLLOVER_BUFFER.clear()
+        _VALID_MONTHS.clear()
+        for r in rows:
+            name = r["name"]
+            MCX_CONTRACTS[name] = {
+                "lot_size":    r["lot_size"],
+                "strike_step": r["strike_step"],
+                "typical_iv":  r["typical_iv"],
+                "price_unit":  r["price_unit"],
+                "min_price":   r["min_price"],
+                "max_price":   r["max_price"],
+            }
+            _ROLLOVER_BUFFER[name] = r["rollover_buffer"]
+            months = json.loads(r["valid_months"] or "[]")
+            if months:
+                _VALID_MONTHS[name] = months
+        # Refresh enabled set from DB enabled column
+        self._enabled_commodities = {
+            r["name"] for r in rows if r["enabled"]
+        }
+
+    def _load_trade_mode(self) -> None:
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                row = conn.execute(
+                    "SELECT value FROM commodity_settings WHERE key='trade_mode'"
+                ).fetchone()
+            self._trade_mode = (row[0] if row else "PAPER").upper()
+        except Exception:
+            self._trade_mode = "PAPER"
+        logger.info(f"[CommOpts] Trade mode: {self._trade_mode}")
+
+    def set_trade_mode(self, mode: str) -> None:
+        mode = mode.upper()
+        if mode not in ("PAPER", "REAL"):
+            raise ValueError(f"Invalid mode '{mode}' — must be PAPER or REAL")
+        if mode == "REAL" and self._open_positions:
+            raise RuntimeError(
+                "Cannot switch to REAL while paper positions are open. "
+                "Close all open commodity trades first."
+            )
+        self._trade_mode = mode
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO commodity_settings (key, value) VALUES ('trade_mode', ?)",
+                (mode,),
+            )
+        logger.info(f"[CommOpts] Trade mode → {mode}")
+
+    def get_trade_mode(self) -> str:
+        return self._trade_mode
+
+    def _is_real(self) -> bool:
+        return self._trade_mode == "REAL"
+
+    # ─────────────────────────────────────────────────────────────
+    # ENABLED COMMODITIES
+    # ─────────────────────────────────────────────────────────────
+
+    def _load_enabled_commodities(self) -> None:
+        # Enabled state is already loaded by _load_contracts_from_db.
+        # This is called separately to refresh just the enabled set.
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT name FROM commodity_instruments WHERE enabled=1"
+                ).fetchall()
+            self._enabled_commodities = {r["name"] for r in rows}
+        except Exception:
+            self._enabled_commodities = set(MCX_CONTRACTS.keys())
+        logger.info(f"[CommOpts] Enabled: {sorted(self._enabled_commodities)}")
+
+    def get_instruments(self) -> list[dict]:
+        """Return all instruments from DB with enabled status and metadata."""
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM commodity_instruments ORDER BY name"
+            ).fetchall()
+        result = []
+        for r in rows:
+            result.append({
+                "name":            r["name"],
+                "enabled":         bool(r["enabled"]),
+                "lot_size":        r["lot_size"],
+                "strike_step":     r["strike_step"],
+                "typical_iv":      r["typical_iv"],
+                "price_unit":      r["price_unit"],
+                "min_price":       r["min_price"],
+                "max_price":       r["max_price"],
+                "rollover_buffer": r["rollover_buffer"],
+                "valid_months":    json.loads(r["valid_months"] or "[]"),
+                "symbol":          _fyers_sym(r["name"]),
+            })
+        return result
+
+    def enable_commodity(self, name: str) -> None:
+        name = name.upper()
+        if name not in MCX_CONTRACTS:
+            raise ValueError(f"Unknown instrument '{name}'")
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "UPDATE commodity_instruments SET enabled=1 WHERE name=?", (name,)
+            )
+        self._enabled_commodities.add(name)
+        logger.info(f"[CommOpts] {name} ENABLED")
+
+    def disable_commodity(self, name: str) -> None:
+        name = name.upper()
+        if name not in MCX_CONTRACTS:
+            raise ValueError(f"Unknown instrument '{name}'")
+        if any(name in k for k in self._open_positions):
+            raise RuntimeError(
+                f"Cannot disable {name} — open position exists. Close it first."
+            )
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "UPDATE commodity_instruments SET enabled=0 WHERE name=?", (name,)
+            )
+        self._enabled_commodities.discard(name)
+        logger.info(f"[CommOpts] {name} DISABLED")
+
+    def add_instrument(self, name: str, lot_size: int, strike_step: float,
+                       typical_iv: float, price_unit: str,
+                       min_price: float, max_price: float,
+                       rollover_buffer: int = 5,
+                       valid_months: Optional[list] = None) -> None:
+        name = name.upper().strip()
+        if not name.isalpha():
+            raise ValueError("Name must contain letters only (e.g. CRUDEOILMINI)")
+        if name in MCX_CONTRACTS:
+            raise ValueError(f"'{name}' already exists — use update_instrument() to modify it")
+        if lot_size <= 0 or strike_step <= 0 or min_price >= max_price:
+            raise ValueError("Invalid numeric params: lot_size/strike_step must be >0; min_price < max_price")
+        vm = valid_months or []
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("""
+                INSERT INTO commodity_instruments
+                (name, lot_size, strike_step, typical_iv, price_unit,
+                 min_price, max_price, rollover_buffer, valid_months, enabled)
+                VALUES (?,?,?,?,?,?,?,?,?,1)
+            """, (name, lot_size, strike_step, typical_iv, price_unit,
+                  min_price, max_price, rollover_buffer, json.dumps(vm)))
+        self._load_contracts_from_db()
+        logger.info(f"[CommOpts] {name} added (lot={lot_size}, step={strike_step})")
+
+    def update_instrument(self, name: str, **fields) -> None:
+        name = name.upper()
+        if name not in MCX_CONTRACTS:
+            raise ValueError(f"Unknown instrument '{name}'")
+        allowed = {
+            "lot_size", "strike_step", "typical_iv", "price_unit",
+            "min_price", "max_price", "rollover_buffer", "valid_months",
+        }
+        updates = {}
+        for k, v in fields.items():
+            if k not in allowed:
+                raise ValueError(f"Unknown field '{k}'")
+            updates[k] = json.dumps(v) if k == "valid_months" else v
+        if not updates:
+            return
+        sets = ", ".join(f"{k}=?" for k in updates)
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                f"UPDATE commodity_instruments SET {sets} WHERE name=?",
+                list(updates.values()) + [name],
+            )
+        self._load_contracts_from_db()
+        logger.info(f"[CommOpts] {name} updated: {list(updates)}")
+
+    def remove_instrument(self, name: str) -> None:
+        name = name.upper()
+        if name not in MCX_CONTRACTS:
+            raise ValueError(f"Unknown instrument '{name}'")
+        if any(name in k for k in self._open_positions):
+            raise RuntimeError(f"Cannot remove {name} — open position exists")
+        with sqlite3.connect(DB_PATH) as conn:
+            # Keep trade history — only remove the instrument definition
+            conn.execute("DELETE FROM commodity_instruments WHERE name=?", (name,))
+        self._load_contracts_from_db()
+        logger.info(f"[CommOpts] {name} removed")
+
+    # ─────────────────────────────────────────────────────────────
+    # CAPITAL & LOTS
+    # ─────────────────────────────────────────────────────────────
+
+    def _get_available_funds(self) -> float:
+        try:
+            from execution.fyers_broker import fyers_broker
+            if not fyers_broker._initialised:
+                return 0.0
+            funds = fyers_broker.get_funds()
+            # Fyers returns a list of fund buckets; find the available/equity balance
+            if isinstance(funds, list):
+                for item in funds:
+                    if isinstance(item, dict):
+                        val = item.get("equityAmount") or item.get("availableBalance") or 0
+                        if val:
+                            return float(val)
+            if isinstance(funds, dict):
+                return float(
+                    funds.get("availableBalance")
+                    or funds.get("equityAmount")
+                    or 0
+                )
+        except Exception as exc:
+            logger.warning(f"[CommOpts] Funds check error: {exc}")
+        return 0.0
+
+    def _compute_lots(self, instrument: str, net_debit: float) -> int:
+        """
+        How many lots to trade.
+        Paper: always 1 lot (learning, not sizing).
+        Real: scale up to _MAX_CAPITAL_PCT of free capital, hard-cap at _MAX_LOTS_PER_TRADE.
+        Returns 0 if insufficient funds (blocks entry).
+        """
+        if not self._is_real():
+            return 1
+        lot_size = MCX_CONTRACTS[instrument]["lot_size"]
+        cost_per_lot = net_debit * lot_size          # INR cost for 1 lot
+        if cost_per_lot <= 0:
+            return 1
+        available = self._get_available_funds()
+        if available <= 0:
+            logger.warning(f"[CommOpts] {instrument} fund check returned 0 — blocking entry")
+            return 0
+        max_lots = int((available * _MAX_CAPITAL_PCT) / cost_per_lot)
+        lots = max(1, min(max_lots, _MAX_LOTS_PER_TRADE))
+        logger.info(
+            f"[CommOpts] {instrument} lots={lots} "
+            f"(₹{available:,.0f} free, ₹{cost_per_lot:,.0f}/lot, cap={_MAX_CAPITAL_PCT:.0%})"
+        )
+        return lots
+
+    # ─────────────────────────────────────────────────────────────
+    # REAL ORDER EXECUTION
+    # ─────────────────────────────────────────────────────────────
+
+    def _confirm_fill(self, order_id: str, timeout_secs: int = _FILL_POLL_SECS) -> tuple[bool, float]:
+        """
+        Poll the broker orderbook until the order is filled or timed out.
+        Returns (filled: bool, fill_price: float).
+        In simulation mode always returns (True, 0.0).
+        """
+        import time
+        from execution.fyers_broker import fyers_broker
+        if not fyers_broker._initialised:
+            return True, 0.0  # sim — assume immediate fill
+        deadline = time.monotonic() + timeout_secs
+        while time.monotonic() < deadline:
+            try:
+                for order in fyers_broker.get_orders():
+                    if str(order.get("id")) == str(order_id):
+                        status = order.get("status", 0)
+                        if status == 2:  # fully filled
+                            return True, float(order.get("tradedPrice", 0))
+                        if status in (5, 6):  # rejected / cancelled
+                            logger.error(f"[CommOpts] Order {order_id} rejected/cancelled")
+                            return False, 0.0
+            except Exception as exc:
+                logger.debug(f"[CommOpts] Fill-poll error: {exc}")
+            time.sleep(2)
+        logger.error(f"[CommOpts] Order {order_id} fill timeout after {timeout_secs}s")
+        return False, 0.0
+
+    def _execute_real_entry(
+        self, atm_sym: str, otm_sym: str, qty: int
+    ) -> tuple[Optional[str], Optional[str], float, float]:
+        """
+        Place buy ATM + sell OTM legs atomically.
+        Returns (atm_order_id, otm_order_id, atm_fill_price, otm_fill_price).
+        On any failure: unwinds the filled leg and returns (None, None, 0, 0).
+        """
+        from execution.fyers_broker import fyers_broker
+        if not atm_sym or not otm_sym:
+            logger.error("[CommOpts] Real entry blocked — missing option symbols (need live chain)")
+            return None, None, 0.0, 0.0
+
+        # Leg 1 — buy ATM
+        atm_oid = fyers_broker.place_order(
+            symbol=atm_sym, direction="LONG", qty=qty,
+            order_type="MARKET", product=_MCX_PRODUCT,
+        )
+        if not atm_oid:
+            logger.error(f"[CommOpts] ATM entry order rejected: {atm_sym}")
+            return None, None, 0.0, 0.0
+
+        atm_filled, atm_fill = self._confirm_fill(atm_oid)
+        if not atm_filled:
+            fyers_broker.cancel_order(atm_oid)
+            logger.error(f"[CommOpts] ATM fill timeout — cancelled: {atm_oid}")
+            return None, None, 0.0, 0.0
+
+        # Leg 2 — sell OTM
+        otm_oid = fyers_broker.place_order(
+            symbol=otm_sym, direction="SHORT", qty=qty,
+            order_type="MARKET", product=_MCX_PRODUCT,
+        )
+        if not otm_oid:
+            logger.critical(
+                f"[CommOpts] OTM entry failed after ATM filled — UNWINDING ATM leg {atm_sym}"
+            )
+            self._send_alert(
+                f"MCX SPREAD ENTRY PARTIAL — ATM filled ({atm_sym}), OTM rejected ({otm_sym}). "
+                f"Unwinding ATM. Check broker."
+            )
+            fyers_broker.place_order(atm_sym, "SHORT", qty, "MARKET", product=_MCX_PRODUCT)
+            return None, None, 0.0, 0.0
+
+        otm_filled, otm_fill = self._confirm_fill(otm_oid)
+        if not otm_filled:
+            logger.critical(
+                f"[CommOpts] OTM fill timeout after ATM filled — UNWINDING ATM leg {atm_sym}"
+            )
+            self._send_alert(
+                f"MCX SPREAD ENTRY PARTIAL — ATM filled ({atm_sym}), OTM timed out ({otm_oid}). "
+                f"Unwinding ATM. Check broker immediately."
+            )
+            fyers_broker.cancel_order(otm_oid)
+            fyers_broker.place_order(atm_sym, "SHORT", qty, "MARKET", product=_MCX_PRODUCT)
+            return None, None, 0.0, 0.0
+
+        logger.info(
+            f"[CommOpts] REAL entry confirmed — "
+            f"ATM {atm_sym} filled@{atm_fill:.2f} | OTM {otm_sym} filled@{otm_fill:.2f}"
+        )
+        return atm_oid, otm_oid, atm_fill, otm_fill
+
+    def _execute_real_exit(self, trade: dict, reason: str) -> None:
+        """
+        Close both legs of a real debit spread with market orders.
+        Sends a CRITICAL alert if any leg fails — manual action required.
+        """
+        from execution.fyers_broker import fyers_broker
+        meta      = trade.get("metadata", {})
+        atm_sym   = meta.get("atm_symbol", "")
+        otm_sym   = meta.get("otm_symbol", "")
+        lots      = trade.get("lots", 1)
+        lot_size  = trade.get("lot_size", 1)
+        qty       = lots * lot_size
+        direction = trade.get("direction", "LONG")
+
+        # Closing directions are the reverse of entry directions
+        atm_close_dir = "SHORT" if direction == "LONG" else "LONG"
+        otm_close_dir = "LONG"  if direction == "LONG" else "SHORT"
+
+        all_ok = True
+        for sym, close_dir, label in [
+            (atm_sym, atm_close_dir, "ATM"),
+            (otm_sym, otm_close_dir, "OTM"),
+        ]:
+            if not sym:
+                continue
+            oid = fyers_broker.place_order(
+                symbol=sym, direction=close_dir, qty=qty,
+                order_type="MARKET", product=_MCX_PRODUCT,
+            )
+            if oid:
+                logger.info(
+                    f"[CommOpts] {label} exit order {oid} | "
+                    f"{close_dir} {qty} × {sym} ({reason})"
+                )
+            else:
+                all_ok = False
+                logger.critical(
+                    f"[CommOpts] {label} EXIT FAILED for trade {trade['id']} "
+                    f"({sym}) reason={reason} — MANUAL ACTION REQUIRED"
+                )
+        if not all_ok:
+            self._send_alert(
+                f"MCX EXIT FAILED — Trade {trade['id']} {trade['instrument']} "
+                f"({reason}). One or more legs could not be closed. "
+                f"CHECK BROKER AND CLOSE MANUALLY."
+            )
+
+    def _send_alert(self, message: str) -> None:
+        try:
+            from notifications.alert_service import alert_service
+            alert_service.info(f"[MCX] {message}")
+        except Exception:
+            logger.critical(f"[CommOpts] ALERT (unsent): {message}")
+
+    # ─────────────────────────────────────────────────────────────
+    # STARTUP RECONCILIATION
+    # ─────────────────────────────────────────────────────────────
+
+    def _reconcile_positions(self) -> None:
+        """
+        On startup in REAL mode: compare DB open trades against broker positions.
+        Any trade whose option symbols are absent from the broker is marked
+        RECONCILE_CLOSED so the bot doesn't ghost-manage vanished positions.
+        """
+        if not self._is_real():
+            return
+        try:
+            from execution.fyers_broker import fyers_broker
+            if not fyers_broker._initialised:
+                logger.warning("[CommOpts] Reconcile skipped — broker not initialised")
+                return
+            broker_pos = fyers_broker.get_positions()
+            # Build set of symbols with non-zero net qty at broker
+            live_syms = {
+                p.get("symbol", "")
+                for p in broker_pos
+                if float(p.get("netQty", 0)) != 0
+            }
+            stale = []
+            for key, trade in list(self._open_positions.items()):
+                meta    = trade.get("metadata", {})
+                atm_sym = meta.get("atm_symbol", "")
+                otm_sym = meta.get("otm_symbol", "")
+                # If neither leg exists at broker the position is gone
+                if atm_sym and otm_sym and atm_sym not in live_syms and otm_sym not in live_syms:
+                    stale.append((key, trade))
+            for key, trade in stale:
+                logger.warning(
+                    f"[CommOpts] Reconcile: {trade['id']} not found in broker — "
+                    f"marking RECONCILE_CLOSED"
+                )
+                self._db_close(trade["id"], trade.get("spot_at_entry", 0),
+                               "RECONCILE_CLOSED", 0.0, 0.0)
+                del self._open_positions[key]
+            if stale:
+                self._send_alert(
+                    f"MCX reconcile on startup: {len(stale)} position(s) not found in broker "
+                    f"and marked closed. Review trade history."
+                )
+                logger.warning(f"[CommOpts] Reconciled {len(stale)} stale position(s)")
+            else:
+                logger.info(f"[CommOpts] Reconcile OK — {len(self._open_positions)} open position(s) confirmed")
+        except Exception as exc:
+            logger.error(f"[CommOpts] Reconcile error: {exc}")
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
@@ -408,9 +824,11 @@ class CommodityOptionsLearning:
         # 1. Exit monitoring
         self._check_exits(store, now)
 
-        # 2. New entry scan (stop 30 min before close)
+        # 2. New entry scan (stop 30 min before close — enabled commodities only)
         if now.time() <= MCX_ENTRY_CUTOFF:
-            for short in ALL_MCX_SHORTS:
+            for short in list(MCX_CONTRACTS.keys()):
+                if short not in self._enabled_commodities:
+                    continue
                 self._evaluate(short, store, now)
 
     # ─────────────────────────────────────────────────────────────
@@ -798,11 +1216,29 @@ class CommodityOptionsLearning:
                         trade_meta["trail_active"] = True
                         sl_updated = True
 
-            # Upgrade target once momentum is ≥ tgt_up_mult × SL distance
+            # Upgrade target once momentum is ≥ tgt_up_mult × SL distance.
+            # When upgrading, lock in the old target level as the new SL floor so
+            # a reversal after T2 extension can't give back profit below T1.
             if favorable_move >= tgt_up_mult * sl_dist and target_pct < tgt_up_pct:
-                target_pct = tgt_up_pct
-                sl_updated = True
-                logger.info(f"[CommOpts] {instrument} target upgraded to {int(tgt_up_pct*100)}% — strong momentum")
+                old_target_pct = target_pct
+                target_pct     = tgt_up_pct
+                sl_updated     = True
+                # T1 spot level: the price at which est_pnl would equal old target
+                t1_spot_dist = round((max_profit * old_target_pct) / _SPREAD_DELTA, 2)
+                # Small buffer (half a trail_dist) so a 1-tick wick at T1 doesn't stop us
+                t1_sl_buffer = round(trail_dist * 0.25, 2)
+                if direction == "LONG":
+                    t1_sl = round(entry_spot + t1_spot_dist - t1_sl_buffer, 2)
+                    if t1_sl > sl_price:
+                        sl_price = t1_sl
+                else:
+                    t1_sl = round(entry_spot - t1_spot_dist + t1_sl_buffer, 2)
+                    if t1_sl < sl_price:
+                        sl_price = t1_sl
+                logger.info(
+                    f"[CommOpts] {instrument} target upgraded to {int(tgt_up_pct*100)}% — "
+                    f"SL floor raised to {sl_price:.2f} (T1 lock)"
+                )
 
             # Persist SL state to DB whenever anything relevant changed.
             # peak_spot is persisted on every new high/low so a restart doesn't
@@ -864,12 +1300,24 @@ class CommodityOptionsLearning:
 
             if exit_reason:
                 lot_size   = trade.get("lot_size", 1)
+                lots       = trade.get("lots", 1)
                 pnl_r      = round(pnl_approx / net_debit, 2) if net_debit > 0 else 0
-                pnl_approx = round(pnl_approx * lot_size, 2)
+                # Scale PnL by actual lots traded
+                pnl_approx = round(pnl_approx * lot_size * lots, 2)
+
+                # ── Real exit: place broker close orders ──────────
+                if self._is_real():
+                    self._execute_real_exit(trade, exit_reason)
+                    self._send_alert(
+                        f"MCX REAL CLOSE — {instrument} {exit_reason} "
+                        f"spot={spot:.2f} pnl=₹{pnl_approx:+.0f} ({pnl_r:+.1f}R)"
+                    )
+
                 self._db_close(trade["id"], spot, exit_reason, pnl_approx, pnl_r)
                 closed.append(key)
                 logger.info(
-                    f"[CommOpts] CLOSE {trade['id']} | {trade['instrument']} "
+                    f"[CommOpts] {'REAL' if self._is_real() else 'PAPER'} CLOSE "
+                    f"{trade['id']} | {instrument} "
                     f"{exit_reason} spot={spot:.2f} pnl=₹{pnl_approx:+.0f} "
                     f"({pnl_r:+.1f}R)"
                 )
@@ -887,17 +1335,65 @@ class CommodityOptionsLearning:
             del self._open_positions[k]
 
     def _open_trade(self, trade: dict) -> None:
-        key = f"{trade['instrument']}:{trade['direction']}"
+        instrument = trade["instrument"]
+        meta       = trade.get("metadata", {})
+
+        # ── Lot sizing ────────────────────────────────────────────
+        lots = self._compute_lots(instrument, trade["net_debit"])
+        if lots == 0:
+            logger.warning(f"[CommOpts] {instrument} entry blocked — insufficient funds")
+            return
+        trade["lots"]       = lots
+        trade["trade_mode"] = self._trade_mode
+
+        # ── Real execution ────────────────────────────────────────
+        if self._is_real():
+            atm_sym  = meta.get("atm_symbol", "")
+            otm_sym  = meta.get("otm_symbol", "")
+            qty      = lots * trade["lot_size"]
+            atm_oid, otm_oid, atm_fill, otm_fill = self._execute_real_entry(
+                atm_sym, otm_sym, qty
+            )
+            if atm_oid is None:
+                # Entry failed — do not record the trade
+                logger.error(f"[CommOpts] {instrument} real entry aborted")
+                return
+            # Update debit with actual fill prices (real > estimated when IV spikes)
+            if atm_fill > 0 and otm_fill > 0:
+                actual_debit  = round(atm_fill - otm_fill, 2)
+                actual_profit = round(trade["spread_width"] - actual_debit, 2)
+                if actual_debit > 0 and actual_profit > 0:
+                    trade["net_debit"]  = actual_debit
+                    trade["max_profit"] = actual_profit
+                    trade["rr"]         = round(actual_profit / actual_debit, 2)
+                    # Recompute SL with actual debit
+                    strat_cfg = MCX_STRATEGY_CONFIG.get(trade.get("strategy", ""), {})
+                    meta["sl_price"]   = _debit_sl_price(
+                        trade["spot_at_entry"], trade["direction"], actual_debit, strat_cfg
+                    )
+                    meta["atm_fill"]   = atm_fill
+                    meta["otm_fill"]   = otm_fill
+            meta["atm_order_id"] = atm_oid
+            meta["otm_order_id"] = otm_oid
+            trade["metadata"]    = meta
+            self._send_alert(
+                f"MCX REAL ENTRY — {instrument} {trade['direction']} debit spread | "
+                f"spot={trade['spot_at_entry']:.2f} ATM={trade['atm_strike']} "
+                f"OTM={trade['otm_strike']} debit={trade['net_debit']:.2f} "
+                f"lots={lots} SL@{meta.get('sl_price','?')}"
+            )
+
+        key = f"{instrument}:{trade['direction']}"
         self._open_positions[key] = trade
         self._db_insert(trade)
-        meta = trade.get("metadata", {})
         logger.info(
-            f"[CommOpts] OPEN {trade['id']} | {trade['instrument']} "
-            f"{trade['direction']} debit spread | "
+            f"[CommOpts] {'REAL' if self._is_real() else 'PAPER'} OPEN "
+            f"{trade['id']} | {instrument} {trade['direction']} debit spread | "
             f"spot={trade['spot_at_entry']:.2f} "
             f"ATM={trade['atm_strike']} OTM={trade['otm_strike']} "
             f"debit={trade['net_debit']:.2f} maxP={trade['max_profit']:.2f} "
-            f"R:R={trade['rr']:.2f} SL@{meta.get('sl_price','?')} | src={trade['data_source']}"
+            f"R:R={trade['rr']:.2f} lots={lots} SL@{meta.get('sl_price','?')} | "
+            f"src={trade['data_source']}"
         )
 
     def _db_update_sl(self, trade_id: str, metadata: dict) -> None:
@@ -1015,6 +1511,8 @@ class CommodityOptionsLearning:
                     rr              REAL,
                     iv_used         REAL,
                     lot_size        INTEGER,
+                    lots            INTEGER DEFAULT 1,
+                    trade_mode      TEXT    DEFAULT 'PAPER',
                     risk_per_lot    REAL,
                     dte             INTEGER,
                     pnl_approx      REAL DEFAULT 0,
@@ -1027,7 +1525,50 @@ class CommodityOptionsLearning:
                     metadata        TEXT DEFAULT '{}'
                 )
             """)
-        logger.info("[CommOpts] DB table ready")
+            for col_sql in [
+                "ALTER TABLE commodity_learning_trades ADD COLUMN lots       INTEGER DEFAULT 1",
+                "ALTER TABLE commodity_learning_trades ADD COLUMN trade_mode TEXT    DEFAULT 'PAPER'",
+            ]:
+                try:
+                    conn.execute(col_sql)
+                except Exception:
+                    pass
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS commodity_settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+
+            # Instruments table — source of truth for all MCX contracts
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS commodity_instruments (
+                    name             TEXT PRIMARY KEY,
+                    lot_size         INTEGER NOT NULL,
+                    strike_step      REAL    NOT NULL,
+                    typical_iv       REAL    NOT NULL DEFAULT 0.30,
+                    price_unit       TEXT    NOT NULL DEFAULT 'INR/unit',
+                    min_price        REAL    NOT NULL DEFAULT 100,
+                    max_price        REAL    NOT NULL DEFAULT 999999,
+                    rollover_buffer  INTEGER NOT NULL DEFAULT 5,
+                    valid_months     TEXT    NOT NULL DEFAULT '[]',
+                    enabled          INTEGER NOT NULL DEFAULT 1
+                )
+            """)
+            # Seed built-in instruments — INSERT OR IGNORE preserves user edits
+            conn.executemany("""
+                INSERT OR IGNORE INTO commodity_instruments
+                (name, lot_size, strike_step, typical_iv, price_unit,
+                 min_price, max_price, rollover_buffer, valid_months, enabled)
+                VALUES (?,?,?,?,?,?,?,?,?,1)
+            """, [
+                (n, ls, ss, iv, pu, mn, mx, rb, json.dumps(vm))
+                for n, ls, ss, iv, pu, mn, mx, rb, vm in _INSTRUMENT_SEEDS
+            ])
+
+        self._load_contracts_from_db()
+        logger.info(f"[CommOpts] DB ready — {len(MCX_CONTRACTS)} instruments loaded")
 
     def _db_insert(self, t: dict) -> None:
         with sqlite3.connect(DB_PATH) as conn:
@@ -1035,15 +1576,16 @@ class CommodityOptionsLearning:
                 INSERT INTO commodity_learning_trades
                 (id, symbol, instrument, direction, opt_type, strategy,
                  spot_at_entry, atm_strike, otm_strike, net_debit, max_profit,
-                 spread_width, rr, iv_used, lot_size, risk_per_lot, dte,
-                 status, data_source, entry_time, metadata)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 spread_width, rr, iv_used, lot_size, lots, trade_mode,
+                 risk_per_lot, dte, status, data_source, entry_time, metadata)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 t["id"], t["symbol"], t["instrument"], t["direction"],
                 t["opt_type"], t["strategy"], t["spot_at_entry"],
                 t["atm_strike"], t["otm_strike"], t["net_debit"],
                 t["max_profit"], t["spread_width"], t["rr"], t["iv_used"],
-                t["lot_size"], t["risk_per_lot"], t["dte"],
+                t["lot_size"], t.get("lots", 1), t.get("trade_mode", "PAPER"),
+                t["risk_per_lot"], t["dte"],
                 t["status"], t["data_source"], t["entry_time"],
                 json.dumps(t.get("metadata", {})),
             ))

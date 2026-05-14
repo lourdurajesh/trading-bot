@@ -841,10 +841,275 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
 }
 
 /* ─────────────────────────────────────────────────────────────
+   InstrumentsPanel — full CRUD for MCX instruments
+───────────────────────────────────────────────────────────── */
+const BLANK_FORM = {
+  name:"", lot_size:"", strike_step:"", typical_iv:"0.30",
+  price_unit:"INR/unit", min_price:"", max_price:"",
+  rollover_buffer:"5", valid_months:"",
+};
+
+function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInstruments}) {
+  const [showAdd,  setShowAdd]  = React.useState(false);
+  const [editName, setEditName] = React.useState(null);   // name being edited
+  const [form,     setForm]     = React.useState(BLANK_FORM);
+  const [formErr,  setFormErr]  = React.useState("");
+  const [saving,   setSaving]   = React.useState(false);
+
+  const inputS = {
+    background:"#0f1623", border:"1px solid #1e2433", borderRadius:4,
+    color:"#e2e8f0", padding:"4px 8px", fontSize:12, width:"100%",
+  };
+  const labelS = {fontSize:11, color:"#64748b", marginBottom:3, display:"block"};
+
+  function reloadInstruments() {
+    fetch(`${API}/commodity/instruments`).then(r=>r.json())
+      .then(d=>{ if(d.instruments) setInstruments(d.instruments); })
+      .catch(()=>{});
+  }
+
+  function openAdd() {
+    setForm(BLANK_FORM); setFormErr(""); setEditName(null); setShowAdd(true);
+  }
+
+  function openEdit(ins) {
+    setForm({
+      name:            ins.name,
+      lot_size:        String(ins.lot_size),
+      strike_step:     String(ins.strike_step),
+      typical_iv:      String(ins.typical_iv),
+      price_unit:      ins.price_unit,
+      min_price:       String(ins.min_price),
+      max_price:       String(ins.max_price),
+      rollover_buffer: String(ins.rollover_buffer),
+      valid_months:    (ins.valid_months||[]).join(","),
+    });
+    setFormErr(""); setEditName(ins.name); setShowAdd(true);
+  }
+
+  function closeForm() { setShowAdd(false); setEditName(null); setFormErr(""); }
+
+  function parseMonths(s) {
+    if(!s.trim()) return [];
+    return s.split(",").map(x=>parseInt(x.trim())).filter(n=>n>=1&&n<=12);
+  }
+
+  function submitForm() {
+    const vm = parseMonths(form.valid_months);
+    const payload = {
+      lot_size:        parseInt(form.lot_size),
+      strike_step:     parseFloat(form.strike_step),
+      typical_iv:      parseFloat(form.typical_iv),
+      price_unit:      form.price_unit.trim(),
+      min_price:       parseFloat(form.min_price),
+      max_price:       parseFloat(form.max_price),
+      rollover_buffer: parseInt(form.rollover_buffer),
+      valid_months:    vm,
+    };
+    if(!form.name.trim())               return setFormErr("Name is required");
+    if(isNaN(payload.lot_size)||payload.lot_size<=0)    return setFormErr("Lot size must be a positive integer");
+    if(isNaN(payload.strike_step)||payload.strike_step<=0) return setFormErr("Strike step must be positive");
+    if(isNaN(payload.min_price)||isNaN(payload.max_price)||payload.min_price>=payload.max_price)
+                                         return setFormErr("min_price must be less than max_price");
+    setSaving(true); setFormErr("");
+    const isEdit = !!editName;
+    const req = isEdit
+      ? fetch(`${API}/commodity/instruments/${editName}`, {
+          method:"PUT", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify(payload),
+        })
+      : fetch(`${API}/commodity/instruments`, {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({name: form.name.toUpperCase().trim(), ...payload}),
+        });
+    req.then(r=>r.json()).then(d=>{
+      if(d.status==="ok") { reloadInstruments(); closeForm(); }
+      else setFormErr(d.error || "Failed");
+    }).catch(e=>setFormErr(String(e))).finally(()=>setSaving(false));
+  }
+
+  function toggleEnable(ins) {
+    const action = ins.enabled ? "disable" : "enable";
+    if(ins.enabled && !window.confirm(
+      `Disable ${ins.name}?\n\nNo new entries will be taken.\nOpen positions continue to be monitored.`
+    )) return;
+    setInstrBusy(b=>({...b,[ins.name]:true}));
+    fetch(`${API}/commodity/instruments/${ins.name}/${action}`, {method:"POST"})
+      .then(r=>r.json())
+      .then(d=>{
+        if(d.status==="ok") setInstruments(prev=>prev.map(i=>i.name===ins.name?{...i,enabled:!ins.enabled}:i));
+        else alert(d.error||"Failed");
+      })
+      .finally(()=>setInstrBusy(b=>({...b,[ins.name]:false})));
+  }
+
+  function removeInstrument(ins) {
+    if(!window.confirm(
+      `Remove ${ins.name} from the instruments list?\n\nTrade history is kept.\nThis cannot be undone easily.`
+    )) return;
+    setInstrBusy(b=>({...b,[ins.name]:true}));
+    fetch(`${API}/commodity/instruments/${ins.name}`, {method:"DELETE"})
+      .then(r=>r.json())
+      .then(d=>{
+        if(d.status==="ok") reloadInstruments();
+        else alert(d.error||"Failed");
+      })
+      .finally(()=>setInstrBusy(b=>({...b,[ins.name]:false})));
+  }
+
+  return (
+    <div>
+      <div className="card" style={{marginBottom:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <h2 style={{margin:0}}>Instruments
+            <span style={{marginLeft:8,fontWeight:400,color:"#64748b",fontSize:10,textTransform:"none",letterSpacing:0}}>
+              stored in DB · changes take effect immediately · restarts preserved
+            </span>
+          </h2>
+          <button className="mode-btn"
+            style={{background:"#1e3a5f",borderColor:"#1e40af",color:"#93c5fd",fontWeight:600}}
+            onClick={openAdd}>
+            + Add Instrument
+          </button>
+        </div>
+
+        {/* Add / Edit form */}
+        {showAdd && (
+          <div style={{background:"#0a1220",border:"1px solid #1e2d45",borderRadius:8,padding:16,marginBottom:16}}>
+            <div style={{fontWeight:600,fontSize:13,color:"#e2e8f0",marginBottom:12}}>
+              {editName ? `Edit — ${editName}` : "Add New Instrument"}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10,marginBottom:12}}>
+              {!editName && (
+                <div>
+                  <label style={labelS}>Name (e.g. GOLDMINI)</label>
+                  <input style={inputS} value={form.name}
+                    onChange={e=>setForm(f=>({...f,name:e.target.value.toUpperCase()}))}
+                    placeholder="GOLDMINI"/>
+                </div>
+              )}
+              <div>
+                <label style={labelS}>Lot size</label>
+                <input style={inputS} type="number" value={form.lot_size}
+                  onChange={e=>setForm(f=>({...f,lot_size:e.target.value}))} placeholder="100"/>
+              </div>
+              <div>
+                <label style={labelS}>Strike step</label>
+                <input style={inputS} type="number" value={form.strike_step}
+                  onChange={e=>setForm(f=>({...f,strike_step:e.target.value}))} placeholder="100"/>
+              </div>
+              <div>
+                <label style={labelS}>Typical IV (e.g. 0.30)</label>
+                <input style={inputS} type="number" step="0.01" value={form.typical_iv}
+                  onChange={e=>setForm(f=>({...f,typical_iv:e.target.value}))}/>
+              </div>
+              <div>
+                <label style={labelS}>Price unit (e.g. INR/kg)</label>
+                <input style={inputS} value={form.price_unit}
+                  onChange={e=>setForm(f=>({...f,price_unit:e.target.value}))}/>
+              </div>
+              <div>
+                <label style={labelS}>Min price</label>
+                <input style={inputS} type="number" value={form.min_price}
+                  onChange={e=>setForm(f=>({...f,min_price:e.target.value}))} placeholder="3000"/>
+              </div>
+              <div>
+                <label style={labelS}>Max price</label>
+                <input style={inputS} type="number" value={form.max_price}
+                  onChange={e=>setForm(f=>({...f,max_price:e.target.value}))} placeholder="12000"/>
+              </div>
+              <div>
+                <label style={labelS}>Rollover buffer (days)</label>
+                <input style={inputS} type="number" value={form.rollover_buffer}
+                  onChange={e=>setForm(f=>({...f,rollover_buffer:e.target.value}))}/>
+              </div>
+              <div>
+                <label style={labelS}>Valid months (blank=all, e.g. 3,5,7,9,12)</label>
+                <input style={inputS} value={form.valid_months}
+                  onChange={e=>setForm(f=>({...f,valid_months:e.target.value}))}
+                  placeholder="3,5,7,9,12 or blank"/>
+              </div>
+            </div>
+            {formErr && <div style={{color:"#fca5a5",fontSize:11,marginBottom:8}}>⚠ {formErr}</div>}
+            <div style={{display:"flex",gap:8}}>
+              <button className="mode-btn" disabled={saving} onClick={submitForm}
+                style={{background:"#14532d",borderColor:"#15803d",color:"#86efac",fontWeight:600}}>
+                {saving ? "Saving…" : editName ? "Update" : "Add"}
+              </button>
+              <button className="mode-btn" onClick={closeForm}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {/* Instrument cards */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:10}}>
+          {instruments.map(ins => {
+            const busy    = instrBusy[ins.name];
+            const hasOpen = (trades||[]).some(t=>t.instrument===ins.name&&t.status==="OPEN");
+            return (
+              <div key={ins.name} style={{
+                background:"#0f1623",
+                border:`1px solid ${ins.enabled?"#1a3a2a":"#2a1a1a"}`,
+                borderRadius:8, padding:"12px 14px",
+              }}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                  <span style={{
+                    fontFamily:"'Courier New',monospace",fontWeight:700,fontSize:13,flex:1,
+                    color: ins.enabled ? "#e2e8f0" : "#475569",
+                  }}>{ins.name}</span>
+                  {ins.enabled
+                    ? <span className="badge auto">ACTIVE</span>
+                    : <span className="badge" style={{background:"#1e293b",color:"#475569"}}>OFF</span>
+                  }
+                  {hasOpen && <span className="badge" style={{background:"#1c3f1a",color:"#86efac",fontSize:9}}>OPEN</span>}
+                </div>
+                <div style={{fontSize:11,color:"#64748b",marginBottom:10,lineHeight:1.7}}>
+                  <div>Lot <strong style={{color:"#94a3b8"}}>{ins.lot_size}</strong> · Step <strong style={{color:"#94a3b8"}}>{ins.strike_step}</strong> · IV <strong style={{color:"#94a3b8"}}>{(ins.typical_iv*100).toFixed(0)}%</strong></div>
+                  <div>{ins.price_unit} · {ins.min_price.toLocaleString()}–{ins.max_price.toLocaleString()}</div>
+                  {ins.valid_months?.length>0 && <div>Months: {ins.valid_months.join(", ")}</div>}
+                  <div style={{fontFamily:"monospace",fontSize:10,color:"#334155",marginTop:2}}>{ins.symbol}</div>
+                </div>
+                <div style={{display:"flex",gap:5}}>
+                  <button className="mode-btn" disabled={busy}
+                    style={{flex:1,
+                      background: ins.enabled ? "#450a0a" : "#14532d",
+                      borderColor: ins.enabled ? "#7f1d1d" : "#15803d",
+                      color: ins.enabled ? "#fca5a5" : "#86efac",
+                      opacity: (ins.enabled&&hasOpen) ? 0.5 : 1,
+                      cursor: (ins.enabled&&hasOpen) ? "not-allowed" : "pointer",
+                      fontWeight:600,
+                    }}
+                    title={ins.enabled&&hasOpen?"Close open position first":""}
+                    onClick={()=>!(ins.enabled&&hasOpen)&&toggleEnable(ins)}>
+                    {busy ? "…" : ins.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <button className="mode-btn" disabled={busy}
+                    title="Edit parameters"
+                    onClick={()=>openEdit(ins)}>
+                    ✎
+                  </button>
+                  <button className="mode-btn" disabled={busy||hasOpen}
+                    title={hasOpen?"Close position first":"Remove instrument"}
+                    style={{color:"#fca5a5",opacity:hasOpen?0.4:1,cursor:hasOpen?"not-allowed":"pointer"}}
+                    onClick={()=>!hasOpen&&removeInstrument(ins)}>
+                    ✕
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {instruments.length===0 && <div className="empty">No instruments — loading or none added yet.</div>}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
    CommodityTabContent — owns filter state + options chain state.
    Stats widgets and table rows both update with the active filter.
 ───────────────────────────────────────────────────────────── */
-function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}) {
+function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig, commMode, commModeBusy, onModeToggle}) {
   const [filterSym,    setFilterSym]    = React.useState("");
   const [filterStrat,  setFilterStrat]  = React.useState("all");
   const [filterStatus, setFilterStatus] = React.useState("all");
@@ -855,6 +1120,15 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
   const [commChainSym,    setCommChainSym]    = React.useState("CRUDEOIL");
   const [commChainExpIdx, setCommChainExpIdx] = React.useState(0);
   const [commChainBusy,   setCommChainBusy]   = React.useState(false);
+
+  const [instruments,     setInstruments]     = React.useState([]);
+  const [instrBusy,       setInstrBusy]       = React.useState({});
+
+  React.useEffect(() => {
+    fetch(`${API}/commodity/instruments`).then(r=>r.json())
+      .then(d=>{ if(d.instruments) setInstruments(d.instruments); })
+      .catch(()=>{});
+  }, []);
 
   React.useEffect(() => {
     if (subTab !== "chain") return;
@@ -888,7 +1162,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
     const ltp       = ltps ? (ltps[t.instrument]?.ltp||null) : null;
     const spotEntry = t.spot_at_entry || 0;
     const spotMove  = ltp != null ? (t.direction==="LONG" ? ltp - spotEntry : spotEntry - ltp) : null;
-    const estPnlLot = spotMove != null ? round2(round2(spotMove * 0.35) * (t.lot_size||1)) : 0;
+    const estPnlLot = spotMove != null ? round2(round2(spotMove * 0.35) * (t.lot_size||1) * (t.lots||1)) : 0;
     return s + estPnlLot;
   }, 0);
   const totalPnlInr = closedPnlInr + openPnlInr;
@@ -900,7 +1174,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
   };
 
   function OptionsChainView() {
-    const SYMS = ["CRUDEOIL","GOLD","SILVER","COPPER","NATURALGAS"];
+    const SYMS = ["CRUDEOIL","GOLD","SILVER","COPPER","NATURALGAS","SILVERMICRO","COPPERMINI"];
     const chain = commChain;
 
     function fetchChain(sym, idx) {
@@ -1026,10 +1300,36 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
     );
   }
 
+  const isReal = commMode === "REAL";
+
   return (
     <div>
-      <div className="paper-banner" style={{background:"#0d1f35",borderColor:"#1e3a5f44",color:"#93c5fd"}}>
-        MCX commodity options paper trades — <strong>TrendSpread · RSIReversalSpread · BreakoutSpread</strong> · Live chain + Black-Scholes fallback · 09:00–23:30 IST
+      {/* Mode banner + toggle */}
+      <div style={{
+        background: isReal ? "#0d2318" : "#0d1f35",
+        border: `1px solid ${isReal ? "#15803d44" : "#1e3a5f44"}`,
+        borderRadius:8, padding:"10px 14px", marginBottom:14,
+        display:"flex", alignItems:"center", gap:12, fontSize:12,
+      }}>
+        <span style={{color: isReal ? "#86efac" : "#93c5fd", flex:1}}>
+          {isReal
+            ? <><strong style={{color:"#4ade80"}}>REAL TRADING</strong> — MCX commodity options · Live broker orders via Fyers · TrendSpread · RSIReversalSpread · BreakoutSpread</>
+            : <><strong>PAPER MODE</strong> — MCX commodity options · TrendSpread · RSIReversalSpread · BreakoutSpread · Live chain + Black-Scholes fallback · 09:00–23:30 IST</>
+          }
+        </span>
+        <button
+          className="mode-btn"
+          disabled={commModeBusy}
+          onClick={onModeToggle}
+          style={{
+            background: isReal ? "#14532d" : "#1e3a5f",
+            borderColor: isReal ? "#15803d" : "#1e40af",
+            color: isReal ? "#86efac" : "#93c5fd",
+            minWidth:110, fontWeight:600,
+          }}
+        >
+          {commModeBusy ? "Switching…" : isReal ? "Switch to Paper" : "Switch to Real"}
+        </button>
       </div>
 
       {/* filter bar */}
@@ -1153,7 +1453,7 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
 
       {/* sub-tabs */}
       <div className="sub-tabs">
-        {[["trades","All Trades"],["open","Open Positions"],["exits","Exit Breakdown"],["chain","Options Chain"]].map(([id,lbl])=>(
+        {[["trades","All Trades"],["open","Open Positions"],["exits","Exit Breakdown"],["instruments","Instruments"],["chain","Options Chain"]].map(([id,lbl])=>(
           <button key={id} className={`sub-tab ${subTab===id?"active":""}`} onClick={()=>setSubTab(id)}>{lbl}</button>
         ))}
       </div>
@@ -1207,6 +1507,16 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig}
             {!commStats?.total_closed && <div className="empty">No closed trades yet</div>}
           </div>
         </div>
+      )}
+
+      {subTab==="instruments" && (
+        <InstrumentsPanel
+          instruments={instruments}
+          trades={trades}
+          instrBusy={instrBusy}
+          setInstrBusy={setInstrBusy}
+          setInstruments={setInstruments}
+        />
       )}
 
       {subTab==="chain" && (
@@ -1590,6 +1900,8 @@ function App() {
   const [commStats, setCommStats]     = React.useState(null);
   const [commTrades, setCommTrades]   = React.useState([]);
   const [commLtps,  setCommLtps]      = React.useState({});
+  const [commMode,  setCommMode]      = React.useState("PAPER");
+  const [commModeBusy, setCommModeBusy] = React.useState(false);
 
   /* strategy config */
   const [stratConfig, setStratConfig] = React.useState(null);
@@ -1665,6 +1977,7 @@ function App() {
     const loadComm = () => {
       fetch(`${API}/commodity/stats`).then(r=>r.json()).then(setCommStats).catch(()=>{});
       fetch(`${API}/commodity/trades?limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});
+      fetch(`${API}/commodity/trade-mode`).then(r=>r.json()).then(d=>{ if(d.mode) setCommMode(d.mode); }).catch(()=>{});
     };
     const loadConfig = () =>
       fetch(`${API}/config/strategies`).then(r=>r.json()).then(d=>{if(d.config)setStratConfig(d.config);}).catch(()=>{});
@@ -2038,6 +2351,23 @@ function App() {
       <div style={{display: tab==="commodity" ? "block" : "none"}}>
         <CommodityTabContent trades={commTrades} ltps={commLtps} commStats={commStats}
           mcxConfig={mcxConfig}
+          commMode={commMode}
+          commModeBusy={commModeBusy}
+          onModeToggle={() => {
+            const target = commMode === "PAPER" ? "real" : "paper";
+            if (target === "real" && !confirm(
+              "Switch to REAL trading?\n\nThis will place LIVE orders on your Fyers account.\nMake sure your broker account has sufficient funds.\n\nContinue?"
+            )) return;
+            setCommModeBusy(true);
+            fetch(`${API}/commodity/trade-mode/${target}`, {method:"POST"})
+              .then(r=>r.json())
+              .then(d=>{
+                if(d.mode) setCommMode(d.mode);
+                if(d.error) alert("Error: " + d.error);
+              })
+              .catch(e=>alert("Request failed: "+e))
+              .finally(()=>setCommModeBusy(false));
+          }}
           onManualClose={() => {
             fetch(`${API}/commodity/stats`).then(r=>r.json()).then(setCommStats).catch(()=>{});
             fetch(`${API}/commodity/trades?limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});

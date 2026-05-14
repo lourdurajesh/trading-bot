@@ -466,10 +466,10 @@ def commodity_ltp_debug():
     Also shows subscribed vs. stored symbols for open positions.
     """
     try:
-        from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS, ALL_MCX_SHORTS
+        from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS
         open_comm = commodity_options.get_trades(status="OPEN")
         result = {}
-        for short in ALL_MCX_SHORTS:
+        for short in list(MCX_CONTRACTS.keys()):
             active_sym = _fyers_sym(short)
             active_ltp = store.get_ltp(active_sym)
             meta       = MCX_CONTRACTS.get(short, {})
@@ -490,6 +490,126 @@ def commodity_ltp_debug():
         return {"mcx_ltps": result, "store_symbols": [s for s in store.get_active_symbols() if "MCX" in s]}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/commodity/instruments")
+def commodity_get_instruments():
+    """List all MCX instruments with enabled/disabled status and full metadata."""
+    try:
+        from commodity_options_learning import commodity_options
+        return {"instruments": commodity_options.get_instruments()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/commodity/instruments")
+def commodity_add_instrument(body: dict):
+    """
+    Add a new MCX instrument.
+    Body: {name, lot_size, strike_step, typical_iv, price_unit,
+           min_price, max_price, rollover_buffer?, valid_months?}
+    """
+    try:
+        from commodity_options_learning import commodity_options
+        commodity_options.add_instrument(
+            name            = body["name"],
+            lot_size        = int(body["lot_size"]),
+            strike_step     = float(body["strike_step"]),
+            typical_iv      = float(body.get("typical_iv", 0.30)),
+            price_unit      = body.get("price_unit", "INR/unit"),
+            min_price       = float(body["min_price"]),
+            max_price       = float(body["max_price"]),
+            rollover_buffer = int(body.get("rollover_buffer", 5)),
+            valid_months    = body.get("valid_months") or [],
+        )
+        return {"status": "ok", "name": body["name"].upper()}
+    except (KeyError, TypeError) as e:
+        return {"error": f"Missing or invalid field: {e}", "status": "invalid"}
+    except ValueError as e:
+        return {"error": str(e), "status": "invalid"}
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
+
+@app.put("/commodity/instruments/{name}")
+def commodity_update_instrument(name: str, body: dict):
+    """Update fields on an existing instrument. Only supplied fields are changed."""
+    try:
+        from commodity_options_learning import commodity_options
+        commodity_options.update_instrument(name, **body)
+        return {"status": "ok", "name": name.upper()}
+    except ValueError as e:
+        return {"error": str(e), "status": "invalid"}
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
+
+@app.delete("/commodity/instruments/{name}")
+def commodity_remove_instrument(name: str):
+    """Remove an instrument definition. Trade history is kept. Blocked if open position exists."""
+    try:
+        from commodity_options_learning import commodity_options
+        commodity_options.remove_instrument(name)
+        return {"status": "ok", "name": name.upper()}
+    except RuntimeError as e:
+        return {"error": str(e), "status": "blocked"}
+    except ValueError as e:
+        return {"error": str(e), "status": "invalid"}
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
+
+@app.post("/commodity/instruments/{name}/enable")
+def commodity_enable_instrument(name: str):
+    try:
+        from commodity_options_learning import commodity_options
+        commodity_options.enable_commodity(name)
+        return {"name": name.upper(), "enabled": True, "status": "ok"}
+    except (ValueError, RuntimeError) as e:
+        return {"error": str(e), "status": "blocked"}
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
+
+@app.post("/commodity/instruments/{name}/disable")
+def commodity_disable_instrument(name: str):
+    try:
+        from commodity_options_learning import commodity_options
+        commodity_options.disable_commodity(name)
+        return {"name": name.upper(), "enabled": False, "status": "ok"}
+    except (ValueError, RuntimeError) as e:
+        return {"error": str(e), "status": "blocked"}
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
+
+@app.get("/commodity/trade-mode")
+def commodity_get_trade_mode():
+    """Return current MCX trade mode (PAPER or REAL)."""
+    try:
+        from commodity_options_learning import commodity_options
+        return {"mode": commodity_options.get_trade_mode()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/commodity/trade-mode/{mode}")
+def commodity_set_trade_mode(mode: str):
+    """
+    Switch MCX commodity options between PAPER and REAL trading.
+    mode must be 'paper' or 'real'.
+    Cannot switch to REAL while paper positions are open.
+    """
+    try:
+        from commodity_options_learning import commodity_options
+        commodity_options.set_trade_mode(mode)
+        return {"mode": commodity_options.get_trade_mode(), "status": "ok"}
+    except ValueError as e:
+        return {"error": str(e), "status": "invalid"}
+    except RuntimeError as e:
+        return {"error": str(e), "status": "blocked"}
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
 
 
 @app.get("/logs")
