@@ -284,6 +284,13 @@ class TradingBot:
                     except Exception as e:
                         logger.error(f"[Main] IEP re-score error: {e}")
 
+                # MCX exit check — runs every 5 seconds regardless of NSE hours
+                # (MCX trades 09:00–23:30, well outside NSE session)
+                try:
+                    commodity_options.check_exits()
+                except Exception as _ce:
+                    logger.debug(f"[CommOpts] exit check error: {_ce}")
+
                 if self._is_market_hours():
                     # ── Fast loop — runs every 5 seconds ──────────
                     position_manager.check_all()

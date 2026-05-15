@@ -913,7 +913,8 @@ class CommodityOptionsLearning:
         return True, ""
 
     def run_cycle(self) -> None:
-        """Call once per minute during MCX hours."""
+        """Entry evaluation once per minute during MCX hours.
+        Exit monitoring is handled by check_exits() on the 5-second fast loop."""
         now = datetime.now(tz=IST)
         if not (MCX_MARKET_OPEN <= now.time() <= MCX_MARKET_CLOSE):
             return
@@ -923,10 +924,7 @@ class CommodityOptionsLearning:
         open_count = len(self._open_positions)
         logger.info(f"[CommOpts] Cycle @ {now.strftime('%H:%M')} IST | open={open_count}")
 
-        # 1. Exit monitoring
-        self._check_exits(store, now)
-
-        # 2. New entry scan (stop 30 min before close — enabled commodities only)
+        # New entry scan (stop at cutoff — enabled commodities only)
         if now.time() <= MCX_ENTRY_CUTOFF:
             for short in list(MCX_CONTRACTS.keys()):
                 if short not in self._enabled_commodities:
@@ -1228,6 +1226,16 @@ class CommodityOptionsLearning:
     # ─────────────────────────────────────────────────────────────
     # EXIT MONITORING
     # ─────────────────────────────────────────────────────────────
+
+    def check_exits(self) -> None:
+        """Public entry point — called from the 5-second fast loop in main.py."""
+        if not self._open_positions:
+            return
+        now = datetime.now(tz=IST)
+        if not (MCX_MARKET_OPEN <= now.time() <= MCX_MARKET_CLOSE):
+            return
+        from data.data_store import store
+        self._check_exits(store, now)
 
     def _check_exits(self, store, now: datetime) -> None:
         closed = []
