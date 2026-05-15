@@ -55,13 +55,37 @@ LEARNING_NSE_INDICES = [
 
 # ── MCX Commodities (nearest active futures) ─────────────────────
 # Update contract codes monthly (JUN → JUL etc.)
-# Format: MCX:SYMBOL + DDMMMYY + FUT  (e.g. MCX:CRUDEOIL25JUNFUT)
+# Format: MCX:SYMBOL + YY + MON + FUT  (e.g. MCX:CRUDEOIL26JUNFUT)
+# commodity_options_learning._fyers_sym() auto-computes these at runtime;
+# this list is the manual fallback used by the learning strategy engine.
 LEARNING_MCX_COMMODITIES = [
-    "MCX:CRUDEOIL25JUNFUT",   # crude oil — high volatility
-    "MCX:GOLD25JUNFUT",       # gold — safe haven proxy
-    "MCX:SILVER25JUNFUT",     # silver — more volatile than gold
-    "MCX:COPPER25JUNFUT",     # copper — global growth indicator
-    "MCX:NATURALGAS25JUNFUT", # natural gas — seasonal patterns
+    # Precious metals
+    "MCX:GOLD26JUNFUT",        # gold — safe haven, INR/10gm
+    "MCX:GOLDM26JUNFUT",       # gold mini (100g lot)
+    "MCX:GOLDGUINEA26JUNFUT",  # gold guinea (8g lot)
+    "MCX:GOLDPETAL26JUNFUT",   # gold petal (1g lot)
+    "MCX:SILVER26JULFUT",      # silver — more volatile than gold, INR/kg
+    "MCX:SILVERM26JULFUT",     # silver mini (5 kg lot)
+    "MCX:SILVERMIC26JULFUT",   # silver micro (1 kg lot)
+    # Energy
+    "MCX:CRUDEOIL26JUNFUT",    # crude oil — high volatility, INR/bbl
+    "MCX:CRUDEOILM26JUNFUT",   # crude oil mini (10 bbl lot)
+    "MCX:NATURALGAS26JUNFUT",  # natural gas — seasonal patterns, INR/mmBtu
+    "MCX:NATGASMINI26JUNFUT",  # natural gas mini (250 mmBtu lot)
+    # Base metals
+    "MCX:COPPER26JUNFUT",      # copper — global growth indicator, INR/kg
+    "MCX:COPPERM26JUNFUT",     # copper mini
+    "MCX:ZINC26JUNFUT",        # zinc, INR/kg
+    "MCX:ZINCMINI26JUNFUT",    # zinc mini
+    "MCX:ALUMINIUM26JUNFUT",   # aluminium, INR/kg
+    "MCX:ALUMINI26JUNFUT",     # aluminium mini
+    "MCX:LEAD26JUNFUT",        # lead, INR/kg
+    "MCX:LEADMINI26JUNFUT",    # lead mini
+    "MCX:NICKEL26JUNFUT",      # nickel, INR/kg
+    "MCX:NICKELM26JUNFUT",     # nickel mini
+    # Agricultural
+    "MCX:COTTON26JUNFUT",      # cotton, INR/bale
+    "MCX:MENTHAOIL26JUNFUT",   # mentha oil, INR/kg
 ]
 
 # ── Combined ─────────────────────────────────────────────────────

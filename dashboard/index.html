@@ -861,7 +861,7 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
    InstrumentsPanel — full CRUD for MCX instruments
 ───────────────────────────────────────────────────────────── */
 const BLANK_FORM = {
-  name:"", lot_size:"", strike_step:"", typical_iv:"0.30",
+  name:"", display_name:"", lot_size:"", strike_step:"", typical_iv:"0.30",
   price_unit:"INR/unit", min_price:"", max_price:"",
   rollover_buffer:"5", valid_months:"",
   // SL/target overrides — blank = inherit strategy default
@@ -896,6 +896,7 @@ function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInst
     const fmtOv = v => (v == null ? "" : String(v));
     setForm({
       name:            ins.name,
+      display_name:    ins.display_name || "",
       lot_size:        String(ins.lot_size),
       strike_step:     String(ins.strike_step),
       typical_iv:      String(ins.typical_iv),
@@ -925,6 +926,7 @@ function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInst
     const vm = parseMonths(form.valid_months);
     const parseOv = (s) => s.trim() === "" ? null : parseFloat(s);
     const payload = {
+      display_name:    form.display_name.trim(),
       lot_size:        parseInt(form.lot_size),
       strike_step:     parseFloat(form.strike_step),
       typical_iv:      parseFloat(form.typical_iv),
@@ -1023,6 +1025,12 @@ function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInst
                     placeholder="GOLDMINI"/>
                 </div>
               )}
+              <div>
+                <label style={labelS}>Display name (e.g. Gold Mini)</label>
+                <input style={inputS} value={form.display_name}
+                  onChange={e=>setForm(f=>({...f,display_name:e.target.value}))}
+                  placeholder="Gold Mini"/>
+              </div>
               <div>
                 <label style={labelS}>Lot size</label>
                 <input style={inputS} type="number" value={form.lot_size}
@@ -1141,10 +1149,18 @@ function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInst
                 borderRadius:8, padding:"12px 14px",
               }}>
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-                  <span style={{
-                    fontFamily:"'Courier New',monospace",fontWeight:700,fontSize:13,flex:1,
-                    color: ins.enabled ? "#e2e8f0" : "#475569",
-                  }}>{ins.name}</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <span style={{
+                      fontWeight:700,fontSize:13,
+                      color: ins.enabled ? "#e2e8f0" : "#475569",
+                    }}>{ins.display_name || ins.name}</span>
+                    {ins.display_name && (
+                      <span style={{
+                        fontFamily:"'Courier New',monospace",fontSize:10,
+                        color:"#475569",marginLeft:6,
+                      }}>{ins.name}</span>
+                    )}
+                  </div>
                   {ins.enabled
                     ? <span className="badge auto">ACTIVE</span>
                     : <span className="badge" style={{background:"#1e293b",color:"#475569"}}>OFF</span>
