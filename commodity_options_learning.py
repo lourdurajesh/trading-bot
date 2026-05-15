@@ -1218,9 +1218,9 @@ class CommodityOptionsLearning:
                 # sl_price is derived from debit cost so expensive spreads (high IV)
                 # get more room and cheap spreads get tighter protection.
                 "sl_price":    _debit_sl_price(spot, direction, net_debit,
-                                               _merged_strat_cfg(instrument, strategy_name)),
+                                               _merged_strat_cfg(short, strategy_name)),
                 "peak_spot":   round(spot, 2),
-                "target_pct":  _merged_strat_cfg(instrument, strategy_name).get("target_pct", 0.50),
+                "target_pct":  _merged_strat_cfg(short, strategy_name).get("target_pct", 0.50),
                 "trail_active": False,
             },
         }
