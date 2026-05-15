@@ -809,8 +809,15 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
                       : "—"}
                 </td>
                 <td className={r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{isOpen?"open":fmtR(r)}</td>
-                <td style={{color:"#94a3b8",fontSize:10}}>
-                  {t.exit_reason||"—"}
+                <td style={{fontSize:10}}>
+                  {!isOpen && t.spot_at_exit > 0 && (
+                    <div style={{fontFamily:"monospace",color:"#e2e8f0",fontWeight:600,fontSize:12}}>
+                      {t.spot_at_exit.toFixed(0)}
+                    </div>
+                  )}
+                  <div style={{color:"#94a3b8",marginTop: (!isOpen && t.spot_at_exit > 0) ? 2 : 0}}>
+                    {t.exit_reason || (isOpen ? "—" : "—")}
+                  </div>
                   {isOpen && onManualClose && (
                     <div style={{marginTop:4}}>
                       <button
