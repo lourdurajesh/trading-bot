@@ -857,6 +857,9 @@ const BLANK_FORM = {
   name:"", lot_size:"", strike_step:"", typical_iv:"0.30",
   price_unit:"INR/unit", min_price:"", max_price:"",
   rollover_buffer:"5", valid_months:"",
+  // SL/target overrides — blank = inherit strategy default
+  sl_debit_pct:"", trail_debit_pct:"", trail_trigger_pct:"",
+  target_pct:"", target_upgraded_pct:"", target_upgrade_mult:"",
 };
 
 function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInstruments}) {
@@ -883,6 +886,7 @@ function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInst
   }
 
   function openEdit(ins) {
+    const fmtOv = v => (v == null ? "" : String(v));
     setForm({
       name:            ins.name,
       lot_size:        String(ins.lot_size),
@@ -893,6 +897,12 @@ function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInst
       max_price:       String(ins.max_price),
       rollover_buffer: String(ins.rollover_buffer),
       valid_months:    (ins.valid_months||[]).join(","),
+      sl_debit_pct:         fmtOv(ins.sl_debit_pct),
+      trail_debit_pct:      fmtOv(ins.trail_debit_pct),
+      trail_trigger_pct:    fmtOv(ins.trail_trigger_pct),
+      target_pct:           fmtOv(ins.target_pct),
+      target_upgraded_pct:  fmtOv(ins.target_upgraded_pct),
+      target_upgrade_mult:  fmtOv(ins.target_upgrade_mult),
     });
     setFormErr(""); setEditName(ins.name); setShowAdd(true);
   }
@@ -906,6 +916,7 @@ function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInst
 
   function submitForm() {
     const vm = parseMonths(form.valid_months);
+    const parseOv = (s) => s.trim() === "" ? null : parseFloat(s);
     const payload = {
       lot_size:        parseInt(form.lot_size),
       strike_step:     parseFloat(form.strike_step),
@@ -915,6 +926,13 @@ function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInst
       max_price:       parseFloat(form.max_price),
       rollover_buffer: parseInt(form.rollover_buffer),
       valid_months:    vm,
+      // SL/target overrides — null means "clear override, use strategy default"
+      sl_debit_pct:        parseOv(form.sl_debit_pct),
+      trail_debit_pct:     parseOv(form.trail_debit_pct),
+      trail_trigger_pct:   parseOv(form.trail_trigger_pct),
+      target_pct:          parseOv(form.target_pct),
+      target_upgraded_pct: parseOv(form.target_upgraded_pct),
+      target_upgrade_mult: parseOv(form.target_upgrade_mult),
     };
     if(!form.name.trim())               return setFormErr("Name is required");
     if(isNaN(payload.lot_size)||payload.lot_size<=0)    return setFormErr("Lot size must be a positive integer");
@@ -1040,6 +1058,59 @@ function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInst
                   placeholder="3,5,7,9,12 or blank"/>
               </div>
             </div>
+
+            {/* Per-instrument risk overrides */}
+            <div style={{borderTop:"1px solid #1e2d45",paddingTop:10,marginBottom:10}}>
+              <div style={{fontSize:11,color:"#64748b",marginBottom:8,fontWeight:600}}>
+                Risk Overrides
+                <span style={{fontWeight:400,marginLeft:6}}>— blank = use strategy default</span>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:10}}>
+                <div>
+                  <label style={labelS}>Initial SL % of Debit <span style={{color:"#334155"}}>(def 0.40)</span></label>
+                  <input style={inputS} type="number" step="0.01" min="0.05" max="1"
+                    value={form.sl_debit_pct}
+                    onChange={e=>setForm(f=>({...f,sl_debit_pct:e.target.value}))}
+                    placeholder="e.g. 0.55 for Silver"/>
+                </div>
+                <div>
+                  <label style={labelS}>Trail Distance % of Debit <span style={{color:"#334155"}}>(def 0.30)</span></label>
+                  <input style={inputS} type="number" step="0.01" min="0.05" max="1"
+                    value={form.trail_debit_pct}
+                    onChange={e=>setForm(f=>({...f,trail_debit_pct:e.target.value}))}
+                    placeholder="e.g. 0.20"/>
+                </div>
+                <div>
+                  <label style={labelS}>Trail Trigger % of SL Dist <span style={{color:"#334155"}}>(def 0.50)</span></label>
+                  <input style={inputS} type="number" step="0.01" min="0.1" max="1"
+                    value={form.trail_trigger_pct}
+                    onChange={e=>setForm(f=>({...f,trail_trigger_pct:e.target.value}))}
+                    placeholder="e.g. 0.40"/>
+                </div>
+                <div>
+                  <label style={labelS}>Initial Target % of Max Profit <span style={{color:"#334155"}}>(def 0.50)</span></label>
+                  <input style={inputS} type="number" step="0.01" min="0.1" max="1"
+                    value={form.target_pct}
+                    onChange={e=>setForm(f=>({...f,target_pct:e.target.value}))}
+                    placeholder="e.g. 0.45"/>
+                </div>
+                <div>
+                  <label style={labelS}>Upgraded Target % <span style={{color:"#334155"}}>(def 0.75)</span></label>
+                  <input style={inputS} type="number" step="0.01" min="0.1" max="1"
+                    value={form.target_upgraded_pct}
+                    onChange={e=>setForm(f=>({...f,target_upgraded_pct:e.target.value}))}
+                    placeholder="e.g. 0.70"/>
+                </div>
+                <div>
+                  <label style={labelS}>Target Upgrade Multiplier <span style={{color:"#334155"}}>(def 2.0)</span></label>
+                  <input style={inputS} type="number" step="0.1" min="0.5" max="5"
+                    value={form.target_upgrade_mult}
+                    onChange={e=>setForm(f=>({...f,target_upgrade_mult:e.target.value}))}
+                    placeholder="e.g. 1.5"/>
+                </div>
+              </div>
+            </div>
+
             {formErr && <div style={{color:"#fca5a5",fontSize:11,marginBottom:8}}>⚠ {formErr}</div>}
             <div style={{display:"flex",gap:8}}>
               <button className="mode-btn" disabled={saving} onClick={submitForm}
@@ -1077,6 +1148,17 @@ function InstrumentsPanel({instruments, trades, instrBusy, setInstrBusy, setInst
                   <div>Lot <strong style={{color:"#94a3b8"}}>{ins.lot_size}</strong> · Step <strong style={{color:"#94a3b8"}}>{ins.strike_step}</strong> · IV <strong style={{color:"#94a3b8"}}>{(ins.typical_iv*100).toFixed(0)}%</strong></div>
                   <div>{ins.price_unit} · {ins.min_price.toLocaleString()}–{ins.max_price.toLocaleString()}</div>
                   {ins.valid_months?.length>0 && <div>Months: {ins.valid_months.join(", ")}</div>}
+                  {/* Show per-instrument risk overrides if any are set */}
+                  {(ins.sl_debit_pct!=null||ins.trail_debit_pct!=null||ins.target_pct!=null) && (
+                    <div style={{marginTop:4,padding:"3px 6px",background:"#0c1a2e",borderRadius:4,fontSize:10,color:"#7dd3fc",lineHeight:1.8}}>
+                      {ins.sl_debit_pct!=null && <span style={{marginRight:8}}>SL {(ins.sl_debit_pct*100).toFixed(0)}%</span>}
+                      {ins.trail_debit_pct!=null && <span style={{marginRight:8}}>Trail {(ins.trail_debit_pct*100).toFixed(0)}%</span>}
+                      {ins.trail_trigger_pct!=null && <span style={{marginRight:8}}>Trig {(ins.trail_trigger_pct*100).toFixed(0)}%</span>}
+                      {ins.target_pct!=null && <span style={{marginRight:8}}>T1 {(ins.target_pct*100).toFixed(0)}%</span>}
+                      {ins.target_upgraded_pct!=null && <span style={{marginRight:8}}>T2 {(ins.target_upgraded_pct*100).toFixed(0)}%</span>}
+                      {ins.target_upgrade_mult!=null && <span>×{ins.target_upgrade_mult}</span>}
+                    </div>
+                  )}
                   <div style={{fontFamily:"monospace",fontSize:10,color:"#334155",marginTop:2}}>{ins.symbol}</div>
                 </div>
                 <div style={{display:"flex",gap:5}}>

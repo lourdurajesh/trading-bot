@@ -309,6 +309,29 @@ _MAX_CAPITAL_PCT    = 0.10        # max 10% of free capital per new trade
 _FILL_POLL_SECS     = 30          # order fill confirmation timeout (seconds)
 
 
+_SL_OVERRIDE_FIELDS = (
+    "sl_debit_pct", "trail_debit_pct", "trail_trigger_pct",
+    "target_pct", "target_upgraded_pct", "target_upgrade_mult",
+)
+
+
+def _merged_strat_cfg(instrument: str, strategy: str) -> dict:
+    """Return strategy config overlaid with any per-instrument overrides.
+
+    Instrument overrides (stored in MCX_CONTRACTS) take precedence over the
+    strategy-level defaults for any field that has been explicitly set (non-None).
+    This lets Silver use a wider SL while Copper uses a tighter one — without
+    touching the shared strategy config.
+    """
+    base = dict(MCX_STRATEGY_CONFIG.get(strategy, {}))
+    instr_cfg = MCX_CONTRACTS.get(instrument, {})
+    for field in _SL_OVERRIDE_FIELDS:
+        val = instr_cfg.get(field)
+        if val is not None:
+            base[field] = val
+    return base
+
+
 def _debit_sl_price(spot: float, direction: str, net_debit: float, strat_cfg: dict) -> float:
     """Compute initial SL spot level from debit cost.
 
@@ -395,7 +418,7 @@ class CommodityOptionsLearning:
         _VALID_MONTHS.clear()
         for r in rows:
             name = r["name"]
-            MCX_CONTRACTS[name] = {
+            instr = {
                 "lot_size":    r["lot_size"],
                 "strike_step": r["strike_step"],
                 "typical_iv":  r["typical_iv"],
@@ -403,6 +426,14 @@ class CommodityOptionsLearning:
                 "min_price":   r["min_price"],
                 "max_price":   r["max_price"],
             }
+            # Per-instrument SL/target overrides — None means "inherit strategy default"
+            for _ov in ("sl_debit_pct", "trail_debit_pct", "trail_trigger_pct",
+                        "target_pct", "target_upgraded_pct", "target_upgrade_mult"):
+                try:
+                    instr[_ov] = r[_ov]  # will be None if column is NULL
+                except IndexError:
+                    instr[_ov] = None
+            MCX_CONTRACTS[name] = instr
             _ROLLOVER_BUFFER[name] = r["rollover_buffer"]
             months = json.loads(r["valid_months"] or "[]")
             if months:
@@ -475,7 +506,7 @@ class CommodityOptionsLearning:
             ).fetchall()
         result = []
         for r in rows:
-            result.append({
+            entry = {
                 "name":            r["name"],
                 "enabled":         bool(r["enabled"]),
                 "lot_size":        r["lot_size"],
@@ -487,7 +518,13 @@ class CommodityOptionsLearning:
                 "rollover_buffer": r["rollover_buffer"],
                 "valid_months":    json.loads(r["valid_months"] or "[]"),
                 "symbol":          _fyers_sym(r["name"]),
-            })
+            }
+            for _ov in _SL_OVERRIDE_FIELDS:
+                try:
+                    entry[_ov] = r[_ov]   # None if not set
+                except IndexError:
+                    entry[_ov] = None
+            result.append(entry)
         return result
 
     def enable_commodity(self, name: str) -> None:
@@ -547,6 +584,9 @@ class CommodityOptionsLearning:
         allowed = {
             "lot_size", "strike_step", "typical_iv", "price_unit",
             "min_price", "max_price", "rollover_buffer", "valid_months",
+            # Per-instrument SL/target overrides (None clears back to strategy default)
+            "sl_debit_pct", "trail_debit_pct", "trail_trigger_pct",
+            "target_pct", "target_upgraded_pct", "target_upgrade_mult",
         }
         updates = {}
         for k, v in fields.items():
@@ -919,7 +959,8 @@ class CommodityOptionsLearning:
                 _row = _conn.execute(
                     "SELECT exit_reason, exit_time, strategy FROM commodity_learning_trades "
                     "WHERE instrument=? AND status='CLOSED' "
-                    "AND exit_reason IN ('FALSE_BREAKOUT','STOP_SPOT','STOP_60PCT','MANUAL_CLOSE') "
+                    "AND exit_reason IN "
+                    "  ('FALSE_BREAKOUT','STOP_SPOT','STOP_60PCT','MANUAL_CLOSE','TARGET_PCT') "
                     "ORDER BY exit_time DESC LIMIT 1",
                     (short,),
                 ).fetchone()
@@ -932,7 +973,12 @@ class CommodityOptionsLearning:
                     _strat_cfg = MCX_STRATEGY_CONFIG.get(_strategy or "", {})
                     # MANUAL_CLOSE always applies cooldown; others respect cooldown_enabled flag
                     _cd_enabled = (_exit_reason == "MANUAL_CLOSE") or _strat_cfg.get("cooldown_enabled", True)
-                    _cd_hours   = _strat_cfg.get("cooldown_hours", 3)
+                    _base_hours = _strat_cfg.get("cooldown_hours", 3)
+                    # TARGET_PCT uses half the stop cooldown (min 1h) — matches live logic
+                    if _exit_reason == "TARGET_PCT":
+                        _cd_hours = max(1.0, _base_hours * 0.5)
+                    else:
+                        _cd_hours = _base_hours
                     if _cd_enabled:
                         _resume = _exit_time + timedelta(hours=_cd_hours)
                         if now < _resume:
@@ -1172,9 +1218,9 @@ class CommodityOptionsLearning:
                 # sl_price is derived from debit cost so expensive spreads (high IV)
                 # get more room and cheap spreads get tighter protection.
                 "sl_price":    _debit_sl_price(spot, direction, net_debit,
-                                               MCX_STRATEGY_CONFIG.get(strategy_name, {})),
+                                               _merged_strat_cfg(instrument, strategy_name)),
                 "peak_spot":   round(spot, 2),
-                "target_pct":  MCX_STRATEGY_CONFIG.get(strategy_name, {}).get("target_pct", 0.50),
+                "target_pct":  _merged_strat_cfg(instrument, strategy_name).get("target_pct", 0.50),
                 "trail_active": False,
             },
         }
@@ -1219,7 +1265,9 @@ class CommodityOptionsLearning:
             est_pnl   = round(spot_move * 0.35, 2)
 
             # ── Trailing SL & Dynamic Target ──────────────────────────────────────
-            strat_cfg       = MCX_STRATEGY_CONFIG.get(strategy, {})
+            # Merge strategy defaults with per-instrument overrides so Silver/Copper
+            # can each have appropriate SL widths without touching shared strategy config.
+            strat_cfg       = _merged_strat_cfg(instrument, strategy)
             sl_debit_pct    = strat_cfg.get("sl_debit_pct",        0.40)
             trail_debit_pct = strat_cfg.get("trail_debit_pct",     0.30)
             trail_trig_pct  = strat_cfg.get("trail_trigger_pct",   0.50)
@@ -1278,10 +1326,17 @@ class CommodityOptionsLearning:
                         trade_meta["trail_active"] = True
                         sl_updated = True
 
-            # Upgrade target once momentum is ≥ tgt_up_mult × SL distance.
-            # When upgrading, lock in the old target level as the new SL floor so
-            # a reversal after T2 extension can't give back profit below T1.
-            if favorable_move >= tgt_up_mult * sl_dist and target_pct < tgt_up_pct:
+            # Upgrade target once momentum is ≥ tgt_up_mult × SL distance,
+            # capped at 90% of T1 distance so the upgrade always fires before
+            # the initial target exit — without this cap, low-R:R spreads (e.g.
+            # Crude Oil R:R ≈ 1.5) have 2×SL > T1_dist, meaning T1 exits first
+            # and the dynamic target never triggers.
+            t1_dist_pts = round((max_profit * target_pct) / _SPREAD_DELTA, 2)
+            upgrade_trigger = min(
+                round(tgt_up_mult * sl_dist, 2),
+                round(t1_dist_pts * 0.90, 2),   # hard cap: never exceed 90% of T1
+            )
+            if favorable_move >= upgrade_trigger and target_pct < tgt_up_pct:
                 old_target_pct = target_pct
                 target_pct     = tgt_up_pct
                 sl_updated     = True
@@ -1383,13 +1438,23 @@ class CommodityOptionsLearning:
                     f"{exit_reason} spot={spot:.2f} pnl=₹{pnl_approx:+.0f} "
                     f"({pnl_r:+.1f}R)"
                 )
-                if exit_reason in ("FALSE_BREAKOUT", "STOP_SPOT"):
-                    strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
-                    if strat_cfg.get("cooldown_enabled", True):
-                        hours = strat_cfg.get("cooldown_hours", 3)
-                        self._entry_cooldown[instrument] = now + timedelta(hours=hours)
+                strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
+                if strat_cfg.get("cooldown_enabled", True):
+                    base_hours = strat_cfg.get("cooldown_hours", 3)
+                    if exit_reason in ("FALSE_BREAKOUT", "STOP_SPOT", "STOP_60PCT"):
+                        cd_hours = base_hours
+                    elif exit_reason == "TARGET_PCT":
+                        # After a winning exit don't re-enter immediately — the move
+                        # is likely extended and the next signal will chase. Half the
+                        # stop cooldown, minimum 1 hour.
+                        cd_hours = max(1.0, base_hours * 0.5)
+                    else:
+                        cd_hours = 0
+                    if cd_hours > 0:
+                        self._entry_cooldown[instrument] = now + timedelta(hours=cd_hours)
                         logger.info(
-                            f"[CommOpts] {instrument} entry cooldown {hours}h — "
+                            f"[CommOpts] {instrument} entry cooldown {cd_hours:.1f}h "
+                            f"after {exit_reason} — "
                             f"no new trades until {self._entry_cooldown[instrument].strftime('%H:%M')}"
                         )
 
@@ -1618,6 +1683,20 @@ class CommodityOptionsLearning:
                     enabled          INTEGER NOT NULL DEFAULT 1
                 )
             """)
+            # Per-instrument SL/target overrides (nullable = use strategy default)
+            for _col_sql in [
+                "ALTER TABLE commodity_instruments ADD COLUMN sl_debit_pct       REAL",
+                "ALTER TABLE commodity_instruments ADD COLUMN trail_debit_pct    REAL",
+                "ALTER TABLE commodity_instruments ADD COLUMN trail_trigger_pct  REAL",
+                "ALTER TABLE commodity_instruments ADD COLUMN target_pct         REAL",
+                "ALTER TABLE commodity_instruments ADD COLUMN target_upgraded_pct REAL",
+                "ALTER TABLE commodity_instruments ADD COLUMN target_upgrade_mult REAL",
+            ]:
+                try:
+                    conn.execute(_col_sql)
+                except Exception:
+                    pass  # column already exists
+
             # Seed built-in instruments — INSERT OR IGNORE preserves user edits
             conn.executemany("""
                 INSERT OR IGNORE INTO commodity_instruments

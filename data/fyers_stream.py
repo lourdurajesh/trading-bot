@@ -52,6 +52,8 @@ class FyersStream:
         self._reconnect_delay = 5
         self._max_reconnects  = 10
         self._gap_start       = None
+        # Signals _connect() to exit its sleep loop when the socket closes unexpectedly
+        self._ws_closed = threading.Event()
         # Symbols rejected by Fyers (-300); excluded from future subscriptions
         self._invalid_symbols: set[str] = set()
 
@@ -88,12 +90,23 @@ class FyersStream:
     # ─────────────────────────────────────────────────────────────
 
     def _run(self) -> None:
-        """Main loop — connects once and stays connected."""
+        """Main loop — connects and reconnects on disconnect with exponential backoff."""
         self._init_rest_client()
         self._seed_historical_data()
 
-        logger.info("Connecting to Fyers WebSocket...")
-        self._connect()   # blocks until self._running = False
+        attempt = 0
+        while self._running:
+            logger.info(f"[FyersStream] Connecting (attempt {attempt + 1})...")
+            self._connect()
+            if not self._running:
+                break
+            attempt += 1
+            delay = min(self._reconnect_delay * (2 ** min(attempt - 1, 4)), 60)
+            logger.warning(
+                f"[FyersStream] WebSocket closed — reconnecting in {delay}s "
+                f"(#{attempt})"
+            )
+            time.sleep(delay)
 
     def _init_rest_client(self) -> None:
         """Initialise the Fyers REST client for historical data fetching."""
@@ -109,25 +122,26 @@ class FyersStream:
         logger.info("Fyers REST client initialised.")
 
     def _connect(self) -> None:
-        """Create WebSocket client and start streaming."""
+        """Create WebSocket client and start streaming. Returns when WS closes."""
         if not settings.FYERS_ACCESS_TOKEN:
             logger.error("Cannot connect: FYERS_ACCESS_TOKEN is empty.")
             return
 
+        self._ws_closed.clear()
         self._ws_client = data_ws.FyersDataSocket(
             access_token=settings.FYERS_ACCESS_TOKEN,
             log_path="logs/",
             litemode=True,
             write_to_file=False,
-            reconnect=False,        # we handle reconnect ourselves
+            reconnect=False,        # we handle reconnect in _run()
             on_connect=self._on_connect,
             on_close=self._on_close,
             on_error=self._on_error,
             on_message=self._on_message,
         )
         self._ws_client.connect()
-        # Block here until shutdown is requested
-        while self._running:
+        # Block until shutdown OR socket closes (set by _on_close)
+        while self._running and not self._ws_closed.is_set():
             time.sleep(1)
 
     # ─────────────────────────────────────────────────────────────
@@ -146,6 +160,7 @@ class FyersStream:
         if self._running:
             logger.warning(f"Fyers WebSocket closed: [{code}] — will reconnect")
             self._gap_start = datetime.now(tz=IST)
+            self._ws_closed.set()   # wake up _connect()'s sleep loop
         else:
             logger.info("FyersStream: closed cleanly on shutdown.")
 

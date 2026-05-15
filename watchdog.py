@@ -115,14 +115,22 @@ class Watchdog:
 
             if self._restart_count > MAX_RESTARTS:
                 logger.critical(
-                    f"Max restarts ({MAX_RESTARTS}) reached. "
-                    f"Stopping watchdog."
+                    f"Max restarts ({MAX_RESTARTS}) reached — pausing 30 min before retry."
                 )
                 self._send_alert(
-                    f"🚨 Bot failed {MAX_RESTARTS} times — "
-                    f"watchdog giving up. Manual intervention required."
+                    f"🚨 Bot failed {MAX_RESTARTS} times.\n"
+                    f"Watchdog pausing 30 min then resetting counters.\n"
+                    f"Check logs for root cause — bot is NOT running during this window."
                 )
-                self._running = False
+                # Sleep in 30-second increments so Ctrl+C still exits cleanly
+                for _ in range(60):
+                    if not self._running:
+                        return
+                    time.sleep(30)
+                # Reset and try again from scratch
+                self._restart_count = 0
+                self._consecutive_crashes = 0
+                logger.info("Watchdog recovery pause done — resuming restart attempts.")
                 return
 
             # Reconcile positions before restart
@@ -136,12 +144,14 @@ class Watchdog:
         """Start main.py as a subprocess."""
         self._last_start_time = time.time()
         try:
+            # Redirect stdout/stderr to DEVNULL — the bot writes to logs/bot.log
+            # via its own logging setup. Piping through the watchdog risks the pipe
+            # buffer filling up if the reader thread dies, which would freeze the bot
+            # even though the watchdog still sees the process as alive.
             self._process = subprocess.Popen(
                 [PYTHON, BOT_SCRIPT],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                text   = True,
-                bufsize = 1,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
                 cwd    = os.path.dirname(BOT_SCRIPT),
             )
             logger.info(f"Bot started — PID {self._process.pid}")
@@ -149,14 +159,6 @@ class Watchdog:
                 f"✅ Bot started (PID {self._process.pid})\n"
                 f"Restart count: {self._restart_count}"
             )
-
-            # Start log forwarder thread
-            import threading
-            t = threading.Thread(
-                target = self._forward_logs,
-                daemon = True,
-            )
-            t.start()
 
         except Exception as e:
             logger.error(f"Failed to start bot: {e}")
