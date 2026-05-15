@@ -68,7 +68,7 @@ _INSTRUMENT_SEEDS = [
     ("COPPER",     2500,   10, 0.25, "INR/kg",      400,   2500,  5, []),
     ("NATURALGAS", 1250,   10, 0.55, "INR/mmBtu",   100,    600, 32, []),
     ("SILVERMICRO",   5, 1000, 0.28, "INR/kg",    60000, 500000, 28, [3,5,7,9,12]),
-    ("COPPERMINI",  250,    5, 0.25, "INR/kg",      400,   2500,  5, []),
+    ("COPPERM",  250,    5, 0.25, "INR/kg",      400,   2500,  5, []),
 ]
 
 # ─────────────────────────────────────────────────────────────────
@@ -359,6 +359,8 @@ class CommodityOptionsLearning:
         self._cooldown_cleared: set[str] = set()        # instruments manually force-cleared via API
         self._trade_mode: str = "PAPER"                 # "PAPER" or "REAL"
         self._enabled_commodities: set[str] = set()
+        # Wired by main.py to trigger stream resubscription when a rollover symbol changes
+        self._on_instrument_update = None
         self._init_db()
         self._load_trade_mode()
         self._load_enabled_commodities()
@@ -595,6 +597,10 @@ class CommodityOptionsLearning:
             updates[k] = json.dumps(v) if k == "valid_months" else v
         if not updates:
             return
+
+        rollover_changing = any(k in updates for k in ("rollover_buffer", "valid_months"))
+        old_symbol = _fyers_sym(name) if rollover_changing else None
+
         sets = ", ".join(f"{k}=?" for k in updates)
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
@@ -603,6 +609,11 @@ class CommodityOptionsLearning:
             )
         self._load_contracts_from_db()
         logger.info(f"[CommOpts] {name} updated: {list(updates)}")
+
+        if rollover_changing and old_symbol != _fyers_sym(name):
+            logger.info(f"[CommOpts] {name} contract changed: {old_symbol} → {_fyers_sym(name)}")
+            if self._on_instrument_update:
+                self._on_instrument_update()
 
     def remove_instrument(self, name: str) -> None:
         name = name.upper()

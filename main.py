@@ -137,6 +137,12 @@ class TradingBot:
         self._fyers_stream.start()
         self._alpaca_stream.start()
 
+        # Wire MCX resubscription: when a rollover param change shifts the active
+        # contract mid-run, commodity_options notifies the stream to resubscribe
+        # and seed history for the new symbol without requiring a bot restart.
+        from commodity_options_learning import commodity_options
+        commodity_options._on_instrument_update = self._fyers_stream.refresh_mcx_subscriptions
+
         # Step 3: Start dashboard API in background thread
         self._start_dashboard()
 

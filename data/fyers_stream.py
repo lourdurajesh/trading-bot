@@ -266,6 +266,56 @@ class FyersStream:
         except Exception as e:
             logger.error(f"[FyersStream] Resubscribe failed: {e}")
 
+    def refresh_mcx_subscriptions(self) -> None:
+        """Subscribe to any new MCX symbols and seed their history.
+
+        Called by CommodityOptionsLearning when a rollover change shifts the
+        active contract mid-run (e.g. SILVER26MAYFUT → SILVER26JULFUT).
+        Runs in a background thread so it never blocks the evaluation loop.
+        """
+        if not self._running or self._ws_client is None:
+            return
+        threading.Thread(
+            target=self._do_refresh_mcx,
+            daemon=True,
+            name="MCXRefresh",
+        ).start()
+
+    def _do_refresh_mcx(self) -> None:
+        import config.watchlist as _wl
+        from commodity_options_learning import _fyers_sym, ALL_MCX_SHORTS
+
+        mcx_symbols = [_fyers_sym(s) for s in ALL_MCX_SHORTS]
+        new_symbols  = [s for s in mcx_symbols if s not in self._invalid_symbols and store.get_ltp(s) is None]
+
+        if not new_symbols:
+            return
+
+        logger.info(f"[FyersStream] MCX refresh — new symbols: {new_symbols}")
+
+        # Re-subscribe to full set (includes new symbols, keeps existing ones active)
+        try:
+            all_symbols = list({s for s in _wl.ALL_NSE_SYMBOLS + mcx_symbols if s not in self._invalid_symbols})
+            self._ws_client.subscribe(symbols=all_symbols, data_type="SymbolUpdate")
+            logger.info(f"[FyersStream] MCX refresh — resubscribed {len(all_symbols)} symbols")
+        except Exception as e:
+            logger.error(f"[FyersStream] MCX refresh subscribe failed: {e}")
+
+        if not self._fyers_client:
+            return
+
+        for sym in new_symbols:
+            try:
+                df = self._fetch_historical(sym, "60", 90)
+                if df is not None and len(df) > 0:
+                    store.load_historical(sym, "1H", df)
+                    logger.info(f"[FyersStream] MCX refresh — seeded {len(df)} 1H bars for {sym}")
+                else:
+                    logger.warning(f"[FyersStream] MCX refresh — no history returned for {sym}")
+            except Exception as e:
+                logger.warning(f"[FyersStream] MCX refresh seed failed for {sym}: {e}")
+            time.sleep(0.3)
+
     # ─────────────────────────────────────────────────────────────
     # INTERNAL — historical data seeding
     # ─────────────────────────────────────────────────────────────
