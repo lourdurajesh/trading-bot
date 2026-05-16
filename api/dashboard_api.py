@@ -1574,6 +1574,34 @@ def get_portfolio_analysis():
 # STRATEGY CONFIGURATION
 # ─────────────────────────────────────────────────────────────────
 
+@app.get("/param-changes")
+def get_param_changes(limit: int = 100, strategy: str = None):
+    """
+    Audit trail of every strategy param change made via dashboard or auto-hint.
+    Returns most-recent first.
+    ?limit=N           max rows (default 100)
+    ?strategy=trend_follow   filter by strategy
+    """
+    import sqlite3
+    from config.settings import DB_PATH
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            if strategy:
+                rows = conn.execute(
+                    "SELECT * FROM param_changes WHERE strategy=? ORDER BY id DESC LIMIT ?",
+                    (strategy, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM param_changes ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return {"changes": [dict(r) for r in rows], "count": len(rows)}
+    except Exception as e:
+        return {"changes": [], "error": str(e)}
+
+
 @app.get("/config/strategies")
 def get_strategy_config():
     """
@@ -1588,7 +1616,7 @@ def get_strategy_config():
 
 
 @app.post("/config/strategies/{strategy}/{param}")
-def update_strategy_param(strategy: str, param: str, body: dict):
+def update_strategy_param(strategy: str, param: str, body: dict, _: None = Depends(_require_api_key)):
     """
     Update a single strategy parameter at runtime.
     Body: {"value": <new_value>}

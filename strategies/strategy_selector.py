@@ -56,6 +56,12 @@ class StrategySelector:
         self._gap_fade       = GapFadeStrategy()
         self._momentum_rev   = MomentumReversalStrategy()
 
+        # Re-push any persisted overrides now that all strategy modules are imported.
+        # _load_overrides() ran at strategy_config import time (before these modules
+        # existed in sys.modules), so the module-global setattr had no effect then.
+        from config.strategy_config import reapply_all_overrides
+        reapply_all_overrides()
+
         # Thread pool for parallel options strategy evaluation.
         # Options strategies block on Fyers chain API calls — running them
         # concurrently cuts wall-clock time from N×latency to ~1×latency

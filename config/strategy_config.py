@@ -7,8 +7,13 @@ Updating a value here pushes it into the strategy module's global namespace so
 the next evaluate() call picks it up automatically.
 """
 
+import json
 import logging
+import os
+
 logger = logging.getLogger(__name__)
+
+_OVERRIDES_PATH = os.path.join("db", "config_overrides.json")
 
 # Schema: strategy_key → { param_name → {value, type, min?, max?, description} }
 # "enabled" is a special bool — applied to the strategy instance, not a module global.
@@ -118,6 +123,75 @@ _SELECTOR_ATTR = {
 }
 
 
+def _load_overrides() -> None:
+    """Load persisted overrides from db/config_overrides.json and apply to STRATEGY_CONFIGS.
+    Called once at module import time. Values are applied in-memory only here;
+    call reapply_all_overrides() after strategy modules are imported to push to module globals.
+    """
+    if not os.path.exists(_OVERRIDES_PATH):
+        return
+    try:
+        with open(_OVERRIDES_PATH, "r", encoding="utf-8") as f:
+            overrides: dict = json.load(f)
+        count = 0
+        for strategy, params in overrides.items():
+            if strategy not in STRATEGY_CONFIGS:
+                continue
+            for param, value in params.items():
+                if param not in STRATEGY_CONFIGS[strategy]:
+                    continue
+                STRATEGY_CONFIGS[strategy][param]["value"] = value
+                _apply_to_module(strategy, param, value)   # no-op if module not yet in sys.modules
+                count += 1
+        if count:
+            logger.info(f"[StrategyConfig] Loaded {count} override(s) from {_OVERRIDES_PATH}")
+    except Exception as e:
+        logger.warning(f"[StrategyConfig] Could not load overrides from {_OVERRIDES_PATH}: {e}")
+
+
+def _save_overrides() -> None:
+    """Persist all current param values to db/config_overrides.json."""
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(_OVERRIDES_PATH)), exist_ok=True)
+        snapshot = {
+            strat: {param: entry["value"] for param, entry in params.items()}
+            for strat, params in STRATEGY_CONFIGS.items()
+        }
+        with open(_OVERRIDES_PATH, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, indent=2)
+    except Exception as e:
+        logger.warning(f"[StrategyConfig] Could not save overrides to {_OVERRIDES_PATH}: {e}")
+
+
+def _record_param_change(strategy: str, param: str, old_value: str, new_value: str,
+                         reason: str = "manual") -> None:
+    """Write one row to the param_changes audit table in trades.db."""
+    try:
+        import sqlite3
+        from config.settings import DB_PATH
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        ts = datetime.now(tz=ZoneInfo("Asia/Kolkata")).isoformat()
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO param_changes (ts, strategy, param, old_value, new_value, reason) "
+                "VALUES (?,?,?,?,?,?)",
+                (ts, strategy, param, old_value, new_value, reason),
+            )
+    except Exception as e:
+        logger.warning(f"[StrategyConfig] Could not write param_changes: {e}")
+
+
+def reapply_all_overrides() -> None:
+    """Re-push all current STRATEGY_CONFIGS values to strategy module globals.
+    Call this once after all strategy modules have been imported (from StrategySelector.__init__).
+    Needed because _load_overrides() runs at import time before strategy modules exist.
+    """
+    for strategy, params in STRATEGY_CONFIGS.items():
+        for param, entry in params.items():
+            _apply_to_module(strategy, param, entry["value"])
+
+
 def get_schema() -> dict:
     """Return full schema with type/min/max/description for the UI."""
     return STRATEGY_CONFIGS
@@ -164,8 +238,11 @@ def update(strategy: str, param: str, value) -> tuple[bool, str]:
         if "max" in entry and value > entry["max"]:
             return False, f"Value {value} above maximum {entry['max']}"
 
+    old_value = str(entry["value"])
     STRATEGY_CONFIGS[strategy][param]["value"] = value
     _apply_to_module(strategy, param, value)
+    _save_overrides()
+    _record_param_change(strategy, param, old_value, str(value))
     logger.info(f"[StrategyConfig] {strategy}.{param} = {value}")
     return True, ""
 
@@ -219,3 +296,9 @@ def _set_instance_enabled(strategy: str, value: bool) -> None:
             inst.enabled = value
     except Exception as e:
         logger.warning(f"[StrategyConfig] Could not toggle {strategy}.enabled: {e}")
+
+
+# Apply any persisted overrides immediately at import time.
+# Strategy module globals are patched later by reapply_all_overrides()
+# once all strategy modules are in sys.modules (called from StrategySelector.__init__).
+_load_overrides()

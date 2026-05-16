@@ -385,6 +385,17 @@ class PortfolioTracker:
                     conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typedef}")
                 except Exception:
                     pass
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS param_changes (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts        TEXT NOT NULL,
+                    strategy  TEXT NOT NULL,
+                    param     TEXT NOT NULL,
+                    old_value TEXT,
+                    new_value TEXT,
+                    reason    TEXT DEFAULT 'manual'
+                )
+            """)
         logger.info(f"[Portfolio] Database initialised at {DB_PATH}")
 
     def _save_position(self, pos: Position) -> None:
