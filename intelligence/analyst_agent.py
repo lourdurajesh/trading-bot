@@ -31,15 +31,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-import requests
-
 from config.settings import TOTAL_CAPITAL
 
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL   = "claude-sonnet-4-6"          # latest as of 2026-03
-ANTHROPIC_URL     = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_MODEL   = "claude-sonnet-4-6"   # Sonnet 4.6 — fast, cost-effective for trade analysis
 MAX_TOKENS        = 1000
 
 
@@ -67,7 +64,19 @@ class AnalystAgent:
 
     def __init__(self):
         self._enabled = bool(ANTHROPIC_API_KEY)
-        if not self._enabled:
+        self._client  = None
+        if self._enabled:
+            try:
+                from anthropic import Anthropic
+                self._client = Anthropic(api_key=ANTHROPIC_API_KEY)
+                logger.info("[Analyst] Anthropic SDK initialised — real analysis enabled.")
+            except ImportError:
+                logger.warning(
+                    "[Analyst] anthropic package not installed — falling back to simulation. "
+                    "Run: pip install anthropic"
+                )
+                self._enabled = False
+        else:
             logger.info(
                 "[Analyst] ANTHROPIC_API_KEY not set — running in simulation mode. "
                 "Add key to .env to activate real analysis."
@@ -84,30 +93,19 @@ class AnalystAgent:
         Run full analyst evaluation on a trade signal.
         Returns AnalystVerdict with conviction score and verdict.
         """
-        if not self._enabled:
+        if not self._enabled or self._client is None:
             return self._simulate(signal, news_items, macro, fundamental)
 
         prompt = self._build_prompt(signal, news_items, macro, fundamental)
 
         try:
-            response = requests.post(
-                ANTHROPIC_URL,
-                headers={
-                    "x-api-key":         ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type":      "application/json",
-                },
-                json={
-                    "model":      ANTHROPIC_MODEL,
-                    "max_tokens": MAX_TOKENS,
-                    "system":     self._system_prompt(),
-                    "messages":   [{"role": "user", "content": prompt}],
-                },
-                timeout=30,
+            response = self._client.messages.create(
+                model=ANTHROPIC_MODEL,
+                max_tokens=MAX_TOKENS,
+                system=self._system_prompt(),
+                messages=[{"role": "user", "content": prompt}],
             )
-            response.raise_for_status()
-            data    = response.json()
-            content = data["content"][0]["text"]
+            content = response.content[0].text
             verdict = self._parse_response(content)
             logger.info(
                 f"[Analyst] {signal.symbol} → {verdict.verdict} "

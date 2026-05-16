@@ -34,10 +34,16 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 IST = ZoneInfo("Asia/Kolkata")
 from fastapi.middleware.cors import CORSMiddleware
 
-from data.data_store import store
+from fastapi.responses import FileResponse, HTMLResponse
+from pathlib import Path
+
+from data.data_store import store, MAX_TICKS
 from execution.order_manager import order_manager
 from risk.portfolio_tracker import portfolio_tracker
 from risk.risk_manager import risk_manager
+
+_DASHBOARD_DIR = Path(__file__).parent.parent / "dashboard"
+_BOT_START_TIME = datetime.now(tz=IST)
 
 logger = logging.getLogger(__name__)
 
@@ -906,9 +912,62 @@ def get_daily_review(date_str: str = None, capital: float = None):
         return {"error": str(e)}
 
 
+@app.get("/")
+def serve_dashboard():
+    """Serve the main React dashboard."""
+    f = _DASHBOARD_DIR / "index.html"
+    return FileResponse(str(f)) if f.exists() else HTMLResponse("<p>Dashboard not found</p>", status_code=404)
+
+
+@app.get("/monitor")
+def serve_monitor():
+    """Serve the lightweight monitoring page (no React, works on 1 GB server)."""
+    f = _DASHBOARD_DIR / "monitor.html"
+    return FileResponse(str(f)) if f.exists() else HTMLResponse("<p>monitor.html not found</p>", status_code=404)
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "time": datetime.now(tz=IST).isoformat()}
+    """
+    Health check with system metrics.
+    Returns RAM, CPU, uptime, thread count and data-store stats.
+    Requires psutil (pip install psutil). Degrades gracefully if unavailable.
+    """
+    import os
+    result: dict = {"status": "ok", "time": datetime.now(tz=IST).isoformat()}
+
+    # ── Process / system metrics ──────────────────────────────────
+    try:
+        import psutil
+        proc = psutil.Process(os.getpid())
+        vm   = psutil.virtual_memory()
+        uptime_h = round(
+            (datetime.now(tz=IST) - _BOT_START_TIME).total_seconds() / 3600, 1
+        )
+        result["system"] = {
+            "ram_used_mb":  round(proc.memory_info().rss / 1024 / 1024, 1),
+            "ram_total_mb": round(vm.total / 1024 / 1024, 1),
+            "ram_pct":      round(vm.percent, 1),
+            "cpu_pct":      round(proc.cpu_percent(interval=0.1), 1),
+            "threads":      proc.num_threads(),
+            "uptime_h":     uptime_h,
+        }
+    except ImportError:
+        result["system"] = {"note": "psutil not installed — run: pip install psutil"}
+    except Exception as e:
+        result["system"] = {"error": str(e)}
+
+    # ── Data store snapshot ───────────────────────────────────────
+    try:
+        symbols = store.get_active_symbols()
+        result["data_store"] = {
+            "symbols":   len(symbols),
+            "max_ticks": MAX_TICKS,
+        }
+    except Exception:
+        pass
+
+    return result
 
 
 @app.get("/system/alerts")

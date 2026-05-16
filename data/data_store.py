@@ -22,8 +22,10 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Maximum raw ticks kept per symbol (older ticks are discarded)
-MAX_TICKS = 5000
+# Maximum raw ticks kept per symbol (older ticks are discarded).
+# 1000 ticks ≈ 16 minutes of data at 1 tick/sec — more than enough to build
+# all timeframe candles. 5000 was ~40 MB across 40 symbols on a 1 GB server.
+MAX_TICKS = 1000
 
 # Maximum candles kept per symbol per timeframe
 MAX_CANDLES = 500

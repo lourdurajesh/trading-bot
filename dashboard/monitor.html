@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AlphaLens Monitor</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Courier New', monospace; background: #0d1117; color: #e6edf3; padding: 16px; font-size: 14px; }
+    h1 { color: #58a6ff; margin-bottom: 4px; font-size: 1.1rem; }
+    #ts { color: #8b949e; font-size: 0.75rem; margin-bottom: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; margin-bottom: 10px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; }
+    .card h2 { font-size: 0.65rem; color: #8b949e; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+    .val { font-size: 1.6rem; font-weight: bold; line-height: 1; }
+    .sub { font-size: 0.72rem; color: #8b949e; margin-top: 4px; }
+    .row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #21262d; }
+    .row:last-child { border-bottom: none; }
+    .label { color: #8b949e; }
+    .green  { color: #3fb950; }
+    .red    { color: #f85149; }
+    .yellow { color: #e3b341; }
+    .grey   { color: #8b949e; }
+    .alert-box { background: #2d1b20; border: 1px solid #f85149; border-radius: 4px; padding: 8px 10px; margin-top: 6px; color: #f85149; font-size: 0.8rem; }
+    .warn-box  { background: #2d2500; border: 1px solid #e3b341; border-radius: 4px; padding: 8px 10px; margin-top: 6px; color: #e3b341; font-size: 0.8rem; }
+    a { color: #58a6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>AlphaLens — System Monitor</h1>
+  <div id="ts">Connecting to API...</div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Bot Status</h2>
+      <div class="val grey" id="status">—</div>
+      <div class="sub" id="status-time"></div>
+    </div>
+    <div class="card">
+      <h2>Memory (RAM)</h2>
+      <div class="val grey" id="ram">—</div>
+      <div class="sub" id="ram-detail"></div>
+    </div>
+    <div class="card">
+      <h2>CPU Usage</h2>
+      <div class="val grey" id="cpu">—</div>
+      <div class="sub" id="cpu-sub">process CPU %</div>
+    </div>
+    <div class="card">
+      <h2>Uptime</h2>
+      <div class="val grey" id="uptime">—</div>
+      <div class="sub">since last restart</div>
+    </div>
+    <div class="card">
+      <h2>Threads</h2>
+      <div class="val grey" id="threads">—</div>
+      <div class="sub">active OS threads</div>
+    </div>
+    <div class="card">
+      <h2>Data Store</h2>
+      <div id="ds-content">
+        <div class="row"><span class="label">Symbols</span><span id="ds-sym">—</span></div>
+        <div class="row"><span class="label">Max ticks/sym</span><span id="ds-ticks">—</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:10px">
+    <h2>System Alerts</h2>
+    <div id="alerts"><span class="grey">Loading...</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Navigation</h2>
+    <div class="row"><span class="label">Full Dashboard</span><span><a id="dash-link" href="/">Open →</a></span></div>
+    <div class="row"><span class="label">API Health</span><span><a id="health-link" href="/health">/health</a></span></div>
+    <div class="row"><span class="label">Signal Health</span><span><a id="sig-link" href="/signals/health">/signals/health</a></span></div>
+    <div class="row"><span class="label">Services</span><span><a id="svc-link" href="/services/status">/services/status</a></span></div>
+  </div>
+
+<script>
+(function () {
+  // Determine API base URL — works whether opened as a file or served by FastAPI
+  const API = (window.location.protocol === 'file:')
+    ? 'http://localhost:8000'
+    : window.location.protocol + '//' + window.location.hostname + ':8000';
+
+  // Update nav links to use the correct API host
+  ['dash-link','health-link','sig-link','svc-link'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.href = API + el.getAttribute('href');
+  });
+
+  function color(val, warn, crit, reverse) {
+    if (val === null || val === undefined) return 'grey';
+    const v = parseFloat(val);
+    if (reverse) return v <= warn ? 'green' : v <= crit ? 'yellow' : 'red';
+    return v >= crit ? 'red' : v >= warn ? 'yellow' : 'green';
+  }
+
+  function set(id, text, cls) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    if (cls) el.className = 'val ' + cls;
+  }
+
+  async function refresh() {
+    try {
+      const [health, alerts] = await Promise.all([
+        fetch(API + '/health', { signal: AbortSignal.timeout(5000) }).then(r => r.json()),
+        fetch(API + '/system/alerts', { signal: AbortSignal.timeout(5000) }).then(r => r.json()),
+      ]);
+
+      document.getElementById('ts').textContent =
+        'Last updated: ' + new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST';
+
+      // Status
+      const ok = health.status === 'ok';
+      set('status', ok ? '✓  RUNNING' : '✗  ' + (health.status || 'ERROR'), ok ? 'green' : 'red');
+      document.getElementById('status-time').textContent = health.time ? health.time.replace('T', ' ').slice(0, 19) + ' IST' : '';
+
+      // System metrics
+      const s = health.system || {};
+      if (s.ram_used_mb !== undefined) {
+        const ramPct = s.ram_pct ?? 0;
+        set('ram', s.ram_used_mb + ' MB', color(ramPct, 70, 85));
+        document.getElementById('ram-detail').textContent =
+          ramPct + '% of ' + s.ram_total_mb + ' MB total';
+      } else if (s.note) {
+        set('ram', '—', 'grey');
+        document.getElementById('ram-detail').textContent = s.note;
+      }
+
+      if (s.cpu_pct !== undefined) {
+        set('cpu', s.cpu_pct + '%', color(s.cpu_pct, 50, 80));
+      }
+
+      if (s.uptime_h !== undefined) {
+        const h = s.uptime_h;
+        set('uptime', h >= 1 ? h.toFixed(1) + 'h' : Math.round(h * 60) + 'm', 'green');
+      }
+
+      if (s.threads !== undefined) {
+        set('threads', String(s.threads), color(s.threads, 30, 50));
+      }
+
+      // Data store
+      const d = health.data_store || {};
+      document.getElementById('ds-sym').textContent   = d.symbols   ?? '—';
+      document.getElementById('ds-ticks').textContent = d.max_ticks ?? '—';
+
+      // Alerts
+      const items = alerts.alerts ?? [];
+      if (items.length === 0) {
+        document.getElementById('alerts').innerHTML = '<span class="green">No active alerts — system healthy</span>';
+      } else {
+        document.getElementById('alerts').innerHTML = items.map(a => {
+          const cls = (a.severity === 'critical' || a.severity === 'error') ? 'alert-box' : 'warn-box';
+          return `<div class="${cls}">[${(a.severity || '?').toUpperCase()}] ${a.component || ''}: ${a.message || ''}</div>`;
+        }).join('');
+      }
+
+    } catch (err) {
+      document.getElementById('ts').textContent = 'ERROR: ' + err.message + ' — retrying in 5s';
+      set('status', '✗  UNREACHABLE', 'red');
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 5000);
+})();
+</script>
+</body>
+</html>

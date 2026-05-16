@@ -1,0 +1,63 @@
+# =============================================================================
+# trading-bot.service — systemd service for Oracle Cloud / Ubuntu / Oracle Linux
+#
+# DEPLOY STEPS:
+#   1. Edit paths below to match your server (search for /home/opc)
+#   2. sudo cp deploy/trading-bot.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable trading-bot        # auto-start on boot
+#   5. sudo systemctl start trading-bot
+#
+# USEFUL COMMANDS:
+#   sudo systemctl status trading-bot           # current state
+#   sudo journalctl -u trading-bot -f           # live logs (Ctrl+C to exit)
+#   sudo journalctl -u trading-bot --since today
+#   sudo systemctl restart trading-bot          # manual restart
+#   sudo systemctl stop trading-bot             # graceful stop
+# =============================================================================
+
+[Unit]
+Description=AlphaLens Trading Bot (via Watchdog)
+Documentation=https://github.com/your-org/trading-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+Group=opc
+
+# ── Paths — EDIT THESE ───────────────────────────────────────────────────────
+WorkingDirectory=/home/opc/trading-bot
+ExecStart=/home/opc/trading-bot/venv/bin/python watchdog.py
+# If no venv, use: ExecStart=/usr/bin/python3 watchdog.py
+
+# ── Environment ──────────────────────────────────────────────────────────────
+# Load .env file (Fyers tokens, API keys, etc.)
+EnvironmentFile=/home/opc/trading-bot/.env
+
+# ── Restart policy ───────────────────────────────────────────────────────────
+# systemd restarts the WATCHDOG if it exits. The watchdog itself restarts main.py
+# with exponential backoff. Two layers of crash recovery.
+Restart=always
+RestartSec=30
+
+# ── Resource limits for Oracle Cloud 1 GB free tier ─────────────────────────
+# Prevents OOM kill from taking down the whole server silently.
+# 800 MB ceiling leaves 200 MB for the OS.
+MemoryMax=800M
+MemorySwapMax=0
+
+# Kill the process group on stop (ensures all child threads die cleanly)
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# ── Logging to journald ───────────────────────────────────────────────────────
+# View with: sudo journalctl -u trading-bot -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-bot
+
+[Install]
+WantedBy=multi-user.target
