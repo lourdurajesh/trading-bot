@@ -31,7 +31,8 @@ ALPACA_BASE_URL    = (
 
 # "AUTO"   → signals fire and execute immediately after risk checks
 # "MANUAL" → signals queue in dashboard, you confirm each trade
-BOT_MODE = os.getenv("BOT_MODE", "MANUAL")   # start safe, switch to AUTO when confident
+BOT_MODE      = os.getenv("BOT_MODE", "MANUAL")   # start safe, switch to AUTO when confident
+PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"  # Bug 16: single source
 
 # ─────────────────────────────────────────
 # CAPITAL & RISK PARAMETERS
@@ -172,8 +173,9 @@ DB_PATH = os.getenv("DB_PATH", "db/trades.db")
 # DASHBOARD / API
 # ─────────────────────────────────────────
 
-API_HOST = os.getenv("API_HOST", "0.0.0.0")
-API_PORT = int(os.getenv("API_PORT", "8000"))
+API_HOST          = os.getenv("API_HOST", "0.0.0.0")
+API_PORT          = int(os.getenv("API_PORT", "8000"))
+DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")   # Bug 13: set a strong secret in .env
 
 # ─────────────────────────────────────────
 # NOTIFICATIONS

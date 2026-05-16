@@ -153,7 +153,10 @@ class TradingBot:
         logger.info(f"Warming up for {WARMUP_SECONDS} seconds...")
         time.sleep(WARMUP_SECONDS)
 
-        # Step 6: Catch-up conviction score if bot started mid-day (after 9:30 AM)
+        # Step 6: Reconcile any PENDING_CLOSE positions from a previous crash (Bug 1)
+        self._reconcile_pending_closes()
+
+        # Step 7: Catch-up conviction score if bot started mid-day (after 9:30 AM)
         self._catch_up_conviction_score()
 
         # Step 7: Run main evaluation loop
@@ -178,8 +181,9 @@ class TradingBot:
         except Exception:
             pass
         logger.info("Bot stopped.")
-        # Force exit — don't wait for daemon threads
-        os._exit(0)
+        # sys.exit raises SystemExit which allows atexit handlers and finally blocks to run;
+        # os._exit(0) would bypass them and could truncate in-flight DB writes.
+        sys.exit(0)
 
     # ─────────────────────────────────────────────────────────────
     # MAIN LOOP
@@ -418,6 +422,68 @@ class TradingBot:
     # ─────────────────────────────────────────────────────────────
     # HELPERS
     # ─────────────────────────────────────────────────────────────
+
+    def _reconcile_pending_closes(self) -> None:
+        """
+        Resolve any positions left in PENDING_CLOSE status from a previous crash (Bug 1).
+        PENDING_CLOSE means: the exit order was placed at the broker before the crash,
+        but portfolio_tracker.close_position() never ran. We check broker positions:
+          - If broker still shows the position as open: revert to OPEN (order was cancelled
+            or rejected during the crash) and let position_manager monitor it normally.
+          - If broker no longer shows it: treat as closed and mark it CLOSED in DB.
+        """
+        # Collect symbols whose Position object has status=PENDING_CLOSE
+        pending_symbols = [
+            symbol for symbol, pos in portfolio_tracker._open_positions.items()
+            if pos.status == "PENDING_CLOSE"
+        ]
+        if not pending_symbols:
+            return
+
+        logger.warning(
+            f"[Main] Found {len(pending_symbols)} PENDING_CLOSE position(s) from previous crash — "
+            f"reconciling with broker..."
+        )
+        pending = [{"symbol": s} for s in pending_symbols]
+
+        try:
+            discrepancies = fyers_broker.reconcile_positions()
+        except Exception as e:
+            logger.error(f"[Main] Could not fetch broker positions for reconciliation: {e}")
+            discrepancies = {}
+
+        for pos_dict in pending:
+            symbol = pos_dict["symbol"]
+            pos = portfolio_tracker.get_position(symbol)
+            if not pos:
+                continue
+
+            broker_has_position = symbol not in discrepancies or \
+                discrepancies.get(symbol, {}).get("issue") != "in_db_not_broker"
+
+            if broker_has_position:
+                # Broker still holds the position — the exit order probably didn't go through
+                pos.status = "OPEN"
+                portfolio_tracker._update_position_db(pos)
+                logger.warning(
+                    f"[Main] PENDING_CLOSE reverted to OPEN for {symbol}: "
+                    f"broker still holds position. Exit will be retried by position_manager."
+                )
+            else:
+                # Broker no longer has the position — exit completed during crash
+                ltp = store.get_ltp(symbol) or pos.entry_price
+                portfolio_tracker.close_position(symbol, ltp, "CRASH_RECONCILED")
+                logger.info(
+                    f"[Main] PENDING_CLOSE resolved for {symbol}: "
+                    f"broker confirms exit. Closed at ≈₹{ltp:.2f}."
+                )
+                try:
+                    from notifications.alert_service import alert_service
+                    alert_service.info(
+                        f"🔄 {symbol}: crash-exit reconciled — position closed at ≈₹{ltp:.2f}."
+                    )
+                except Exception:
+                    pass
 
     def _catch_up_conviction_score(self) -> None:
         """

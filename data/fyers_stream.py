@@ -49,9 +49,10 @@ class FyersStream:
         self._ws_client    = None
         self._running      = False
         self._thread: Optional[threading.Thread] = None
-        self._reconnect_delay = 5
-        self._max_reconnects  = 10
-        self._gap_start       = None
+        self._reconnect_delay     = 5
+        self._max_reconnects      = 10
+        self._consecutive_failures = 0   # Bug 9: tracks consecutive reconnect failures
+        self._gap_start            = None
         # Signals _connect() to exit its sleep loop when the socket closes unexpectedly
         self._ws_closed = threading.Event()
         # Symbols rejected by Fyers (-300); excluded from future subscriptions
@@ -101,12 +102,41 @@ class FyersStream:
             if not self._running:
                 break
             attempt += 1
+            self._consecutive_failures += 1
             delay = min(self._reconnect_delay * (2 ** min(attempt - 1, 4)), 60)
             logger.warning(
                 f"[FyersStream] WebSocket closed — reconnecting in {delay}s "
-                f"(#{attempt})"
+                f"(#{attempt}, consecutive failures: {self._consecutive_failures})"
             )
+
+            # Bug 9: alert and set system health when feed stays down too long
+            if self._consecutive_failures >= self._max_reconnects:
+                msg = (
+                    f"🔴 Fyers data feed DEAD — {consecutive_failures} consecutive "
+                    f"reconnect failures. Position monitoring is on STALE prices. "
+                    f"Check NSE/Fyers status immediately."
+                )
+                logger.critical(f"[FyersStream] {msg}")
+                try:
+                    from system_health import system_health
+                    system_health.set_alert("fyers_feed", msg, severity="critical")
+                except Exception:
+                    pass
+                try:
+                    from notifications.alert_service import alert_service
+                    alert_service.info(msg)
+                except Exception:
+                    pass
+
             time.sleep(delay)
+
+    def _on_connect_success(self) -> None:
+        """Called when WebSocket reconnects successfully — clears the feed-dead alert."""
+        try:
+            from system_health import system_health
+            system_health.clear_alert("fyers_feed")
+        except Exception:
+            pass
 
     def _init_rest_client(self) -> None:
         """Initialise the Fyers REST client for historical data fetching."""
@@ -151,6 +181,10 @@ class FyersStream:
     def _on_connect(self) -> None:
         logger.info("Fyers WebSocket connected. Subscribing to symbols...")
         self._subscribe()
+        # Successful connection — reset failure counter and clear any dead-feed alert (Bug 9)
+        if self._consecutive_failures > 0:
+            self._consecutive_failures = 0
+            self._on_connect_success()
         # Fill any data gap since last disconnect
         if hasattr(self, "_gap_start") and self._gap_start:
             self._fill_gap(self._gap_start)

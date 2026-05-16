@@ -117,10 +117,13 @@ class Watchdog:
                 logger.critical(
                     f"Max restarts ({MAX_RESTARTS}) reached — pausing 30 min before retry."
                 )
+                # Bug 10: list open positions so the user knows what needs manual attention
+                open_positions_msg = self._get_open_positions_summary()
                 self._send_alert(
                     f"🚨 Bot failed {MAX_RESTARTS} times.\n"
                     f"Watchdog pausing 30 min then resetting counters.\n"
-                    f"Check logs for root cause — bot is NOT running during this window."
+                    f"Check logs for root cause — bot is NOT running during this window.\n"
+                    f"{open_positions_msg}"
                 )
                 # Sleep in 30-second increments so Ctrl+C still exits cleanly
                 for _ in range(60):
@@ -225,7 +228,12 @@ class Watchdog:
 
             if result.returncode == 0:
                 logger.info("Token refreshed successfully")
-                self._send_alert("🔑 Fyers token refreshed for tomorrow")
+
+                # Bug 12: warn if swing positions are open during the restart window
+                swing_msg = self._get_swing_positions_warning()
+                self._send_alert(
+                    f"🔑 Fyers token refreshed for tomorrow\n{swing_msg}"
+                )
 
                 # Restart bot with new token
                 logger.info("Restarting bot with new token...")
@@ -285,6 +293,48 @@ class Watchdog:
     # ─────────────────────────────────────────────────────────────
     # ALERTS
     # ─────────────────────────────────────────────────────────────
+
+    def _get_open_positions_summary(self) -> str:
+        """Read open positions from trades.db for the watchdog alert (Bug 10)."""
+        try:
+            import sqlite3
+            db_path = os.path.join(os.path.dirname(BOT_SCRIPT), "db", "trades.db")
+            if not os.path.exists(db_path):
+                return "No trades.db found — no open position data available."
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT symbol, direction, position_size, entry_price "
+                    "FROM trades WHERE status IN ('OPEN', 'PENDING_CLOSE')"
+                ).fetchall()
+            if not rows:
+                return "No open positions in DB."
+            lines = ["⚠️ Open positions requiring manual monitoring:"]
+            for sym, direction, qty, entry in rows:
+                lines.append(f"  {direction} {sym} × {qty} @ ₹{entry:.2f}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Could not read open positions: {e}"
+
+    def _get_swing_positions_warning(self) -> str:
+        """Return a warning string if swing positions are open (Bug 12)."""
+        try:
+            import sqlite3
+            db_path = os.path.join(os.path.dirname(BOT_SCRIPT), "db", "trades.db")
+            if not os.path.exists(db_path):
+                return ""
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT symbol FROM trades WHERE status='OPEN' AND hold_type='swing'"
+                ).fetchall()
+            if rows:
+                syms = ", ".join(r[0] for r in rows)
+                return (
+                    f"⚠️ Swing positions held overnight: {syms}\n"
+                    f"Bot will be dark for ~60s during restart. Positions are safe at broker."
+                )
+        except Exception:
+            pass
+        return ""
 
     def _send_alert(self, message: str) -> None:
         """Send Telegram alert directly (without importing full bot)."""

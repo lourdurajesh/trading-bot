@@ -42,6 +42,25 @@ DB_PATH = "db/trades.db"
 
 logger = logging.getLogger(__name__)
 
+# ── Enhancement modules (fail-safe imports) ───────────────────────
+try:
+    from analysis.spread_quality import spread_quality_engine, LegData
+    _SPREAD_QUALITY_AVAILABLE = True
+except Exception:
+    _SPREAD_QUALITY_AVAILABLE = False
+
+try:
+    from analysis.trade_decision_audit import trade_decision_audit, AuditEntry, Decision
+    _AUDIT_AVAILABLE = True
+except Exception:
+    _AUDIT_AVAILABLE = False
+
+try:
+    from risk.daily_risk_budget import daily_risk_budget
+    _RISK_BUDGET_AVAILABLE = True
+except Exception:
+    _RISK_BUDGET_AVAILABLE = False
+
 # ─────────────────────────────────────────────────────────────────
 # MCX COMMODITY METADATA
 # ─────────────────────────────────────────────────────────────────
@@ -1096,12 +1115,74 @@ class CommodityOptionsLearning:
             breakout_level=breakout_level,
         )
         if trade:
+            # ── Risk budget check ─────────────────────────────────
+            if _RISK_BUDGET_AVAILABLE:
+                try:
+                    risk_est = trade.get("risk_per_lot", 0) * trade.get("lots", 1)
+                    ok, reason = daily_risk_budget.check(strategy_name, risk_est, symbol=symbol)
+                    if not ok:
+                        logger.info(f"[CommOpts] {short} blocked by risk budget: {reason}")
+                        if _AUDIT_AVAILABLE:
+                            trade_decision_audit.log(AuditEntry(
+                                symbol=short, strategy=strategy_name,
+                                decision=Decision.REJECTED_BY_FILTER,
+                                rejection_reason=f"risk_budget: {reason}",
+                                data_snapshot={"risk_est": risk_est},
+                            ))
+                        return
+                    daily_risk_budget.register_open(symbol, strategy_name)
+                except Exception as _rbe:
+                    logger.debug(f"[CommOpts] risk budget check error (skipped): {_rbe}")
+
             self._open_trade(trade)
             self._daily_entries[short] = self._daily_entries.get(short, 0) + 1
             logger.info(
                 f"[CommOpts] {short} daily entries: "
                 f"{self._daily_entries[short]}/{self.MAX_DAILY_ENTRIES_PER_INSTRUMENT}"
             )
+
+            # ── Audit: TRADE taken ────────────────────────────────
+            if _AUDIT_AVAILABLE:
+                try:
+                    trade_decision_audit.log(AuditEntry(
+                        symbol=short, strategy=strategy_name,
+                        decision=Decision.TRADE,
+                        iv=round(trade.get("iv_used", 0) * 100, 1),
+                        data_snapshot={
+                            "net_debit":   trade.get("net_debit"),
+                            "max_profit":  trade.get("max_profit"),
+                            "rr":          trade.get("rr"),
+                            "spot":        trade.get("spot_at_entry"),
+                            "sq_score":    trade.get("spread_quality_score", 0),
+                            "trade_id":    trade.get("id"),
+                        },
+                    ))
+                    # Seed outcome metrics row at entry
+                    from analysis.trade_decision_audit import OutcomeEntry
+                    trade_decision_audit.log_outcome(OutcomeEntry(
+                        trade_id   = trade["id"],
+                        entry_time = trade["entry_time"],
+                        strategy   = strategy_name,
+                        symbol     = short,
+                        net_debit  = trade.get("net_debit", 0),
+                        max_profit = trade.get("max_profit", 0),
+                        spread_quality_score = trade.get("spread_quality_score", 0),
+                        iv_change  = trade.get("iv_used", 0),   # will be updated at close
+                    ))
+                except Exception as _ae:
+                    logger.debug(f"[CommOpts] audit log error (skipped): {_ae}")
+        else:
+            # ── Audit: NO_TRADE ───────────────────────────────────
+            if _AUDIT_AVAILABLE:
+                try:
+                    trade_decision_audit.log(AuditEntry(
+                        symbol=short, strategy=strategy_name or "unknown",
+                        decision=Decision.NO_TRADE,
+                        rejection_reason="build_trade returned None",
+                        data_snapshot={"spot": spot},
+                    ))
+                except Exception:
+                    pass
 
     # ─────────────────────────────────────────────────────────────
     # STRATEGY EVALUATORS
@@ -1249,6 +1330,49 @@ class CommodityOptionsLearning:
             logger.debug(f"[CommOpts] {short} R:R {rr:.2f} too low")
             return None
 
+        # ── Spread quality gate ───────────────────────────────────
+        sq_score = 5.0   # default if engine unavailable
+        if _SPREAD_QUALITY_AVAILABLE:
+            try:
+                # Build leg data from chain or BS estimates
+                # OI from chain if available; else use conservative estimate
+                long_oi  = 1000 if chain else 0
+                short_oi = 800  if chain else 0
+                if chain:
+                    for exp in chain.get("expiryData", []):
+                        for opt in exp.get("optionData", []):
+                            if opt.get("strikePrice") == atm:
+                                long_oi  = opt.get(f"{opt_type}OI", long_oi)
+                            if opt.get("strikePrice") == otm:
+                                short_oi = opt.get(f"{opt_type}OI", short_oi)
+                            if long_oi != 1000 and short_oi != 800:
+                                break
+
+                long_leg  = LegData(bid=atm_premium * 0.97, ask=atm_premium * 1.03,
+                                    oi=long_oi, theta=-0.02 * atm_premium)
+                short_leg = LegData(bid=otm_premium * 0.97, ask=otm_premium * 1.03,
+                                    oi=short_oi, theta=-0.02 * otm_premium)
+                sq = spread_quality_engine.evaluate(long_leg, short_leg, net_debit, max_profit)
+                sq_score = sq.quality_score
+
+                if not sq.approved:
+                    logger.info(
+                        f"[CommOpts] {short} spread quality REJECTED "
+                        f"(score={sq_score:.1f}): {sq.rejection_reason}"
+                    )
+                    if _AUDIT_AVAILABLE:
+                        trade_decision_audit.log(AuditEntry(
+                            symbol=short, strategy=strategy_name,
+                            decision=Decision.REJECTED_BY_FILTER,
+                            rejection_reason=f"spread_quality: {sq.rejection_reason}",
+                            iv=round(iv * 100, 1),
+                            data_snapshot={"sq_score": sq_score, "rr": rr,
+                                           "net_debit": net_debit, "max_profit": max_profit},
+                        ))
+                    return None
+            except Exception as _sqe:
+                logger.debug(f"[CommOpts] spread quality check error (skipped): {_sqe}")
+
         # Notional risk per lot
         risk_per_lot = round(net_debit * lot, 2)
 
@@ -1296,6 +1420,7 @@ class CommodityOptionsLearning:
                 "target_pct":  _merged_strat_cfg(short, strategy_name).get("target_pct", 0.50),
                 "trail_active": False,
             },
+            "spread_quality_score": sq_score,
         }
 
     # ─────────────────────────────────────────────────────────────
@@ -1521,6 +1646,43 @@ class CommodityOptionsLearning:
                     f"{exit_reason} spot={spot:.2f} pnl=₹{pnl_approx:+.0f} "
                     f"({pnl_r:+.1f}R)"
                 )
+
+                # ── Outcome metrics logging ───────────────────────
+                if _AUDIT_AVAILABLE:
+                    try:
+                        from analysis.trade_decision_audit import OutcomeEntry
+                        # Estimate IV change from spot move heuristic
+                        # (real IV change needs live chain; use proxy for paper mode)
+                        spot_move_pct = abs(spot - entry_spot) / entry_spot if entry_spot > 0 else 0
+                        iv_change_est = round(-spot_move_pct * 0.1, 4)
+                        trade_decision_audit.log_outcome(OutcomeEntry(
+                            trade_id        = trade["id"],
+                            entry_time      = trade["entry_time"],
+                            exit_time       = now.isoformat(),
+                            pnl             = pnl_approx,
+                            pnl_r_multiple  = pnl_r,
+                            theta_impact    = round(-net_debit * 0.02 *
+                                              (now - datetime.fromisoformat(trade["entry_time"])
+                                               .replace(tzinfo=IST)).days, 2),
+                            iv_change       = iv_change_est,
+                            spread_slippage = 0.0,
+                            exit_reason     = exit_reason,
+                            strategy        = strategy,
+                            symbol          = instrument,
+                            net_debit       = net_debit,
+                            max_profit      = max_profit,
+                            spread_quality_score = trade.get("spread_quality_score", 0),
+                        ))
+                    except Exception as _oe:
+                        logger.debug(f"[CommOpts] outcome log error (skipped): {_oe}")
+
+                # ── Risk budget update ────────────────────────────
+                if _RISK_BUDGET_AVAILABLE:
+                    try:
+                        daily_risk_budget.record_pnl(strategy, pnl_approx)
+                        daily_risk_budget.register_close(trade["symbol"])
+                    except Exception as _rbe:
+                        logger.debug(f"[CommOpts] risk budget record error (skipped): {_rbe}")
                 strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
                 if strat_cfg.get("cooldown_enabled", True):
                     base_hours = strat_cfg.get("cooldown_hours", 3)

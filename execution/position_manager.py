@@ -26,7 +26,7 @@ from datetime import date, datetime, time, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from config.settings import OPTIONS_DTE_FORCE_EXIT
+from config.settings import OPTIONS_DTE_FORCE_EXIT, PAPER_TRADING   # Bug 16: consistent source
 from data.data_store import store
 from risk.portfolio_tracker import portfolio_tracker, Position
 from notifications.alert_service import alert_service
@@ -99,9 +99,11 @@ class PositionManager:
 
         # ── OPTIONS positions — separate exit management ──────────
         if signal_type == "OPTIONS":
+            pos = portfolio_tracker.get_position(symbol)
+            opt_size = pos.position_size if pos else 0
             self._check_options_position(
                 symbol, direction, entry, stop, target_1,
-                0, options_meta, now,
+                opt_size, options_meta, now,          # Bug 8: pass actual qty, not 0
             )
             return
 
@@ -160,7 +162,12 @@ class PositionManager:
 
         # ── 3. LONG position management ───────────────────────────
         if direction == "LONG":
-            risk = entry - stop
+            # Use original_stop_loss for risk so trailing continues after breakeven move;
+            # entry - stop = 0 once SL is at breakeven, which would freeze trailing (Bug 15).
+            pos_obj = portfolio_tracker.get_position(symbol)
+            original_sl = (pos_obj.original_stop_loss
+                           if pos_obj and pos_obj.original_stop_loss else stop)
+            risk = entry - original_sl
             if risk <= 0:
                 return
 
@@ -193,6 +200,7 @@ class PositionManager:
                             f"ltp={ltp:.2f} >= t1={target_1:.2f} — "
                             f"exiting {partial_size} shares")
                 self._partial_exit(symbol, partial_size, "TARGET1", ltp)
+                portfolio_tracker.mark_t1_hit(symbol)   # persist so restart knows T1 fired
                 with self._lock:
                     self._partial_exited.add(symbol)
                     self._dynamic_target_r[symbol] = DYNAMIC_TARGET_START_R
@@ -214,7 +222,10 @@ class PositionManager:
 
         # ── 4. SHORT position management ──────────────────────────
         elif direction == "SHORT":
-            risk = stop - entry
+            pos_obj = portfolio_tracker.get_position(symbol)
+            original_sl = (pos_obj.original_stop_loss
+                           if pos_obj and pos_obj.original_stop_loss else stop)
+            risk = original_sl - entry   # Bug 15: use original SL, not current (moved) stop
             if risk <= 0:
                 return
 
@@ -245,6 +256,7 @@ class PositionManager:
                 partial_size = max(1, int(remaining_size * PARTIAL_EXIT_PCT))
                 logger.info(f"[PositionManager] T1 HIT SHORT {symbol}")
                 self._partial_exit(symbol, partial_size, "TARGET1", ltp)
+                portfolio_tracker.mark_t1_hit(symbol)   # persist so restart knows T1 fired
                 with self._lock:
                     self._partial_exited.add(symbol)
                     self._dynamic_target_r[symbol] = DYNAMIC_TARGET_START_R
@@ -417,8 +429,6 @@ class PositionManager:
         Closes all legs (call + put for strangles, single leg for debit spread).
         Routes to paper engine in paper mode, else Fyers NFO.
         """
-        import os
-        PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 
         pos = portfolio_tracker.get_position(symbol)
         if not pos:
@@ -510,8 +520,6 @@ class PositionManager:
 
     def _exit_position(self, symbol: str, size: int, reason: str, price: float) -> None:
         """Full exit of a position."""
-        import os
-        PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 
         pos = portfolio_tracker.get_position(symbol)
         if not pos:
@@ -542,6 +550,10 @@ class PositionManager:
                 order_type = "MARKET",
             )
 
+        # Mark PENDING_CLOSE BEFORE placing the order so that a crash between
+        # the broker call and close_position() is detectable on restart (Bug 1).
+        portfolio_tracker.set_pending_close(symbol)
+
         if order_id:
             # Close in portfolio tracker
             closed = portfolio_tracker.close_position(symbol, price, reason)
@@ -556,6 +568,11 @@ class PositionManager:
                 self._trailing_stops.pop(symbol, None)
                 self._dynamic_target_r.pop(symbol, None)
         else:
+            # Revert PENDING_CLOSE → OPEN so position monitoring continues
+            pos = portfolio_tracker.get_position(symbol)
+            if pos:
+                pos.status = "OPEN"
+                portfolio_tracker._update_position_db(pos)
             logger.error(f"[PositionManager] EXIT ORDER FAILED for {symbol} — "
                          f"MANUAL INTERVENTION REQUIRED")
             alert_service.info(
@@ -566,8 +583,6 @@ class PositionManager:
 
     def _partial_exit(self, symbol: str, size: int, reason: str, price: float) -> None:
         """Exit part of a position."""
-        import os
-        PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 
         pos = portfolio_tracker.get_position(symbol)
         if not pos:
@@ -596,8 +611,11 @@ class PositionManager:
             )
 
         if order_id:
-            # Update position size in tracker
-            pos.position_size    -= size
+            # Persist reduced size to DB immediately so restart sees correct qty (Bug 5)
+            new_size = pos.position_size - size
+            portfolio_tracker.update_position_size(symbol, new_size)
+            pos.position_size = new_size
+
             partial_pnl = (price - pos.entry_price) * size
             if pos.direction == "SHORT":
                 partial_pnl = (pos.entry_price - price) * size
@@ -653,23 +671,31 @@ class PositionManager:
         """
         Rebuild in-memory tracking state from the persisted stop_loss after a restart.
 
-        If stop_loss has been moved to/past breakeven (T1 was hit), restore:
-          - _partial_exited, _breakeven_applied
-          - _trailing_stops (set to persisted stop_loss value)
-          - _dynamic_target_r (inferred from current profit_r)
+        Uses original_stop_loss (frozen at entry) rather than the current stop_loss
+        to compute risk, because if SL was moved to breakeven, stop_loss == entry,
+        making risk = 0 and causing early return without restoring state (Bug 6).
         """
         pos = portfolio_tracker.get_position(symbol)
         if not pos:
             return
 
         persisted_sl = pos.stop_loss
-        risk = abs(entry - original_stop)
+        # Use the immutable original stop for risk — never use the current (moved) SL (Bug 6)
+        true_original_stop = pos.original_stop_loss if pos.original_stop_loss else original_stop
+        risk = abs(entry - true_original_stop)
         if risk <= 0:
             return
 
-        # T1 was already hit if SL was moved to/past breakeven
-        t1_was_hit = (direction == "LONG"  and persisted_sl >= entry) or \
-                     (direction == "SHORT" and persisted_sl <= entry)
+        # Use the persisted t1_hit flag as ground truth (exact).
+        # Fallback to SL-position inference only for old positions that predate the column.
+        if pos.t1_hit:
+            t1_was_hit = True
+        else:
+            # Legacy inference: SL moved past breakeven implies T1 was hit.
+            # This can produce a false positive (breakeven applied but T1 not yet hit),
+            # but that's safe: worst case = T1 partial exit skipped, trailing active.
+            t1_was_hit = (direction == "LONG"  and persisted_sl > entry) or \
+                         (direction == "SHORT" and persisted_sl < entry)
 
         if not t1_was_hit:
             return
@@ -730,13 +756,13 @@ class PositionManager:
     def _update_broker_sl(self, symbol: str, new_sl: float) -> None:
         """
         Update stop loss order on broker.
-        Cancels existing SL order and places new one.
-        This is best-effort — failure is logged but doesn't block.
-        Skipped in paper trading mode (no real broker orders).
+        Cancels the EXISTING SL order first, then places the new one (Bug 2).
+        Without cancellation, each update leaves an orphaned SL-M order on the broker;
+        when price hits SL all orphaned orders fire simultaneously → over-sized exit.
+        Skipped in paper trading mode.
         """
-        import os
-        if os.getenv("PAPER_TRADING", "false").lower() == "true":
-            return   # paper mode — no broker SL to update
+        if PAPER_TRADING:   # Bug 16: imported at top of module
+            return
         try:
             from execution.fyers_broker import fyers_broker
             pos = portfolio_tracker.get_position(symbol)
@@ -745,14 +771,29 @@ class PositionManager:
             remaining_size = pos.position_size
             if remaining_size <= 0:
                 return
+
+            # Cancel old SL order before placing the updated one (Bug 2)
+            if pos.sl_order_id:
+                try:
+                    fyers_broker.cancel_order(pos.sl_order_id)
+                    logger.debug(f"[PositionManager] Cancelled old SL {pos.sl_order_id} for {symbol}")
+                except Exception as ce:
+                    logger.warning(f"[PositionManager] Could not cancel old SL {pos.sl_order_id}: {ce}")
+
             exit_dir = "SHORT" if pos.direction == "LONG" else "LONG"
-            fyers_broker.place_order(
+            # Pass correct product so swing CNC SL isn't rejected (Bug 7)
+            product = "CNC" if pos.hold_type == "swing" else "INTRADAY"
+            new_sl_id = fyers_broker.place_order(
                 symbol     = symbol,
                 direction  = exit_dir,
                 qty        = remaining_size,
                 order_type = "SL-M",
                 trigger    = new_sl,
+                product    = product,
             )
+            if new_sl_id:
+                portfolio_tracker.update_sl_order_id(symbol, new_sl_id)
+                logger.debug(f"[PositionManager] New SL order {new_sl_id} @ ₹{new_sl:.2f} for {symbol}")
         except Exception as e:
             logger.warning(f"[PositionManager] Broker SL update failed (non-fatal): {e}")
 

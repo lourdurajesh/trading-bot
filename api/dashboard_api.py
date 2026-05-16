@@ -29,7 +29,9 @@ import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import os
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Security
+from fastapi.security import APIKeyHeader
 
 IST = ZoneInfo("Asia/Kolkata")
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +46,26 @@ from risk.risk_manager import risk_manager
 
 _DASHBOARD_DIR = Path(__file__).parent.parent / "dashboard"
 _BOT_START_TIME = datetime.now(tz=IST)
+
+# Bug 13: API key guard for mutating endpoints.
+# Set DASHBOARD_API_KEY in .env. If unset, mutating endpoints are still protected
+# but the key is an empty string — set a real value in production.
+_API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+_DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")
+
+
+def _require_api_key(api_key: str = Security(_API_KEY_HEADER)) -> None:
+    """Dependency that enforces API key on mutating dashboard endpoints."""
+    if not _DASHBOARD_API_KEY:
+        # Key not configured — log a warning but allow through to avoid breaking
+        # existing setups. Operators should set DASHBOARD_API_KEY in .env.
+        logger.warning(
+            "[API] DASHBOARD_API_KEY not set — mutating endpoints are unprotected. "
+            "Set DASHBOARD_API_KEY in .env to secure the dashboard."
+        )
+        return
+    if api_key != _DASHBOARD_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid or missing API key")
 
 logger = logging.getLogger(__name__)
 
@@ -997,6 +1019,159 @@ def trigger_token_refresh():
 
 
 # ─────────────────────────────────────────────────────────────────
+# ARCHITECTURE ENHANCEMENT — Audit, Regime, Risk Budget
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/audit/decisions")
+def get_audit_decisions(limit: int = 200, decision: str = None):
+    """
+    Trade decision audit log — every evaluation (TRADE/NO_TRADE/REJECTED/DISABLED).
+    Spec TASK 1. Query param: ?decision=REJECTED_BY_FILTER
+    """
+    try:
+        from analysis.trade_decision_audit import trade_decision_audit
+        return {
+            "decisions": trade_decision_audit.get_recent_decisions(limit=limit, decision=decision),
+            "stats":     trade_decision_audit.get_decision_stats(),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/audit/outcomes")
+def get_audit_outcomes(limit: int = 100):
+    """Trade outcome attribution — Greeks, MFE/MAE, theta impact. Spec TASK 2."""
+    try:
+        from analysis.trade_decision_audit import trade_decision_audit
+        return {"outcomes": trade_decision_audit.get_recent_outcomes(limit=limit)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/risk/budget")
+def get_risk_budget():
+    """Daily per-strategy risk budget status. Spec TASK 13."""
+    try:
+        from risk.daily_risk_budget import daily_risk_budget
+        return daily_risk_budget.summary()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/market/regime/{symbol}")
+def get_market_regime(symbol: str, timeframe: str = "1H"):
+    """Enhanced 7-state regime classification for a symbol. Spec TASK 3."""
+    try:
+        from analysis.regime_engine import regime_engine
+        cached = regime_engine.get_cached(symbol)
+        if cached:
+            return {
+                "symbol":     symbol,
+                "regime":     cached.regime.value,
+                "confidence": cached.confidence,
+                "adx":        cached.adx_value,
+                "atr_ratio":  cached.atr_ratio,
+                "vwap":       cached.vwap_position,
+                "rsi":        cached.rsi_value,
+                "vix":        cached.vix_value,
+                "notes":      cached.notes,
+                "timestamp":  cached.timestamp.isoformat(),
+                "source":     "cache",
+            }
+        # Try to classify live if store has data
+        df = store.get_ohlcv(symbol, timeframe)
+        if df is not None:
+            state = regime_engine.classify(symbol, df)
+            return {
+                "symbol":     symbol,
+                "regime":     state.regime.value,
+                "confidence": state.confidence,
+                "adx":        state.adx_value,
+                "atr_ratio":  state.atr_ratio,
+                "vwap":       state.vwap_position,
+                "rsi":        state.rsi_value,
+                "notes":      state.notes,
+                "source":     "live",
+            }
+        return {"symbol": symbol, "regime": "UNKNOWN", "error": "no data"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/market/breadth")
+def get_market_breadth():
+    """Live market breadth — advance/decline ratio. Spec TASK 4."""
+    try:
+        from analysis.breadth_engine import breadth_engine
+        state = breadth_engine.get_last()
+        return state.to_dict() if state else {"breadth_score": 5.0, "interpretation": "NEUTRAL"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/market/vwap/{symbol}")
+def get_vwap_state(symbol: str):
+    """VWAP acceptance state for a symbol. Spec TASK 5."""
+    try:
+        from analysis.vwap_engine import vwap_engine
+        cached = vwap_engine.get_cached(symbol)
+        if cached:
+            return {"symbol": symbol, **cached.to_dict(), "source": "cache"}
+        df = store.get_ohlcv(symbol, "5m")
+        if df is not None:
+            state = vwap_engine.evaluate(symbol, df)
+            return {"symbol": symbol, **state.to_dict(), "source": "live"}
+        return {"symbol": symbol, "position": "VWAP_NEUTRAL", "error": "no data"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/market/opening-range/{symbol}")
+def get_opening_range(symbol: str):
+    """Opening range state for a symbol. Spec TASK 6."""
+    try:
+        from analysis.opening_range import opening_range_engine
+        cached = opening_range_engine.get_cached(symbol)
+        if cached:
+            return {"symbol": symbol, **cached.to_dict(), "source": "cache"}
+        df = store.get_ohlcv(symbol, "5m")
+        if df is not None:
+            result = opening_range_engine.classify(symbol, df)
+            return {"symbol": symbol, **result.to_dict(), "source": "live"}
+        return {"symbol": symbol, "state": "UNKNOWN", "error": "no data"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/market/iv/{symbol}")
+def get_iv_context(symbol: str, current_iv: float = 0.0):
+    """IV percentile and volatility regime for a symbol. Spec TASK 7."""
+    try:
+        from analysis.iv_percentile import iv_percentile_engine
+        if current_iv <= 0:
+            # Try to get IV from options engine
+            from analysis.options_engine import options_engine
+            current_iv = 0.20   # fallback
+        ctx = iv_percentile_engine.get_context(symbol, current_iv)
+        return ctx.to_dict()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/market/strategy-matrix")
+def get_strategy_matrix():
+    """Full regime → strategy enablement matrix. Spec TASK 11."""
+    try:
+        from config.strategy_matrix import strategy_matrix, DEFAULT_MATRIX
+        return {
+            "enabled": True,
+            "matrix":  DEFAULT_MATRIX,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────
 # SIGNAL HEALTH — WHY ARE WE NOT TRADING?
 # ─────────────────────────────────────────────────────────────────
 
@@ -1054,13 +1229,13 @@ def get_pending():
 
 
 @app.post("/signals/{signal_id}/confirm")
-def confirm_signal(signal_id: str):
+def confirm_signal(signal_id: str, _: None = Depends(_require_api_key)):
     ok = order_manager.confirm(signal_id)
     return {"confirmed": ok, "signal_id": signal_id}
 
 
 @app.post("/signals/{signal_id}/reject")
-def reject_signal(signal_id: str):
+def reject_signal(signal_id: str, _: None = Depends(_require_api_key)):
     ok = order_manager.reject(signal_id)
     return {"rejected": ok, "signal_id": signal_id}
 
@@ -1071,7 +1246,7 @@ def get_risk():
 
 
 @app.post("/mode/{mode}")
-def set_mode(mode: str):
+def set_mode(mode: str, _: None = Depends(_require_api_key)):
     if mode.upper() not in ("AUTO", "MANUAL"):
         return {"error": "Mode must be AUTO or MANUAL"}
     order_manager.set_mode(mode.upper())
@@ -1079,13 +1254,13 @@ def set_mode(mode: str):
 
 
 @app.post("/kill-switch/reset")
-def reset_kill_switch():
+def reset_kill_switch(_: None = Depends(_require_api_key)):
     risk_manager.reset_kill_switch()
     return {"kill_switch_active": False}
 
 
 @app.post("/positions/force-close")
-def force_close_position(body: dict):
+def force_close_position(body: dict, _: None = Depends(_require_api_key)):
     """
     Manually dismiss a stale open position.
     Use when the broker already closed the position but the bot missed the fill

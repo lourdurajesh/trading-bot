@@ -28,25 +28,31 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Position:
     """Represents an open or closed trade position."""
-    id:              str             # unique trade id
-    symbol:          str
-    strategy:        str
-    direction:       str             # LONG / SHORT
-    signal_type:     str             # EQUITY / OPTIONS
-    entry_price:     float
-    stop_loss:       float
-    target_1:        float
-    target_2:        float
-    position_size:   int
-    capital_at_risk: float
-    entry_time:      datetime
-    hold_type:       str     = "intraday"   # "intraday" | "swing"
-    exit_price:      float   = 0.0
-    exit_time:       Optional[datetime] = None
-    realised_pnl:    float   = 0.0
-    status:          str     = "OPEN"   # OPEN | CLOSED | STOPPED | CANCELLED
-    exit_reason:     str     = ""
-    options_meta:    dict    = field(default_factory=dict)
+    id:                  str             # unique trade id
+    symbol:              str
+    strategy:            str
+    direction:           str             # LONG / SHORT
+    signal_type:         str             # EQUITY / OPTIONS
+    entry_price:         float
+    stop_loss:           float
+    target_1:            float
+    target_2:            float
+    position_size:       int
+    capital_at_risk:     float
+    entry_time:          datetime
+    hold_type:           str     = "intraday"   # "intraday" | "swing"
+    exit_price:          float   = 0.0
+    exit_time:           Optional[datetime] = None
+    realised_pnl:        float   = 0.0
+    status:              str     = "OPEN"   # OPEN | PENDING_CLOSE | CLOSED | STOPPED | CANCELLED
+    exit_reason:         str     = ""
+    options_meta:        dict    = field(default_factory=dict)
+    # Immutable at entry — used for state reconstruction after restart (Bug 6)
+    original_stop_loss:  float   = 0.0
+    # Active broker SL order ID — needed to cancel before placing updated SL (Bug 2)
+    sl_order_id:         str     = ""
+    # Set to True the moment the T1 partial exit fires — survives restart (T1 edge case fix)
+    t1_hit:              bool    = False
 
 
 class PortfolioTracker:
@@ -85,20 +91,21 @@ class PortfolioTracker:
         trade_id = f"T{datetime.now(tz=IST).strftime('%Y%m%d%H%M%S')}-{self._trade_counter:04d}"
 
         position = Position(
-            id              = trade_id,
-            symbol          = signal.symbol,
-            strategy        = signal.strategy,
-            direction       = signal.direction.value,
-            signal_type     = signal.signal_type.value,
-            entry_price     = fill_price,
-            stop_loss       = signal.stop_loss,
-            target_1        = signal.target_1,
-            target_2        = signal.target_2,
-            position_size   = signal.position_size,
-            capital_at_risk = signal.capital_at_risk,
-            entry_time      = datetime.now(tz=IST),
-            hold_type       = getattr(signal, "hold_type", "intraday"),
-            options_meta    = signal.options_meta,
+            id                 = trade_id,
+            symbol             = signal.symbol,
+            strategy           = signal.strategy,
+            direction          = signal.direction.value,
+            signal_type        = signal.signal_type.value,
+            entry_price        = fill_price,
+            stop_loss          = signal.stop_loss,
+            target_1           = signal.target_1,
+            target_2           = signal.target_2,
+            position_size      = signal.position_size,
+            capital_at_risk    = signal.capital_at_risk,
+            entry_time         = datetime.now(tz=IST),
+            hold_type          = getattr(signal, "hold_type", "intraday"),
+            options_meta       = signal.options_meta or {},
+            original_stop_loss = signal.stop_loss,   # frozen at entry — never updated
         )
 
         self._open_positions[signal.symbol] = position
@@ -300,6 +307,38 @@ class PortfolioTracker:
             pos.stop_loss = round(new_sl, 2)
             self._update_position_db(pos)
 
+    def update_position_size(self, symbol: str, new_size: int) -> None:
+        """Persist reduced position size after a partial exit (Bug 5)."""
+        pos = self._open_positions.get(symbol)
+        if pos:
+            pos.position_size = new_size
+            self._update_position_db(pos)
+
+    def update_sl_order_id(self, symbol: str, order_id: str) -> None:
+        """Record the current active SL broker order ID (Bug 2)."""
+        pos = self._open_positions.get(symbol)
+        if pos:
+            pos.sl_order_id = order_id
+            self._update_position_db(pos)
+
+    def mark_t1_hit(self, symbol: str) -> None:
+        """Persist T1-hit flag so reconstruction after restart knows partial exit already fired."""
+        pos = self._open_positions.get(symbol)
+        if pos:
+            pos.t1_hit = True
+            self._update_position_db(pos)
+
+    def set_pending_close(self, symbol: str) -> None:
+        """
+        Mark position as PENDING_CLOSE before placing the exit order (Bug 1).
+        If the bot crashes after the broker order is placed but before close_position()
+        writes CLOSED, startup reconciliation detects PENDING_CLOSE and resolves it.
+        """
+        pos = self._open_positions.get(symbol)
+        if pos:
+            pos.status = "PENDING_CLOSE"
+            self._update_position_db(pos)
+
     # ─────────────────────────────────────────────────────────────
     # INTERNAL — SQLite persistence
     # ─────────────────────────────────────────────────────────────
@@ -309,45 +348,55 @@ class PortfolioTracker:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS trades (
-                    id              TEXT PRIMARY KEY,
-                    symbol          TEXT,
-                    strategy        TEXT,
-                    direction       TEXT,
-                    signal_type     TEXT,
-                    entry_price     REAL,
-                    exit_price      REAL,
-                    stop_loss       REAL,
-                    target_1        REAL,
-                    target_2        REAL DEFAULT 0,
-                    position_size   INTEGER,
-                    capital_at_risk REAL,
-                    realised_pnl    REAL,
-                    status          TEXT,
-                    exit_reason     TEXT,
-                    entry_time      TEXT,
-                    exit_time       TEXT
+                    id                  TEXT PRIMARY KEY,
+                    symbol              TEXT,
+                    strategy            TEXT,
+                    direction           TEXT,
+                    signal_type         TEXT,
+                    entry_price         REAL,
+                    exit_price          REAL,
+                    stop_loss           REAL,
+                    target_1            REAL,
+                    target_2            REAL DEFAULT 0,
+                    position_size       INTEGER,
+                    capital_at_risk     REAL,
+                    realised_pnl        REAL,
+                    status              TEXT,
+                    exit_reason         TEXT,
+                    entry_time          TEXT,
+                    exit_time           TEXT,
+                    hold_type           TEXT DEFAULT 'intraday',
+                    original_stop_loss  REAL DEFAULT 0,
+                    sl_order_id         TEXT DEFAULT '',
+                    options_meta        TEXT DEFAULT '{}'
                 )
             """)
-        # Safe migrations for pre-existing tables
-        for col, typedef in [
-            ("target_2",    "REAL DEFAULT 0"),
-            ("signal_type", "TEXT DEFAULT 'EQUITY'"),
-            ("hold_type",   "TEXT DEFAULT 'intraday'"),
-        ]:
-            try:
-                conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typedef}")
-            except Exception:
-                pass
+            # Safe migrations for pre-existing tables
+            for col, typedef in [
+                ("target_2",           "REAL DEFAULT 0"),
+                ("signal_type",        "TEXT DEFAULT 'EQUITY'"),
+                ("hold_type",          "TEXT DEFAULT 'intraday'"),
+                ("original_stop_loss", "REAL DEFAULT 0"),
+                ("sl_order_id",        "TEXT DEFAULT ''"),
+                ("options_meta",       "TEXT DEFAULT '{}'"),
+                ("t1_hit",             "INTEGER DEFAULT 0"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typedef}")
+                except Exception:
+                    pass
         logger.info(f"[Portfolio] Database initialised at {DB_PATH}")
 
     def _save_position(self, pos: Position) -> None:
+        import json
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO trades
                 (id, symbol, strategy, direction, signal_type, hold_type, entry_price,
                  exit_price, stop_loss, target_1, target_2, position_size, capital_at_risk,
-                 realised_pnl, status, exit_reason, entry_time, exit_time)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 realised_pnl, status, exit_reason, entry_time, exit_time,
+                 original_stop_loss, sl_order_id, options_meta, t1_hit)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 pos.id, pos.symbol, pos.strategy, pos.direction, pos.signal_type, pos.hold_type,
                 pos.entry_price, pos.exit_price, pos.stop_loss, pos.target_1, pos.target_2,
@@ -355,27 +404,84 @@ class PortfolioTracker:
                 pos.status, pos.exit_reason,
                 pos.entry_time.isoformat() if pos.entry_time else None,
                 pos.exit_time.isoformat()  if pos.exit_time  else None,
+                pos.original_stop_loss,
+                pos.sl_order_id or "",
+                json.dumps(pos.options_meta) if pos.options_meta else "{}",
+                1 if pos.t1_hit else 0,
             ))
 
     def _update_position_db(self, pos: Position) -> None:
         self._save_position(pos)
 
     def _load_open_positions(self) -> None:
-        """Reload any OPEN positions from DB on bot restart."""
+        """Reload OPEN and PENDING_CLOSE positions from DB on restart (Bug 1, 6, 18)."""
+        import json
         try:
             with sqlite3.connect(DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    "SELECT * FROM trades WHERE status = 'OPEN'"
+                    "SELECT * FROM trades WHERE status IN ('OPEN', 'PENDING_CLOSE')"
                 ).fetchall()
 
             for row in rows:
+                try:
+                    options_meta = json.loads(row["options_meta"] or "{}") if "options_meta" in row.keys() else {}
+                except Exception:
+                    options_meta = {}
+
+                pos = Position(
+                    id                 = row["id"],
+                    symbol             = row["symbol"],
+                    strategy           = row["strategy"],
+                    direction          = row["direction"],
+                    signal_type        = row["signal_type"] if "signal_type" in row.keys() else "EQUITY",
+                    entry_price        = row["entry_price"],
+                    stop_loss          = row["stop_loss"],
+                    target_1           = row["target_1"],
+                    target_2           = float(row["target_2"]) if row["target_2"] else 0.0,
+                    position_size      = row["position_size"],
+                    capital_at_risk    = row["capital_at_risk"],
+                    entry_time         = datetime.fromisoformat(row["entry_time"]),
+                    hold_type          = row["hold_type"] if "hold_type" in row.keys() and row["hold_type"] else "intraday",
+                    status             = row["status"],
+                    options_meta       = options_meta,
+                    original_stop_loss = float(row["original_stop_loss"]) if "original_stop_loss" in row.keys() and row["original_stop_loss"] else row["stop_loss"],
+                    sl_order_id        = row["sl_order_id"] if "sl_order_id" in row.keys() and row["sl_order_id"] else "",
+                    t1_hit             = bool(row["t1_hit"]) if "t1_hit" in row.keys() and row["t1_hit"] else False,
+                )
+                self._open_positions[pos.symbol] = pos
+
+                if pos.status == "PENDING_CLOSE":
+                    logger.warning(
+                        f"[Portfolio] PENDING_CLOSE detected for {pos.symbol} — "
+                        f"crash occurred during exit. Reconcile with broker."
+                    )
+                else:
+                    logger.info(f"[Portfolio] Restored open position: {pos.symbol}")
+
+        except Exception as e:
+            logger.warning(f"[Portfolio] Could not restore positions: {e}")
+
+        # Load today's closed trades for accurate win-rate / P&L stats (Bug 18)
+        try:
+            today_str = datetime.now(tz=IST).strftime("%Y-%m-%d")
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                closed_rows = conn.execute(
+                    "SELECT * FROM trades WHERE status = 'CLOSED' AND entry_time >= ?",
+                    (today_str,),
+                ).fetchall()
+            for row in closed_rows:
+                try:
+                    options_meta = json.loads(row["options_meta"] or "{}") if "options_meta" in row.keys() else {}
+                except Exception:
+                    options_meta = {}
                 pos = Position(
                     id              = row["id"],
                     symbol          = row["symbol"],
                     strategy        = row["strategy"],
                     direction       = row["direction"],
-                    signal_type     = row["signal_type"],
+                    signal_type     = row["signal_type"] if "signal_type" in row.keys() else "EQUITY",
                     entry_price     = row["entry_price"],
                     stop_loss       = row["stop_loss"],
                     target_1        = row["target_1"],
@@ -383,13 +489,19 @@ class PortfolioTracker:
                     position_size   = row["position_size"],
                     capital_at_risk = row["capital_at_risk"],
                     entry_time      = datetime.fromisoformat(row["entry_time"]),
-                    hold_type       = row["hold_type"] if row["hold_type"] else "intraday",
+                    hold_type       = row["hold_type"] if "hold_type" in row.keys() and row["hold_type"] else "intraday",
+                    exit_price      = float(row["exit_price"]) if row["exit_price"] else 0.0,
+                    exit_time       = datetime.fromisoformat(row["exit_time"]) if row["exit_time"] else None,
+                    realised_pnl    = float(row["realised_pnl"]) if row["realised_pnl"] else 0.0,
+                    status          = "CLOSED",
+                    exit_reason     = row["exit_reason"] or "",
+                    options_meta    = options_meta,
                 )
-                self._open_positions[pos.symbol] = pos
-                logger.info(f"[Portfolio] Restored open position: {pos.symbol}")
-
+                self._closed_trades.append(pos)
+            if closed_rows:
+                logger.info(f"[Portfolio] Restored {len(closed_rows)} today's closed trades")
         except Exception as e:
-            logger.warning(f"[Portfolio] Could not restore positions: {e}")
+            logger.warning(f"[Portfolio] Could not restore closed trades: {e}")
 
 
 # ── Module-level singleton ────────────────────────────────────────

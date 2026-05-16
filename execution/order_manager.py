@@ -20,9 +20,7 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-from config.settings import BOT_MODE, TOTAL_CAPITAL
-import os
-PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
+from config.settings import BOT_MODE, PAPER_TRADING, TOTAL_CAPITAL   # Bug 16: use settings constant
 from risk.portfolio_tracker import portfolio_tracker
 from risk.risk_manager import risk_manager
 from strategies.base_strategy import Direction, Signal, SignalType
@@ -305,8 +303,17 @@ class OrderManager:
                 f"order {entry_order_id} — attempting cancel"
             )
             broker.cancel_order(entry_order_id)
-            self._send_alert(signal, "FILL_FAILED", pending=False)
-            return
+            # Bug 4: do one final check after cancel — order may have already filled
+            fill_price, fill_qty = self._confirm_fill(
+                broker, entry_order_id, signal, max_wait=5
+            )
+            if fill_price is None:
+                self._send_alert(signal, "FILL_FAILED", pending=False)
+                return
+            logger.warning(
+                f"[OrderManager] Fill detected AFTER cancel attempt for {signal.symbol}: "
+                f"qty={fill_qty} @ ₹{fill_price:.2f} — recording position and placing SL"
+            )
 
         logger.info(
             f"[OrderManager] Fill confirmed: {signal.symbol} "
@@ -347,6 +354,9 @@ class OrderManager:
             )
             self._emergency_exit(broker, signal, fill_price, fill_qty)
             return
+
+        # Bug 2 (part 2): persist the SL order ID so _update_broker_sl can cancel it later
+        portfolio_tracker.update_sl_order_id(signal.symbol, sl_order_id)
 
         # ── Step 5: Send success alert ────────────────────────────
         self._send_alert(signal, sl_order_id, pending=False)
@@ -406,7 +416,7 @@ class OrderManager:
                 product    = opt_product,
             )
             if oid:
-                placed_ids.append(oid)
+                placed_ids.append((nfo_symbol, direction, oid))
                 logger.info(
                     f"[OrderManager] OPTIONS leg placed: "
                     f"{direction} {qty} × {nfo_symbol} → {oid}"
@@ -416,17 +426,32 @@ class OrderManager:
                     f"[OrderManager] OPTIONS leg FAILED: "
                     f"{direction} {qty} × {nfo_symbol}"
                 )
+                # Bug 3: Close every successfully placed leg to prevent naked exposure
                 if placed_ids:
                     logger.critical(
-                        f"[OrderManager] PARTIAL OPTIONS FILL on {signal.symbol}. "
-                        f"Legs placed: {placed_ids}. "
-                        f"MANUAL CLOSE of partial position required immediately."
+                        f"[OrderManager] PARTIAL OPTIONS FILL on {signal.symbol} — "
+                        f"rolling back {len(placed_ids)} placed leg(s) to prevent naked position."
                     )
+                    for placed_sym, placed_dir, _ in placed_ids:
+                        close_dir = "LONG" if placed_dir == "SHORT" else "SHORT"
+                        close_id = broker.place_order(
+                            symbol     = placed_sym,
+                            direction  = close_dir,
+                            qty        = qty,
+                            order_type = "MARKET",
+                        )
+                        if close_id:
+                            logger.info(f"[OrderManager] Rolled back leg {placed_sym}: {close_id}")
+                        else:
+                            logger.critical(
+                                f"[OrderManager] ROLLBACK FAILED for {placed_sym} — "
+                                f"MANUAL CLOSE REQUIRED IMMEDIATELY"
+                            )
                     self._send_alert(signal, "OPTIONS_PARTIAL_FILL", pending=False)
                 return
 
         portfolio_tracker.open_position(signal, fill_price=signal.entry)
-        self._send_alert(signal, ",".join(placed_ids), pending=False)
+        self._send_alert(signal, ",".join(oid for _, _, oid in placed_ids), pending=False)
 
     @staticmethod
     def _build_option_legs(
@@ -469,20 +494,22 @@ class OrderManager:
         return []
 
     def _confirm_fill(
-        self, broker, order_id: str, signal: Signal
+        self, broker, order_id: str, signal: Signal, max_wait: int = ORDER_POLL_MAX_WAIT
     ) -> tuple[Optional[float], int]:
         """
         Poll broker until order fills or times out.
         Returns (fill_price, fill_qty) or (None, 0) if failed.
+        max_wait can be shortened for the post-cancel final check (Bug 4).
         """
-        deadline = time.time() + ORDER_POLL_MAX_WAIT
+        deadline = time.time() + max_wait
 
         while time.time() < deadline:
             try:
                 orders = broker.get_orders()
                 for order in orders:
                     oid = order.get("id") or order.get("orderId") or order.get("order_id", "")
-                    if str(oid) != str(order_id):
+                    # Bug 17: strip whitespace to avoid ID mismatch from broker formatting
+                    if str(oid).strip() != str(order_id).strip():
                         continue
 
                     status = (
@@ -499,12 +526,19 @@ class OrderManager:
                             order.get("filled_avg_price") or
                             signal.entry
                         )
-                        fill_qty = int(
+                        # Bug 14: warn if fill_qty cannot be read from broker response
+                        raw_qty = (
                             order.get("tradedQty") or
                             order.get("filledQty") or
-                            order.get("filled_qty") or
-                            signal.position_size
+                            order.get("filled_qty")
                         )
+                        if raw_qty is None:
+                            logger.warning(
+                                f"[OrderManager] fill_qty missing in broker response for "
+                                f"{order_id} — using signal size {signal.position_size}. "
+                                f"Verify actual fill in Fyers app."
+                            )
+                        fill_qty = int(raw_qty) if raw_qty is not None else signal.position_size
                         return fill_price, fill_qty
 
                     if status in ("5", "6", "CANCELLED", "REJECTED", "EXPIRED"):
