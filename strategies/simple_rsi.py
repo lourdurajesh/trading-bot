@@ -22,7 +22,7 @@ from datetime import datetime, time as dtime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from analysis.indicators import atr, rsi, bollinger_bands, ema
+from analysis.indicators import atr, rsi, bollinger_bands, ema, relative_volume
 from data.data_store import store
 
 IST             = ZoneInfo("Asia/Kolkata")
@@ -34,6 +34,7 @@ RSI_OVERBOUGHT  = 65
 ATR_STOP_MULT   = 1.5
 TARGET_R_1      = 1.0   # T1 — partial booking trigger (50% exits here)
 TARGET_R_2      = 2.0   # T2 — full exit; let remaining 50% run to 2R
+MIN_RVOL        = 1.2   # minimum relative volume — filters low-conviction signals
 TIMEFRAME       = "15m"
 MIN_BARS        = 30
 
@@ -67,9 +68,14 @@ class SimpleRSIStrategy:
         close     = df["close"]
         rsi_val   = rsi(close).iloc[-1]
         atr_val   = atr(df).iloc[-1]
+        rvol_val  = relative_volume(df).iloc[-1]
         upper, middle, lower = bollinger_bands(close)
         ema21_val = ema(close, 21).iloc[-1]
         ema50_val = ema(close, 50).iloc[-1]
+
+        # Low-volume signals have poor follow-through — skip quiet bars
+        if rvol_val < MIN_RVOL:
+            return None
 
         direction = None
         if rsi_val < RSI_OVERSOLD:
@@ -117,6 +123,7 @@ class SimpleRSIStrategy:
             "rr":          round(rr, 2),
             "metadata": {
                 "rsi":           round(rsi_val, 1),
+                "rvol":          round(rvol_val, 2),
                 "atr":           round(atr_val, 2),
                 "entry_atr":     round(atr_val, 2),   # for volatility exit comparison
                 "risk_pts":      round(risk, 2),       # for partial booking R calc

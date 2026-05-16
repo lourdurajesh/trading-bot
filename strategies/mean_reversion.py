@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 RSI_OVERSOLD        = 40       # raised from 35 — catches more pullbacks in ranging markets
 RSI_OVERBOUGHT      = 60       # lowered from 65 — catches more pushes to upper band
 BB_PROXIMITY_PCT    = 0.010    # raised from 0.5% to 1% — wider "near band" zone
-MIN_RVOL            = 1.0      # lower than trend — reversals can be quiet
+MIN_RVOL            = 1.2      # require above-average volume to confirm reversal signal
 ATR_STOP_BUFFER     = 1.0      # widened from 0.5 — gives trade more room past daily noise
 MIN_STOP_PCT        = 0.0075   # floor: stop must be at least 0.75% from entry
 
@@ -104,8 +104,14 @@ class MeanReversionStrategy(BaseStrategy):
         if not ltp:
             return None
 
-        close   = df_15m["close"]
-        rsi_val = rsi(close).iloc[-1]
+        close    = df_15m["close"]
+        rsi_val  = rsi(close).iloc[-1]
+        rvol_val = relative_volume(df_15m).iloc[-1]
+
+        # Low-volume bars produce false BB touches — require above-average participation
+        if rvol_val < MIN_RVOL:
+            self.log_skip(symbol, f"RVOL {rvol_val:.2f} below {MIN_RVOL} — low participation")
+            return None
 
         # ── 3. Bollinger Bands ────────────────────────────────────
         upper, middle, lower = bollinger_bands(close)

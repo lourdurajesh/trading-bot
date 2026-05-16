@@ -115,8 +115,8 @@ MCX_STRATEGY_CONFIG: dict = {
         "sl_debit_pct":         0.40,   # exit when spread loses 40% of debit in spot-equivalent terms
         "trail_debit_pct":      0.30,   # trailing SL distance = 30% of debit below/above peak
         "trail_trigger_pct":    0.50,   # trailing activates once gain = 50% of debit in spot-equivalent terms
-        "target_pct":           0.50,   # initial exit target = 50% of max profit
-        "target_upgraded_pct":  0.75,   # target raised to 75% when strong momentum
+        "target_pct":           0.65,   # initial exit target = 65% of max profit (was 50% — left too much on table)
+        "target_upgraded_pct":  0.80,   # target raised to 80% when strong momentum (was 75%)
         "target_upgrade_mult":  2.0,    # upgrade after favorable move ≥ 2× SL distance
     },
     "RSIReversalSpread": {
@@ -129,8 +129,8 @@ MCX_STRATEGY_CONFIG: dict = {
         "sl_debit_pct":         0.35,   # tighter SL — counter-trend trades fail faster
         "trail_debit_pct":      0.25,
         "trail_trigger_pct":    0.45,
-        "target_pct":           0.50,
-        "target_upgraded_pct":  0.70,   # lower upgrade ceiling — reversal momentum is less sustained
+        "target_pct":           0.65,   # was 0.50
+        "target_upgraded_pct":  0.78,   # lower ceiling than trend — reversal momentum less sustained
         "target_upgrade_mult":  2.0,
     },
     "BreakoutSpread": {
@@ -143,8 +143,8 @@ MCX_STRATEGY_CONFIG: dict = {
         "sl_debit_pct":         0.40,   # FALSE_BREAKOUT fires first; STOP_SPOT is the fallback
         "trail_debit_pct":      0.30,
         "trail_trigger_pct":    0.50,
-        "target_pct":           0.50,
-        "target_upgraded_pct":  0.75,
+        "target_pct":           0.65,   # was 0.50
+        "target_upgraded_pct":  0.80,
         "target_upgrade_mult":  2.0,
     },
 }
@@ -376,6 +376,8 @@ class CommodityOptionsLearning:
     Run learning_cycle() every 60 seconds during MCX hours.
     """
 
+    MAX_DAILY_ENTRIES_PER_INSTRUMENT = 2  # cap re-entries to avoid compounding on choppy instruments
+
     def __init__(self):
         self._open_positions: dict[str, dict] = {}  # key → trade
         self._chain_cache:    dict[str, tuple] = {}  # symbol → (data, fetched_at)
@@ -384,6 +386,9 @@ class CommodityOptionsLearning:
         self._cooldown_cleared: set[str] = set()        # instruments manually force-cleared via API
         self._trade_mode: str = "PAPER"                 # "PAPER" or "REAL"
         self._enabled_commodities: set[str] = set()
+        # Per-instrument daily entry counter — reset each calendar day
+        self._daily_entries: dict[str, int] = {}        # instrument → entries taken today
+        self._daily_entries_date: date = date.today()
         # Wired by main.py to trigger stream resubscription when a rollover symbol changes
         self._on_instrument_update = None
         self._init_db()
@@ -958,6 +963,13 @@ class CommodityOptionsLearning:
         if not (MCX_MARKET_OPEN <= now.time() <= MCX_MARKET_CLOSE):
             return
 
+        # Reset per-instrument daily entry counters at the start of each new day
+        today = now.date()
+        if today != self._daily_entries_date:
+            self._daily_entries.clear()
+            self._daily_entries_date = today
+            logger.info("[CommOpts] Daily entry counters reset for new trading day")
+
         from data.data_store import store
 
         open_count = len(self._open_positions)
@@ -980,6 +992,15 @@ class CommodityOptionsLearning:
 
         # Already have an open position for this commodity?
         if any(short in k for k in self._open_positions):
+            return
+
+        # Daily entry cap — prevents compounding losses on choppy instruments (e.g. Silver May-14)
+        entries_today = self._daily_entries.get(short, 0)
+        if entries_today >= self.MAX_DAILY_ENTRIES_PER_INSTRUMENT:
+            logger.info(
+                f"[CommOpts] {short} daily entry cap reached "
+                f"({entries_today}/{self.MAX_DAILY_ENTRIES_PER_INSTRUMENT}) — skipping"
+            )
             return
 
         # Post-exit cooldown — in-memory fast path
@@ -1076,6 +1097,11 @@ class CommodityOptionsLearning:
         )
         if trade:
             self._open_trade(trade)
+            self._daily_entries[short] = self._daily_entries.get(short, 0) + 1
+            logger.info(
+                f"[CommOpts] {short} daily entries: "
+                f"{self._daily_entries[short]}/{self.MAX_DAILY_ENTRIES_PER_INSTRUMENT}"
+            )
 
     # ─────────────────────────────────────────────────────────────
     # STRATEGY EVALUATORS
@@ -1133,30 +1159,40 @@ class CommodityOptionsLearning:
         return None
 
     def _check_breakout_spread(self, df, spot: float):
-        """BreakoutSpread: 5-bar price breakout above/below recent range with RSI confirmation.
-        Returns a 7-tuple; 7th element is the breakout level used for false-breakout invalidation.
+        """BreakoutSpread: 12-bar price breakout above/below recent range with RSI confirmation.
+
+        Uses a 12-bar lookback (was 5) to define a meaningful range — 5 bars on 1H is only
+        5 hours which is intraday noise.  Requires spot to clear the range high/low by at
+        least 20% of ATR (buffer) to avoid 1-tick false triggers.
+
+        Returns a 7-tuple; 7th element is the breakout level used for false-breakout exit.
         """
         try:
-            from analysis.indicators import rsi as calc_rsi, ema as calc_ema
+            from analysis.indicators import rsi as calc_rsi, ema as calc_ema, atr as calc_atr
             close   = df["close"]
             rsi_val = calc_rsi(close).iloc[-1]
             ema20   = calc_ema(close, 20).iloc[-1]
             ema5    = calc_ema(close, 5).iloc[-1]
+            atr_val = calc_atr(df).iloc[-1]
 
-            if len(close) < 6:
+            if len(close) < 14:
                 return None
 
-            prev_high = close.iloc[-6:-1].max()
-            prev_low  = close.iloc[-6:-1].min()
+            # 12-bar range (excluding current bar) — defines a meaningful consolidation zone
+            prev_high = close.iloc[-13:-1].max()
+            prev_low  = close.iloc[-13:-1].min()
 
-            if spot > prev_high and rsi_val > 52:
+            # ATR buffer: spot must clear the range by 20% of ATR to filter noise
+            buffer = round(atr_val * 0.20, 2)
+
+            if spot > prev_high + buffer and rsi_val > 52:
                 return ("LONG", "BreakoutSpread",
-                        f"Breakout above {prev_high:.0f}, RSI={rsi_val:.1f}",
+                        f"Breakout above {prev_high:.0f}+{buffer:.0f}buf, RSI={rsi_val:.1f}",
                         round(rsi_val, 1), round(ema5, 2), round(ema20, 2),
                         round(prev_high, 2))
-            if spot < prev_low and rsi_val < 48:
+            if spot < prev_low - buffer and rsi_val < 48:
                 return ("SHORT", "BreakoutSpread",
-                        f"Breakdown below {prev_low:.0f}, RSI={rsi_val:.1f}",
+                        f"Breakdown below {prev_low:.0f}-{buffer:.0f}buf, RSI={rsi_val:.1f}",
                         round(rsi_val, 1), round(ema5, 2), round(ema20, 2),
                         round(prev_low, 2))
         except Exception as exc:

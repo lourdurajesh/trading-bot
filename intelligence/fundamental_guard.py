@@ -25,7 +25,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT  = 8
-EARNINGS_GUARD_DAYS = 5     # block trades within this many days of earnings
+EARNINGS_GUARD_DAYS = 2     # block trades within this many days of earnings (was 5 — too broad during Q4 season)
 
 HEADERS = {
     "User-Agent": (
@@ -202,7 +202,7 @@ class FundamentalGuard:
         score = 10.0
 
         # Earnings proximity penalty
-        if risk.days_to_earnings <= 5:
+        if risk.days_to_earnings <= 2:
             score -= 5.0
         elif risk.days_to_earnings <= 10:
             score -= 2.0

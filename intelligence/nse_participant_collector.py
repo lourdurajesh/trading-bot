@@ -132,14 +132,24 @@ class NSEParticipantCollector:
         change = row.fii_net_change
         net    = row.fii_net
 
-        # First collection: change=0 because there is no previous row to diff against.
-        # Return 0 but distinguish from a genuine neutral day.
+        # First-ever collection produces change=0 (no prior row to diff against).
+        # Distinguish "just collected today" (need tomorrow) from "stale — collect() hasn't run".
         symbol_rows = [r for r in self._history if r.get("symbol") == symbol]
         if change == 0 and len(symbol_rows) <= 1:
-            return 0, (
-                f"FII baseline established today (net={net:+,} contracts) — "
-                f"day-over-day change available from day 2"
-            )
+            today_str = datetime.now(tz=IST).date().isoformat()
+            row_date  = symbol_rows[0].get("date", "") if symbol_rows else ""
+            if row_date == today_str:
+                return 0, (
+                    f"FII baseline established today (net={net:+,} contracts) — "
+                    f"day-over-day change available from day 2"
+                )
+            else:
+                # Data is stale — collect() hasn't run since {row_date}.
+                # Return neutral so we don't block trading forever.
+                return 0, (
+                    f"FII data stale (last collected {row_date}) — "
+                    f"run scripts/seed_fii_history.py or check 17:30 IST cron"
+                )
 
         if change > 10_000:
             return 3, f"FII bought {change:+,} {symbol} futures | net={net:+,} (strongly bullish)"

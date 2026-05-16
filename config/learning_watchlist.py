@@ -15,12 +15,12 @@ monthly so they may need updating. Verified format: MCX:GOLD25JUNFUT
 # ── NSE Large-cap equities ────────────────────────────────────────
 # Diversified: banking, IT, pharma, energy, consumer, metals, telecom
 LEARNING_NSE_EQUITIES = [
-    # Banking
+    # Banking (large-cap) — vetoed during Q4 results week; mid-caps below fill the gap
     "NSE:HDFCBANK-EQ",
     "NSE:ICICIBANK-EQ",
     "NSE:SBIN-EQ",
     "NSE:AXISBANK-EQ",
-    # IT
+    # IT (large-cap)
     "NSE:TCS-EQ",
     "NSE:INFY-EQ",
     "NSE:WIPRO-EQ",
@@ -33,7 +33,7 @@ LEARNING_NSE_EQUITIES = [
     "NSE:RELIANCE-EQ",
     "NSE:ONGC-EQ",
     "NSE:NTPC-EQ",
-    # Pharma
+    # Pharma (large-cap)
     "NSE:SUNPHARMA-EQ",
     "NSE:DRREDDY-EQ",
     # Metals & Industrial
@@ -44,6 +44,26 @@ LEARNING_NSE_EQUITIES = [
     "NSE:BAJAJ-AUTO-EQ",
     # Cement
     "NSE:ULTRACEMCO-EQ",
+    # ── Mid-caps (F&O eligible) — staggered results, active when large-caps vetoed ──
+    # IT mid-cap (results 2-3 weeks after TCS/Infy cluster)
+    "NSE:PERSISTENT-EQ",
+    "NSE:COFORGE-EQ",
+    "NSE:LTTS-EQ",
+    # NBFC / Finance (independent results calendar)
+    "NSE:ABCAPITAL-EQ",
+    "NSE:MUTHOOTFIN-EQ",
+    # Pharma mid-cap
+    "NSE:AUROPHARMA-EQ",
+    "NSE:ALKEM-EQ",
+    # Consumer & Retail
+    "NSE:HAVELLS-EQ",
+    "NSE:DMART-EQ",
+    # Banking (small/mid — independent results window)
+    "NSE:IDFCFIRSTB-EQ",
+    "NSE:FEDERALBNK-EQ",
+    # Digital / diversified
+    "NSE:ZOMATO-EQ",
+    "NSE:NAUKRI-EQ",
 ]
 
 # ── NSE Indices ───────────────────────────────────────────────────

@@ -30,6 +30,7 @@ TIMEFRAME   = "1H"
 MIN_BARS    = 30
 ATR_MULT    = 1.5
 TARGET_R    = 3.0
+MIN_RVOL    = 1.2   # minimum relative volume on crossover bar
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,10 @@ class SimpleMomentumStrategy:
 
         # Require a real trend — crossovers in low-ADX ranging markets are noise
         if adx_val < 20:
+            return None
+
+        # Low-volume crossovers are often false — need participation to confirm
+        if rvol_val < MIN_RVOL:
             return None
 
         # Don't short into an already-exhausted move — bounce risk too high (TITAN scenario)
