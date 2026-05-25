@@ -1246,8 +1246,14 @@ class CommodityOptionsLearning:
         5 hours which is intraday noise.  Requires spot to clear the range high/low by at
         least 20% of ATR (buffer) to avoid 1-tick false triggers.
 
+        Skips the first 30 min of MCX session (09:00–09:29) — the opening bar is incomplete
+        and opening gaps frequently reverse before 09:30, generating false breakdown signals.
+
         Returns a 7-tuple; 7th element is the breakout level used for false-breakout exit.
         """
+        now = datetime.now(tz=IST)
+        if now.hour == 9 and now.minute < 30:
+            return None
         try:
             from analysis.indicators import rsi as calc_rsi, ema as calc_ema, atr as calc_atr
             close   = df["close"]
