@@ -255,11 +255,14 @@ def _apply_to_module(strategy: str, param: str, value) -> None:
         _set_instance_enabled(strategy, value)
         return
 
-    # Settings-level params (not module globals)
+    # Settings-level params (not module globals).
+    # Env vars always win over persisted JSON overrides — only apply the JSON
+    # value when the env var is absent so that .env edits take effect on restart.
     if strategy == "institutional_momentum" and param == "CONVICTION_THRESHOLD":
         try:
             import config.settings as _s
-            _s.CONVICTION_THRESHOLD = int(value)
+            if os.getenv("CONVICTION_THRESHOLD") is None:
+                _s.CONVICTION_THRESHOLD = int(value)
         except Exception as e:
             logger.warning(f"[StrategyConfig] Could not update CONVICTION_THRESHOLD in settings: {e}")
         return
@@ -267,7 +270,8 @@ def _apply_to_module(strategy: str, param: str, value) -> None:
     if strategy == "institutional_momentum" and param == "MAX_FO_CAPITAL_PCT":
         try:
             import config.settings as _s
-            _s.MAX_FO_CAPITAL_PCT = int(value)
+            if os.getenv("MAX_FO_CAPITAL_PCT") is None:
+                _s.MAX_FO_CAPITAL_PCT = int(value)
         except Exception as e:
             logger.warning(f"[StrategyConfig] Could not update MAX_FO_CAPITAL_PCT in settings: {e}")
         return
@@ -302,3 +306,23 @@ def _set_instance_enabled(strategy: str, value: bool) -> None:
 # Strategy module globals are patched later by reapply_all_overrides()
 # once all strategy modules are in sys.modules (called from StrategySelector.__init__).
 _load_overrides()
+
+# Re-apply env vars on top of any persisted overrides so that .env edits
+# always win after a restart. Also syncs STRATEGY_CONFIGS display values.
+_env_ct = os.getenv("CONVICTION_THRESHOLD")
+if _env_ct is not None:
+    STRATEGY_CONFIGS["institutional_momentum"]["CONVICTION_THRESHOLD"]["value"] = int(_env_ct)
+    try:
+        import config.settings as _s
+        _s.CONVICTION_THRESHOLD = int(_env_ct)
+    except Exception:
+        pass
+
+_env_fo = os.getenv("MAX_FO_CAPITAL_PCT")
+if _env_fo is not None:
+    STRATEGY_CONFIGS["institutional_momentum"]["MAX_FO_CAPITAL_PCT"]["value"] = int(_env_fo)
+    try:
+        import config.settings as _s
+        _s.MAX_FO_CAPITAL_PCT = int(_env_fo)
+    except Exception:
+        pass
