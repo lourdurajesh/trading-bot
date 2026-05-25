@@ -2758,13 +2758,13 @@ function App() {
                         <div className="conviction-meta">
                           <div className={`conviction-direction ${scoreClass}`}>{cv.direction}</div>
                           <div className="conviction-tradeable" style={{color: cv.tradeable ? "#22c55e" : "#f59e0b"}}>
-                            {cv.tradeable ? `TRADEABLE — deploying ${cv.capital_pct}% capital` : `BELOW THRESHOLD — no index trade (need ±7, got ${cv.score > 0 ? '+' : ''}${cv.score})`}
+                            {cv.tradeable ? `TRADEABLE — deploying ${cv.capital_pct}% capital` : `BELOW THRESHOLD — no index trade (need ±${cv.threshold ?? 7}, got ${cv.score > 0 ? '+' : ''}${cv.score})`}
                           </div>
                           <div className="conviction-timestamp">{cv.timestamp || cv.date}</div>
                         </div>
                         <div style={{textAlign:"right"}}>
                           <div style={{fontSize:10,color:"#94a3b8",marginBottom:4}}>Threshold</div>
-                          <div style={{fontFamily:"monospace",fontWeight:700,fontSize:16,color:"#64748b"}}>±7</div>
+                          <div style={{fontFamily:"monospace",fontWeight:700,fontSize:16,color:"#64748b"}}>±{cv.threshold ?? 7}</div>
                         </div>
                       </div>
                       <div className="conviction-signals">

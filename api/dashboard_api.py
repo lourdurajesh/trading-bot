@@ -1468,9 +1468,12 @@ def get_conviction_today():
         today = datetime.now(tz=IST).strftime("%Y-%m-%d")
         saved = conviction_scorer.get_for_date(today)
         if saved:
+            from config.settings import CONVICTION_THRESHOLD
+            saved.setdefault("threshold", CONVICTION_THRESHOLD)
             return saved
         last = conviction_scorer.get_last_score()
         if last:
+            from config.settings import CONVICTION_THRESHOLD
             return {
                 "date":        today,
                 "timestamp":   last.timestamp,
@@ -1485,6 +1488,7 @@ def get_conviction_today():
                 "vix_score":   last.vix_score,
                 "gift_score":  last.gift_score,
                 "rs_score":    last.rs_score,
+                "threshold":   CONVICTION_THRESHOLD,
             }
         return {"error": "No conviction score computed today (bot not started or pre-market not run yet)"}
     except Exception as e:

@@ -158,8 +158,8 @@ class SpreadQualityEngine:
             return result
 
         # ── 2. Liquidity (OI) ─────────────────────────────────────
-        long_oi_score  = min(10.0, long_leg.oi  / MIN_OI_LONG  * 5)
-        short_oi_score = min(10.0, short_leg.oi / MIN_OI_SHORT * 5)
+        long_oi_score  = min(10.0, long_leg.oi  / MIN_OI_LONG  * 5) if MIN_OI_LONG  > 0 else 10.0
+        short_oi_score = min(10.0, short_leg.oi / MIN_OI_SHORT * 5) if MIN_OI_SHORT > 0 else 10.0
         result.liquidity_score = (long_oi_score + short_oi_score) / 2
 
         if long_leg.oi < MIN_OI_LONG or short_leg.oi < MIN_OI_SHORT:
