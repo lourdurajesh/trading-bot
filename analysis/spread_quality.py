@@ -28,8 +28,8 @@ ENABLED           = os.getenv("SPREAD_QUALITY_ENABLED", "true").lower() != "fals
 QUALITY_THRESHOLD = float(os.getenv("SPREAD_QUALITY_THRESHOLD", "4.5"))   # reject below this
 
 # Minimum liquidity requirements
-MIN_OI_LONG   = 500    # minimum OI on the long (ATM) leg
-MIN_OI_SHORT  = 300    # minimum OI on the short (OTM) leg
+MIN_OI_LONG   = int(float(os.getenv("MIN_OI_LONG",   "500")))  # minimum OI on the long (ATM) leg
+MIN_OI_SHORT  = int(float(os.getenv("MIN_OI_SHORT",  "300")))  # minimum OI on the short (OTM) leg
 MIN_RR        = 0.8    # minimum risk/reward (max_profit / net_debit)
 MAX_SPREAD_PCT = 0.15  # max bid-ask spread as % of mid-price (15%) on either leg
 
