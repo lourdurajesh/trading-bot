@@ -184,8 +184,19 @@ class ConvictionScorer:
         This is real order-book consensus — the price at which buyers and sellers
         have already agreed to transact BEFORE the market opens.
         Only returns non-zero after 9:08 AM when the call auction finalises.
+        Outside the pre-open window, returns today's stored IEP score so the
+        signal is preserved across bot restarts during the trading day.
         """
         try:
+            now = datetime.now(tz=IST)
+            # Past the IEP window (9:00–9:20 AM) — use stored value to survive restarts
+            if now.hour > 9 or (now.hour == 9 and now.minute >= 20):
+                today_str = now.date().isoformat()
+                saved = self.get_for_date(today_str)
+                if saved and "iep_score" in saved:
+                    stored = saved["iep_score"]
+                    direction = "bullish" if stored > 0 else ("bearish" if stored < 0 else "neutral")
+                    return stored, f"Pre-open IEP stored {stored:+d} ({direction}, gap locked in at open)"
             from intelligence.premarket_analyzer import premarket_analyzer
             score, reason = premarket_analyzer.get_signal()
             return max(-2, min(2, score)), reason
@@ -336,6 +347,7 @@ class ConvictionScorer:
             today_str = datetime.now(tz=IST).date().isoformat()
             # Replace any existing entry for today (keep latest re-score)
             history = [h for h in history if h.get("date") != today_str]
+            from config.settings import CONVICTION_THRESHOLD
             history.append({
                 "date":        today_str,
                 "timestamp":   result.timestamp,
@@ -343,6 +355,7 @@ class ConvictionScorer:
                 "direction":   result.direction,
                 "tradeable":   result.tradeable,
                 "capital_pct": result.capital_pct,
+                "threshold":   CONVICTION_THRESHOLD,
                 "reasons":     result.reasons,
                 "fii_score":   result.fii_score,
                 "oi_score":    result.oi_score,
