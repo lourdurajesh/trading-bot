@@ -1,7 +1,8 @@
-# Deploy Notes — Bug Fixes (2026-05-27)
+# Deploy Notes — Bug Fixes (2026-05-27 / 2026-05-28)
 
-Three bugs diagnosed from today's session. All fixes are in this commit.
-Two steps to deploy on the prod server: run the SQL script, then restart the bot.
+Five bugs diagnosed across two sessions. All fixes are pure code changes.
+**2026-05-27 fixes**: run the SQL script (fix_instruments_20260527.sql), then restart.
+**2026-05-28 fixes**: code-only — no SQL or env changes needed.
 
 ---
 
@@ -63,6 +64,55 @@ to the next contract month when `today.day >= month_end − buffer`.
 
 ---
 
+### Bug 4 — MCX Trading on Holidays (commodity_options_learning.py + market_holidays.py)
+**Files**: `commodity_options_learning.py`, `config/market_holidays.py`
+
+**Problem**: `run_cycle()` had no holiday check — it only verified MCX market hours
+(09:00–23:30 IST). On exchange holidays, `commodity_options.run_cycle()` in `main.py`
+fired as normal because `_is_market_hours()` (which calls `is_trading_holiday()`) only
+gates NSE equity strategies, not MCX commodity cycles.
+
+**Fix**:
+1. Added `is_mcx_holiday(d)` function to `config/market_holidays.py`.
+   - Uses existing `NSE_HOLIDAYS` (national holidays common to both exchanges).
+   - Added `MCX_EXTRA_HOLIDAYS` set for MCX-only closures (e.g. Muharram) — empty for
+     now; update it each year from https://www.mcxindia.com/market-data/market-holidays
+2. `run_cycle()` now calls `is_mcx_holiday(today)` at the top and returns early if True.
+   Logs: `[CommOpts] MCX trading holiday (YYYY-MM-DD) — skipping entry scan`
+
+**No env/config changes needed. To add a future MCX-only holiday:**
+```python
+# config/market_holidays.py → MCX_EXTRA_HOLIDAYS
+date(2026, 7, 6),   # Muharram
+```
+
+---
+
+### Bug 5 — 30-Min Opening Blackout Only Applied to BreakoutSpread
+**File**: `commodity_options_learning.py`
+
+**Problem**: The 30-minute opening blackout (`if now.hour == 9 and now.minute < 30`)
+existed ONLY inside `_check_breakout_spread()`. The two higher-priority strategies —
+`TrendSpread` (priority 1) and `RSIReversalSpread` (priority 2) — had no such guard.
+Since `TrendSpread` fires first in the evaluation chain, a valid EMA crossover at 09:01
+would fire a trade immediately, bypassing the intended 30-minute wait.
+
+**Fix**:
+1. Added `MCX_OPEN_WAIT_MINUTES = 30` module-level constant (configurable).
+2. Moved the opening blackout check into `run_cycle()` — it now applies to ALL
+   strategies before `_evaluate()` is called:
+   ```python
+   if now.hour == 9 and now.minute < MCX_OPEN_WAIT_MINUTES:
+       return  # wait until 09:30 before any entry scan
+   ```
+3. Removed the duplicated `if now.hour == 9 and now.minute < 30: return None` from
+   `_check_breakout_spread()` and replaced it with a comment referencing the central guard.
+
+**No env/config changes needed. To change the opening wait (e.g. to 15 min):**
+Edit `MCX_OPEN_WAIT_MINUTES = 15` in `commodity_options_learning.py` top-of-file constants.
+
+---
+
 ## Deployment Steps
 
 ### Step 1 — Apply SQL to prod DB
@@ -105,6 +155,18 @@ At 09:00 and 09:10 tomorrow, confirm:
 [ConvictionScorer]   IEP [+X]: Pre-open IEP locked +X (bullish, first reading preserved)
 ```
 The word **"locked"** means the fix is active. If you see **"stored"** it is the post-09:20 path.
+
+**MCX opening blackout check** — in `logs/bot.log` between 09:00–09:29:
+```
+[CommOpts] Opening blackout active — Xmin until entry scan begins
+```
+At 09:30 the message disappears and normal cycle logs resume.
+
+**MCX holiday check** — on the next trading holiday, the log should show:
+```
+[CommOpts] MCX trading holiday (YYYY-MM-DD) — skipping entry scan
+```
+instead of any cycle or entry activity.
 
 ---
 

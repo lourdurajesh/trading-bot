@@ -487,6 +487,16 @@ def commodity_chain_full(symbol: str, expiry_idx: int = 0):
         return {"error": str(e), "source": "error", "strikes": [], "expiries": []}
 
 
+@app.get("/commodity/session")
+def commodity_session_status():
+    """Current MCX session phase and status message for the dashboard."""
+    try:
+        from commodity_options_learning import commodity_options
+        return {"ok": True, **commodity_options.get_mcx_session_status()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/commodity/ltp-debug")
 def commodity_ltp_debug():
     """
@@ -1292,7 +1302,7 @@ def commodity_manual_close(trade_id: str):
     Records MANUAL_CLOSE as exit reason and removes it from the engine's open positions.
     """
     try:
-        from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS, MCX_STRATEGY_CONFIG
+        from commodity_options_learning import commodity_options, _fyers_sym, MCX_CONTRACTS
         from datetime import datetime as _dt, timedelta as _td
         from zoneinfo import ZoneInfo as _ZI
         _IST = _ZI("Asia/Kolkata")
@@ -1340,8 +1350,7 @@ def commodity_manual_close(trade_id: str):
         # Apply entry cooldown — MANUAL_CLOSE always triggers cooldown regardless of
         # cooldown_enabled flag, because the user closed it due to a perceived problem.
         strategy  = trade.get("strategy", "")
-        strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
-        hours = strat_cfg.get("cooldown_hours", 3)   # default 3h if strategy unknown
+        hours = commodity_options.get_cooldown_hours(strategy)
         resume_at = _dt.now(tz=_IST) + _td(hours=hours)
         commodity_options._entry_cooldown[instrument] = resume_at
         cooldown_applied = True
@@ -1356,7 +1365,7 @@ def commodity_manual_close(trade_id: str):
                 "COMMODITY_MANUAL_CLOSE",
                 f"Dashboard manual close: {trade_id} {instrument} {direction} "
                 f"spot={spot:.2f} pnl=₹{pnl_inr:+.0f}"
-                + (f" | cooldown {strat_cfg.get('cooldown_hours',3)}h" if cooldown_applied else ""),
+                + (f" | cooldown {hours}h" if cooldown_applied else ""),
             )
         except Exception:
             pass
@@ -1370,7 +1379,7 @@ def commodity_manual_close(trade_id: str):
             "pnl_r":      pnl_r,
         }
         if cooldown_applied:
-            result["cooldown_hours"]  = strat_cfg.get("cooldown_hours", 3)
+            result["cooldown_hours"]  = hours
             result["cooldown_resume"] = commodity_options._entry_cooldown[instrument].strftime("%H:%M")
         return result
     except Exception as e:
@@ -1837,6 +1846,13 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
     # Learning trades+stats — only when changed (per-connection hash)
     learning, new_hash = _get_learning_payload(conn_learning_hash)
 
+    mcx_session: dict = {}
+    try:
+        from commodity_options_learning import commodity_options as _co
+        mcx_session = _co.get_mcx_session_status()
+    except Exception:
+        pass
+
     return {
         "timestamp":       datetime.now(tz=IST).isoformat(),
         "mode":            order_manager.mode,
@@ -1847,6 +1863,7 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
         "ltps":            ltps,
         "learning_ltps":   learning_ltps,
         "commodity_ltps":  commodity_ltps,
+        "mcx_session":     mcx_session,
         "paper_wallet":    paper_wallet,
         "system_alerts":   system_alerts,
         "token_status":    token_status,

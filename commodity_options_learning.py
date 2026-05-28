@@ -42,6 +42,10 @@ DB_PATH = "db/trades.db"
 
 logger = logging.getLogger(__name__)
 
+from strategies.mcx_base import MCXStrategy, MCXStrategyConfig, MCXSignalResult
+from strategies.mcx import TrendSpreadStrategy, RSIReversalSpreadStrategy, BreakoutSpreadStrategy
+from config.mcx_calendar import mcx_calendar, SessionPhase, SessionStatus
+
 # ── Enhancement modules (fail-safe imports) ───────────────────────
 try:
     from analysis.spread_quality import spread_quality_engine, LegData
@@ -69,6 +73,7 @@ MCX_MARKET_OPEN  = dtime(9, 0)
 MCX_MARKET_CLOSE = dtime(23, 30)
 # Stop taking new entries 30 min before close (spread widens)
 MCX_ENTRY_CUTOFF = dtime(20, 0)   # stop new entries at 8 PM — spreads widen after that
+# Note: MCX_OPEN_WAIT_MINUTES removed — use mcx_calendar.open_wait_minutes() instead
 
 # Populated at startup from the commodity_instruments DB table.
 # Code throughout this module reads these dicts; they are refreshed whenever
@@ -119,103 +124,7 @@ _INSTRUMENT_SEEDS = [
     ("MENTHAOIL",   "Mentha Oil",     360,     10, 0.40, "INR/kg",       300,   3000,  5, []),
 ]
 
-# ─────────────────────────────────────────────────────────────────
-# MCX STRATEGY CONFIGURATION — risk profiles and cooldown settings
-# ─────────────────────────────────────────────────────────────────
-# Strategies are evaluated in priority order (1 = first / most preferred).
-# cooldown_enabled / cooldown_hours are editable at runtime via API.
-MCX_STRATEGY_CONFIG: dict = {
-    "TrendSpread": {
-        "priority":             1,
-        "risk":                 "MEDIUM",
-        "risk_label":           "Trend-following EMA crossover — well-defined conditions, lower failure rate",
-        "risk_color":           "#f59e0b",
-        "cooldown_enabled":     True,
-        "cooldown_hours":       2,
-        # SL / trailing / target — all expressed as % of net_debit so the spot
-        # distance scales with what was actually paid (cheap spread = tight SL;
-        # expensive spread = more room). Configurable at runtime via /commodity/config.
-        "sl_debit_pct":         0.40,   # exit when spread loses 40% of debit in spot-equivalent terms
-        "trail_debit_pct":      0.30,   # trailing SL distance = 30% of debit below/above peak
-        "trail_trigger_pct":    0.50,   # trailing activates once gain = 50% of debit in spot-equivalent terms
-        "target_pct":           0.65,   # initial exit target = 65% of max profit (was 50% — left too much on table)
-        "target_upgraded_pct":  0.80,   # target raised to 80% when strong momentum (was 75%)
-        "target_upgrade_mult":  2.0,    # upgrade after favorable move ≥ 2× SL distance
-    },
-    "RSIReversalSpread": {
-        "priority":             2,
-        "risk":                 "HIGH",
-        "risk_label":           "Counter-trend reversal — may catch a falling knife if trend continues",
-        "risk_color":           "#f97316",
-        "cooldown_enabled":     True,
-        "cooldown_hours":       3,
-        "sl_debit_pct":         0.35,   # tighter SL — counter-trend trades fail faster
-        "trail_debit_pct":      0.25,
-        "trail_trigger_pct":    0.45,
-        "target_pct":           0.65,   # was 0.50
-        "target_upgraded_pct":  0.78,   # lower ceiling than trend — reversal momentum less sustained
-        "target_upgrade_mult":  2.0,
-    },
-    "BreakoutSpread": {
-        "priority":             3,
-        "risk":                 "HIGH",
-        "risk_label":           "Price breakout — frequent false signals, high failure rate",
-        "risk_color":           "#ef4444",
-        "cooldown_enabled":     True,
-        "cooldown_hours":       3,
-        "sl_debit_pct":         0.40,   # FALSE_BREAKOUT fires first; STOP_SPOT is the fallback
-        "trail_debit_pct":      0.30,
-        "trail_trigger_pct":    0.50,
-        "target_pct":           0.65,   # was 0.50
-        "target_upgraded_pct":  0.80,
-        "target_upgrade_mult":  2.0,
-    },
-}
-
-# ─────────────────────────────────────────────────────────────────
-# STRATEGY CONFIG PERSISTENCE
-# Editable params are saved here so they survive bot restarts.
-# Read-only fields (priority, risk, risk_label, risk_color) are
-# never written to the file.
-# ─────────────────────────────────────────────────────────────────
 _STRATEGY_CONFIG_PATH = "config/commodity_strategy_config.json"
-_READONLY_FIELDS = frozenset({"priority", "risk", "risk_label", "risk_color"})
-
-
-def _load_strategy_config() -> None:
-    """Overlay persisted user edits onto MCX_STRATEGY_CONFIG at startup."""
-    try:
-        with open(_STRATEGY_CONFIG_PATH, "r") as f:
-            saved = json.load(f)
-        for strat, params in saved.items():
-            if strat in MCX_STRATEGY_CONFIG:
-                for k, v in params.items():
-                    if k not in _READONLY_FIELDS:
-                        MCX_STRATEGY_CONFIG[strat][k] = v
-        logger.info(f"[CommOpts] Strategy config loaded from {_STRATEGY_CONFIG_PATH}")
-    except FileNotFoundError:
-        pass  # first run — file written on first update
-    except Exception as exc:
-        logger.warning(f"[CommOpts] Could not load strategy config: {exc}")
-
-
-def _save_strategy_config() -> None:
-    """Persist editable fields of MCX_STRATEGY_CONFIG to disk."""
-    import os
-    saveable = {
-        strat: {k: v for k, v in cfg.items() if k not in _READONLY_FIELDS}
-        for strat, cfg in MCX_STRATEGY_CONFIG.items()
-    }
-    try:
-        os.makedirs(os.path.dirname(_STRATEGY_CONFIG_PATH), exist_ok=True)
-        with open(_STRATEGY_CONFIG_PATH, "w") as f:
-            json.dump(saveable, f, indent=2)
-    except Exception as exc:
-        logger.error(f"[CommOpts] Could not save strategy config: {exc}")
-
-
-# Apply any previously saved overrides now (module-level, runs on import)
-_load_strategy_config()
 
 _MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
 
@@ -365,18 +274,28 @@ _SL_OVERRIDE_FIELDS = (
 
 def _merged_strat_cfg(instrument: str, strategy: str) -> dict:
     """Return strategy config overlaid with any per-instrument overrides.
+    Reads from the commodity_options singleton at call time — lazy reference
+    avoids the circular import/forward-reference issue.
 
     Instrument overrides (stored in MCX_CONTRACTS) take precedence over the
     strategy-level defaults for any field that has been explicitly set (non-None).
     This lets Silver use a wider SL while Copper uses a tighter one — without
     touching the shared strategy config.
     """
-    base = dict(MCX_STRATEGY_CONFIG.get(strategy, {}))
+    import sys
+    _mod = sys.modules[__name__]
+    base = {}
+    try:
+        _engine = getattr(_mod, "commodity_options", None)
+        if _engine is not None:
+            base = dict(_engine.get_strategy_cfg(strategy))
+    except Exception:
+        pass
     instr_cfg = MCX_CONTRACTS.get(instrument, {})
-    for field in _SL_OVERRIDE_FIELDS:
-        val = instr_cfg.get(field)
+    for f in _SL_OVERRIDE_FIELDS:
+        val = instr_cfg.get(f)
         if val is not None:
-            base[field] = val
+            base[f] = val
     return base
 
 
@@ -414,11 +333,18 @@ class CommodityOptionsLearning:
         self._daily_entries_date: date = date.today()
         # Wired by main.py to trigger stream resubscription when a rollover symbol changes
         self._on_instrument_update = None
+        # Strategy registry — initialised early so get_strategy_cfg() is safe during _reload_open_positions
+        self._strategy_registry: list[MCXStrategy] = sorted([
+            TrendSpreadStrategy(),
+            RSIReversalSpreadStrategy(),
+            BreakoutSpreadStrategy(),
+        ], key=lambda s: s.priority)
         self._init_db()
         self._load_trade_mode()
         self._load_enabled_commodities()
         self._reload_open_positions()
         self._reconcile_positions()
+        self._load_strategy_config()
 
     def _reload_open_positions(self) -> None:
         """Re-populate _open_positions from DB on startup so SL/TP monitoring
@@ -443,7 +369,7 @@ class CommodityOptionsLearning:
                 if "sl_price" not in meta_d:
                     net_debit = trade.get("net_debit", 0)
                     strategy  = trade.get("strategy", "")
-                    strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
+                    strat_cfg = self.get_strategy_cfg(strategy)
                     meta_d["sl_price"]    = _debit_sl_price(ep, direction, net_debit, strat_cfg)
                     meta_d["peak_spot"]   = ep
                     meta_d["target_pct"]  = strat_cfg.get("target_pct", 0.50)
@@ -939,8 +865,8 @@ class CommodityOptionsLearning:
     # ─────────────────────────────────────────────────────────────
 
     def get_strategy_config(self) -> dict:
-        """Return MCX_STRATEGY_CONFIG (risk profiles + cooldown settings)."""
-        return MCX_STRATEGY_CONFIG
+        """Return strategy configs keyed by name (risk profiles + cooldown settings)."""
+        return {s.name: s.config.to_dict() for s in self._strategy_registry}
 
     def get_cooldown_status(self) -> dict:
         """Return currently active cooldowns with remaining time."""
@@ -954,39 +880,96 @@ class CommodityOptionsLearning:
             if resume_at > now
         }
 
+    def _load_strategy_config(self) -> None:
+        """Load persisted overrides from file and apply to each strategy in the registry."""
+        try:
+            import json as _json
+            with open(_STRATEGY_CONFIG_PATH, "r") as f:
+                saved = _json.load(f)
+            for strategy in self._strategy_registry:
+                if strategy.name in saved:
+                    strategy.apply_config_overrides(saved[strategy.name])
+            logger.info(f"[CommOpts] Strategy config loaded from {_STRATEGY_CONFIG_PATH}")
+        except FileNotFoundError:
+            pass  # first run — file written on first update
+        except Exception as exc:
+            logger.warning(f"[CommOpts] Could not load strategy config: {exc}")
+
+    def _save_strategy_config(self) -> None:
+        """Persist mutable fields of each strategy to disk."""
+        import os, json as _json
+        saveable = {s.name: s.config.mutable_dict() for s in self._strategy_registry}
+        try:
+            os.makedirs(os.path.dirname(_STRATEGY_CONFIG_PATH), exist_ok=True)
+            with open(_STRATEGY_CONFIG_PATH, "w") as f:
+                _json.dump(saveable, f, indent=2)
+        except Exception as exc:
+            logger.error(f"[CommOpts] Could not save strategy config: {exc}")
+
+    def get_strategy_cfg(self, name: str) -> dict:
+        """Return the live config dict for a named strategy (empty dict if not found)."""
+        for s in self._strategy_registry:
+            if s.name == name:
+                return s.config.to_dict()
+        return {}
+
+    def get_cooldown_hours(self, strategy_name: str) -> float:
+        """Return cooldown_hours for a strategy (used by dashboard for MANUAL_CLOSE cooldown)."""
+        for s in self._strategy_registry:
+            if s.name == strategy_name:
+                return s.config.cooldown_hours
+        return 3.0  # safe default
+
+    def get_mcx_session_status(self) -> dict:
+        """Return current MCX session status dict for the dashboard."""
+        status = mcx_calendar.get_status()
+        return {
+            "phase":        status.phase.value,
+            "allows_entry": status.allows_entry,
+            "message":      status.message,
+            "next_open_at": status.next_open_at.isoformat() if status.next_open_at else None,
+        }
+
     def update_strategy_config(self, strategy: str, param: str, value) -> tuple[bool, str]:
-        """Update a single MCX strategy config param at runtime (cooldown_enabled, cooldown_hours)."""
-        if strategy not in MCX_STRATEGY_CONFIG:
+        """Update a single MCX strategy config param at runtime."""
+        target = next((s for s in self._strategy_registry if s.name == strategy), None)
+        if target is None:
             return False, f"Unknown MCX strategy: {strategy}"
-        cfg = MCX_STRATEGY_CONFIG[strategy]
-        if param not in cfg:
+        if not hasattr(target.config, param):
             return False, f"Unknown param '{param}' for strategy '{strategy}'"
-        existing = cfg[param]
+        if param in MCXStrategyConfig._READONLY_FIELDS:
+            return False, f"'{param}' is read-only"
+        existing = getattr(target.config, param)
         try:
             if isinstance(existing, bool):
-                if isinstance(value, str):
-                    value = value.lower() in ("true", "1", "yes")
-                else:
-                    value = bool(value)
+                value = value.lower() in ("true", "1", "yes") if isinstance(value, str) else bool(value)
             elif isinstance(existing, int):
                 value = int(value)
             elif isinstance(existing, float):
                 value = float(value)
         except (ValueError, TypeError) as e:
             return False, f"Type error: {e}"
-        MCX_STRATEGY_CONFIG[strategy][param] = value
-        _save_strategy_config()
+        setattr(target.config, param, value)
+        self._save_strategy_config()
         logger.info(f"[CommOpts] Strategy config updated: {strategy}.{param} = {value}")
         return True, ""
 
     def run_cycle(self) -> None:
-        """Entry evaluation once per minute during MCX hours.
+        """Entry evaluation once per EVAL_INTERVAL during MCX hours.
         Exit monitoring is handled by check_exits() on the 5-second fast loop."""
-        now = datetime.now(tz=IST)
-        if not (MCX_MARKET_OPEN <= now.time() <= MCX_MARKET_CLOSE):
+        now    = datetime.now(tz=IST)
+        status = mcx_calendar.get_status(now)
+
+        if not status.allows_entry:
+            # Notable phases get INFO; routine closed/cutoff phases get DEBUG
+            notable = {SessionPhase.HOLIDAY_MORNING, SessionPhase.FULL_HOLIDAY,
+                       SessionPhase.OPENING_BLACKOUT}
+            if status.phase in notable:
+                logger.info(f"[CommOpts] {status.message}")
+            else:
+                logger.debug(f"[CommOpts] {status.message}")
             return
 
-        # Reset per-instrument daily entry counters at the start of each new day
         today = now.date()
         if today != self._daily_entries_date:
             self._daily_entries.clear()
@@ -994,16 +977,13 @@ class CommodityOptionsLearning:
             logger.info("[CommOpts] Daily entry counters reset for new trading day")
 
         from data.data_store import store
-
         open_count = len(self._open_positions)
         logger.info(f"[CommOpts] Cycle @ {now.strftime('%H:%M')} IST | open={open_count}")
 
-        # New entry scan (stop at cutoff — enabled commodities only)
-        if now.time() <= MCX_ENTRY_CUTOFF:
-            for short in list(MCX_CONTRACTS.keys()):
-                if short not in self._enabled_commodities:
-                    continue
-                self._evaluate(short, store, now)
+        for short in list(MCX_CONTRACTS.keys()):
+            if short not in self._enabled_commodities:
+                continue
+            self._evaluate(short, store, now)
 
     # ─────────────────────────────────────────────────────────────
     # STRATEGY LOGIC
@@ -1051,7 +1031,7 @@ class CommodityOptionsLearning:
                     _exit_time = datetime.fromisoformat(_exit_time_str)
                     if _exit_time.tzinfo is None:
                         _exit_time = _exit_time.replace(tzinfo=IST)
-                    _strat_cfg = MCX_STRATEGY_CONFIG.get(_strategy or "", {})
+                    _strat_cfg = self.get_strategy_cfg(_strategy or "")
                     # MANUAL_CLOSE always applies cooldown; others respect cooldown_enabled flag
                     _cd_enabled = (_exit_reason == "MANUAL_CLOSE") or _strat_cfg.get("cooldown_enabled", True)
                     _base_hours = _strat_cfg.get("cooldown_hours", 3)
@@ -1091,21 +1071,22 @@ class CommodityOptionsLearning:
             return
 
         # Try strategies in priority order — first match wins
-        result = (
-            self._check_trend_spread(df, spot) or
-            self._check_reversal_spread(df, spot) or
-            self._check_breakout_spread(df, spot)
-        )
-        if not result:
+        signal: Optional[MCXSignalResult] = None
+        for _strat in self._strategy_registry:
+            signal = _strat.evaluate(df, spot, now)
+            if signal:
+                break
+        if not signal:
             logger.info(f"[CommOpts] {short} no strategy signal — spot={spot:.2f}")
             return
 
-        # BreakoutSpread returns a 7th element (breakout level); others return 6
-        if len(result) == 7:
-            direction, strategy_name, signal_reason, rsi_val, ema5_val, ema20_val, breakout_level = result
-        else:
-            direction, strategy_name, signal_reason, rsi_val, ema5_val, ema20_val = result
-            breakout_level = None
+        direction      = signal.direction
+        strategy_name  = signal.strategy_name
+        signal_reason  = signal.signal_reason
+        rsi_val        = signal.rsi_val
+        ema5_val       = signal.ema5_val
+        ema20_val      = signal.ema20_val
+        breakout_level = signal.breakout_level
         logger.info(f"[CommOpts] {short} → {strategy_name} {direction} | {signal_reason}")
 
         chain    = self._get_chain(symbol)
@@ -1187,108 +1168,6 @@ class CommodityOptionsLearning:
                     ))
                 except Exception:
                     pass
-
-    # ─────────────────────────────────────────────────────────────
-    # STRATEGY EVALUATORS
-    # ─────────────────────────────────────────────────────────────
-
-    def _check_trend_spread(self, df, spot: float):
-        """TrendSpread: EMA5/EMA20 crossover with RSI 55-68 and minimum EMA gap."""
-        try:
-            from analysis.indicators import rsi as calc_rsi, ema as calc_ema
-            close   = df["close"]
-            rsi_val = calc_rsi(close).iloc[-1]
-            ema20   = calc_ema(close, 20).iloc[-1]
-            ema5    = calc_ema(close, 5).iloc[-1]
-
-            # Require at least 0.3% gap between EMAs — pure crossover noise is excluded
-            ema_gap_pct = abs(ema5 - ema20) / ema20 * 100
-
-            if (ema5 > ema20 and spot > ema20
-                    and 55 < rsi_val < 68        # tightened: avoid weak(51) and near-OB(74) entries
-                    and ema_gap_pct >= 0.3):      # confirmed trend, not a flat crossover
-                return ("LONG", "TrendSpread",
-                        f"EMA5={ema5:.0f}>EMA20={ema20:.0f}(+{ema_gap_pct:.1f}%), RSI={rsi_val:.1f}",
-                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
-            if (ema5 < ema20 and spot < ema20
-                    and 32 < rsi_val < 45        # tightened: avoid weak(49) and near-OS(26) entries
-                    and ema_gap_pct >= 0.3):
-                return ("SHORT", "TrendSpread",
-                        f"EMA5={ema5:.0f}<EMA20={ema20:.0f}(-{ema_gap_pct:.1f}%), RSI={rsi_val:.1f}",
-                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
-        except Exception as exc:
-            logger.debug(f"[CommOpts] TrendSpread error: {exc}")
-        return None
-
-    def _check_reversal_spread(self, df, spot: float):
-        """RSIReversalSpread: Buy oversold dip in uptrend; sell overbought high in downtrend."""
-        try:
-            from analysis.indicators import rsi as calc_rsi, ema as calc_ema
-            close   = df["close"]
-            rsi_val = calc_rsi(close).iloc[-1]
-            ema20   = calc_ema(close, 20).iloc[-1]
-            ema5    = calc_ema(close, 5).iloc[-1]
-
-            # Oversold in higher-timeframe uptrend → reversal long
-            if rsi_val < 32 and ema5 >= ema20 * 0.995:
-                return ("LONG", "RSIReversalSpread",
-                        f"RSI={rsi_val:.1f} oversold, EMA20={ema20:.0f}",
-                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
-            # Overbought in higher-timeframe downtrend → reversal short
-            if rsi_val > 68 and ema5 <= ema20 * 1.005:
-                return ("SHORT", "RSIReversalSpread",
-                        f"RSI={rsi_val:.1f} overbought, EMA20={ema20:.0f}",
-                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2))
-        except Exception as exc:
-            logger.debug(f"[CommOpts] RSIReversalSpread error: {exc}")
-        return None
-
-    def _check_breakout_spread(self, df, spot: float):
-        """BreakoutSpread: 12-bar price breakout above/below recent range with RSI confirmation.
-
-        Uses a 12-bar lookback (was 5) to define a meaningful range — 5 bars on 1H is only
-        5 hours which is intraday noise.  Requires spot to clear the range high/low by at
-        least 20% of ATR (buffer) to avoid 1-tick false triggers.
-
-        Skips the first 30 min of MCX session (09:00–09:29) — the opening bar is incomplete
-        and opening gaps frequently reverse before 09:30, generating false breakdown signals.
-
-        Returns a 7-tuple; 7th element is the breakout level used for false-breakout exit.
-        """
-        now = datetime.now(tz=IST)
-        if now.hour == 9 and now.minute < 30:
-            return None
-        try:
-            from analysis.indicators import rsi as calc_rsi, ema as calc_ema, atr as calc_atr
-            close   = df["close"]
-            rsi_val = calc_rsi(close).iloc[-1]
-            ema20   = calc_ema(close, 20).iloc[-1]
-            ema5    = calc_ema(close, 5).iloc[-1]
-            atr_val = calc_atr(df).iloc[-1]
-
-            if len(close) < 14:
-                return None
-
-            # 12-bar range (excluding current bar) — defines a meaningful consolidation zone
-            prev_high = close.iloc[-13:-1].max()
-            prev_low  = close.iloc[-13:-1].min()
-
-            # ATR buffer: spot must clear the range by 20% of ATR to filter noise
-            buffer = round(atr_val * 0.20, 2)
-
-            if spot > prev_high + buffer and rsi_val > 52:
-                return ("LONG", "BreakoutSpread",
-                        f"Breakout above {prev_high:.0f}+{buffer:.0f}buf, RSI={rsi_val:.1f}",
-                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2),
-                        round(prev_high, 2))
-            if spot < prev_low - buffer and rsi_val < 48:
-                return ("SHORT", "BreakoutSpread",
-                        f"Breakdown below {prev_low:.0f}-{buffer:.0f}buf, RSI={rsi_val:.1f}",
-                        round(rsi_val, 1), round(ema5, 2), round(ema20, 2),
-                        round(prev_low, 2))
-        except Exception as exc:
-            logger.debug(f"[CommOpts] BreakoutSpread error: {exc}")
-        return None
 
     def _build_trade(
         self, symbol, short, meta, spot, direction, strategy_name, signal_reason,
@@ -1693,7 +1572,7 @@ class CommodityOptionsLearning:
                         daily_risk_budget.register_close(trade["symbol"])
                     except Exception as _rbe:
                         logger.debug(f"[CommOpts] risk budget record error (skipped): {_rbe}")
-                strat_cfg = MCX_STRATEGY_CONFIG.get(strategy, {})
+                strat_cfg = self.get_strategy_cfg(strategy)
                 if strat_cfg.get("cooldown_enabled", True):
                     base_hours = strat_cfg.get("cooldown_hours", 3)
                     if exit_reason in ("FALSE_BREAKOUT", "STOP_SPOT", "STOP_60PCT"):
@@ -1749,7 +1628,7 @@ class CommodityOptionsLearning:
                     trade["max_profit"] = actual_profit
                     trade["rr"]         = round(actual_profit / actual_debit, 2)
                     # Recompute SL with actual debit
-                    strat_cfg = MCX_STRATEGY_CONFIG.get(trade.get("strategy", ""), {})
+                    strat_cfg = self.get_strategy_cfg(trade.get("strategy", ""))
                     meta["sl_price"]   = _debit_sl_price(
                         trade["spot_at_entry"], trade["direction"], actual_debit, strat_cfg
                     )
