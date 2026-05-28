@@ -186,17 +186,33 @@ class ConvictionScorer:
         Only returns non-zero after 9:08 AM when the call auction finalises.
         Outside the pre-open window, returns today's stored IEP score so the
         signal is preserved across bot restarts during the trading day.
+
+        Lock-in rule: once a non-zero IEP is obtained for today it is never
+        overwritten by a later neutral reading during the pre-open window.
+        This prevents the 09:10 re-score from erasing a strong 09:00 signal
+        when the Fyers LTP proxy shifts to flat after early auction orders.
         """
         try:
             now = datetime.now(tz=IST)
-            # Past the IEP window (9:00–9:20 AM) — use stored value to survive restarts
+            today_str = now.date().isoformat()
+            saved = self.get_for_date(today_str)
+
+            # ── Lock-in: preserve first non-zero reading for the day ──────
+            # Once a directional IEP (+1/+2/−1/−2) is recorded it is locked.
+            # The 09:10 re-fetch will not override it even if the Fyers LTP
+            # proxy has drifted back to neutral after the call auction closed.
+            if saved and saved.get("iep_score", 0) != 0:
+                stored = saved["iep_score"]
+                direction = "bullish" if stored > 0 else ("bearish" if stored < 0 else "neutral")
+                return stored, f"Pre-open IEP locked {stored:+d} ({direction}, first reading preserved)"
+
+            # ── Past the IEP window (09:00–09:20) — use whatever is stored ─
             if now.hour > 9 or (now.hour == 9 and now.minute >= 20):
-                today_str = now.date().isoformat()
-                saved = self.get_for_date(today_str)
                 if saved and "iep_score" in saved:
                     stored = saved["iep_score"]
                     direction = "bullish" if stored > 0 else ("bearish" if stored < 0 else "neutral")
                     return stored, f"Pre-open IEP stored {stored:+d} ({direction}, gap locked in at open)"
+
             from intelligence.premarket_analyzer import premarket_analyzer
             score, reason = premarket_analyzer.get_signal()
             return max(-2, min(2, score)), reason
@@ -337,7 +353,12 @@ class ConvictionScorer:
         self._save_daily_score(result)
 
     def _save_daily_score(self, result: ConvictionScore) -> None:
-        """Persist each conviction score computation to db/conviction_daily.json."""
+        """Persist each conviction score computation to db/conviction_daily.json.
+
+        Both the 09:00 initial run and the 09:10 IEP-refined run are kept as
+        separate entries so the daily_report can show the full audit trail.
+        The 'run' field distinguishes them: 'initial' | 'iep_refined' | 'catchup'.
+        """
         try:
             history: list = []
             if os.path.exists(_CONVICTION_DAILY_PATH):
@@ -345,11 +366,20 @@ class ConvictionScorer:
                     history = json.load(f)
 
             today_str = datetime.now(tz=IST).date().isoformat()
-            # Replace any existing entry for today (keep latest re-score)
-            history = [h for h in history if h.get("date") != today_str]
             from config.settings import CONVICTION_THRESHOLD
+
+            existing_today = [h for h in history if h.get("date") == today_str]
+            if not existing_today:
+                run_label = "initial"
+            elif len(existing_today) == 1:
+                run_label = "iep_refined"
+            else:
+                run_label = "catchup"
+
+            # Append — never replace.  Both runs live in the file for audit.
             history.append({
                 "date":        today_str,
+                "run":         run_label,
                 "timestamp":   result.timestamp,
                 "score":       result.score,
                 "direction":   result.direction,
@@ -364,7 +394,7 @@ class ConvictionScorer:
                 "gift_score":  result.gift_score,
                 "rs_score":    result.rs_score,
             })
-            history = history[-90:]  # keep 3 months
+            history = history[-180:]  # keep ~6 months (2 entries per trading day)
             os.makedirs(os.path.dirname(_CONVICTION_DAILY_PATH), exist_ok=True)
             with open(_CONVICTION_DAILY_PATH, "w") as f:
                 json.dump(history, f, indent=2)
@@ -372,14 +402,28 @@ class ConvictionScorer:
             logger.warning(f"[ConvictionScorer] Could not save daily score: {e}")
 
     def get_for_date(self, date_str: str) -> Optional[dict]:
-        """Return the persisted conviction record for a given YYYY-MM-DD, or None."""
+        """Return the persisted conviction record for a given YYYY-MM-DD, or None.
+
+        When multiple runs exist for the day (initial + iep_refined) we return
+        the entry with the strongest IEP signal first — this is what the
+        lock-in check in _score_iep relies on.  For all other callers the
+        last entry (iep_refined) is returned as a sensible default via the
+        fallback path below.
+        """
         try:
             if not os.path.exists(_CONVICTION_DAILY_PATH):
                 return None
             with open(_CONVICTION_DAILY_PATH) as f:
                 history = json.load(f)
             entries = [h for h in history if h.get("date") == date_str]
-            return entries[-1] if entries else None
+            if not entries:
+                return None
+            # Prefer the entry with the highest absolute IEP score so the
+            # lock-in in _score_iep picks up the strongest directional reading.
+            non_zero_iep = [e for e in entries if e.get("iep_score", 0) != 0]
+            if non_zero_iep:
+                return max(non_zero_iep, key=lambda e: abs(e.get("iep_score", 0)))
+            return entries[-1]  # all reads were neutral — return the latest
         except Exception:
             return None
 

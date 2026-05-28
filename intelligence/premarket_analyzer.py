@@ -84,7 +84,14 @@ class PreMarketAnalyzer:
         if score != 0 or "gap" in reason.lower():
             return score, reason
 
-        # Fallback: Fyers spot vs previous close from data_store
+        # Fallback: Fyers spot LTP vs previous close from data_store.
+        # This is less accurate than the real NSE IEP — the Fyers LTP during
+        # 09:00–09:08 reflects early auction indicative prices which can move
+        # significantly before the auction finalises at 09:08.
+        logger.warning(
+            "[PreMarket] NSE IEP API unavailable — falling back to Fyers LTP proxy. "
+            "The reading may differ from the final NSE call-auction IEP."
+        )
         return self._score_from_fyers()
 
     def get_iep(self) -> Optional[dict]:

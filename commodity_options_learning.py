@@ -91,14 +91,18 @@ _INSTRUMENT_SEEDS = [
     ("GOLDM",       "Gold Mini",      100,    500, 0.18, "INR/10gm",   80000, 300000,  7, [2,4,6,8,10,12]),
     ("GOLDGUINEA",  "Gold Guinea",      8,    500, 0.18, "INR/8gm",    64000, 240000,  7, [2,4,6,8,10,12]),
     ("GOLDPETAL",   "Gold Petal",       1,    100, 0.20, "INR/1gm",     8000,  40000,  5, []),
-    ("SILVER",      "Silver",          30,   1000, 0.28, "INR/kg",     40000, 200000,  7, [3,5,7,9,12]),
-    ("SILVERM",     "Silver Mini",      5,   1000, 0.30, "INR/kg",     40000, 200000,  7, [3,5,7,9,12]),
-    ("SILVERMIC",   "Silver Micro",     1,    500, 0.32, "INR/kg",     40000, 200000,  5, []),
+    # min/max updated May-2026: silver spot ~₹2.65L/kg (was 40k–200k, now 150k–400k)
+    # valid_months corrected to match MCX silver delivery schedule (no May delivery)
+    ("SILVER",      "Silver",          30,   1000, 0.28, "INR/kg",    150000, 400000,  7, [3,7,9,12]),
+    ("SILVERM",     "Silver Mini",      5,   1000, 0.30, "INR/kg",     60000, 500000,  7, [3,5,7,9,12]),
+    ("SILVERMIC",   "Silver Micro",     1,    500, 0.32, "INR/kg",     60000, 500000,  5, []),
     # ── Energy ──────────────────────────────────────────────────────
-    ("CRUDEOIL",    "Crude Oil",      100,    100, 0.35, "INR/bbl",     2000,  20000,  3, []),
-    ("CRUDEOILM",   "Crude Oil Mini",  10,    100, 0.38, "INR/bbl",     2000,  20000,  3, []),
-    ("NATURALGAS",  "Natural Gas",   1250,      5, 0.45, "INR/mmBtu",    100,   2000,  3, []),
-    ("NATGASMINI",  "Natural Gas Mini", 250,    5, 0.48, "INR/mmBtu",    100,   2000,  3, []),
+    # rollover_buffer fixed May-2026: CRUDEOILM/NATGASMINI expire ~19th and last-Wed
+    # respectively — old buffer of 3 days kept them on stale MAY contracts until the 28th.
+    ("CRUDEOIL",    "Crude Oil",      100,    100, 0.35, "INR/bbl",     2000,  20000, 14, []),
+    ("CRUDEOILM",   "Crude Oil Mini",  10,    100, 0.38, "INR/bbl",     2000,  20000, 12, []),
+    ("NATURALGAS",  "Natural Gas",   1250,      5, 0.45, "INR/mmBtu",    100,   2000,  5, []),
+    ("NATGASMINI",  "Natural Gas Mini", 250,    5, 0.48, "INR/mmBtu",    100,   2000,  5, []),
     # ── Base Metals ─────────────────────────────────────────────────
     ("COPPER",      "Copper",           1,     10, 0.25, "INR/kg",       500,   5000,  5, []),
     ("COPPERM",     "Copper Mini",      1,     10, 0.28, "INR/kg",       500,   5000,  5, []),
