@@ -111,7 +111,16 @@ class TradingBot:
         signal.signal(signal.SIGINT,  self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
 
-        # Step 1: Init brokers
+        # Step 1: Sync market holidays from NSE API
+        # Must run before any market calendar check (mcx_calendar, is_trading_holiday).
+        # Reads DB cache first (fast); only hits the NSE API on first run or cache miss.
+        try:
+            from config.market_holidays import sync_holidays
+            sync_holidays()
+        except Exception as _he:
+            logger.warning(f"[Main] Holiday sync failed (hardcoded list will be used): {_he}")
+
+        # Step 2: Init brokers
         logger.info("Connecting to brokers...")
 
         # Auto-refresh token before first init — covers the case where the token

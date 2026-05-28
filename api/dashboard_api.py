@@ -1738,6 +1738,89 @@ def clear_commodity_cooldown(instrument: str):
 
 
 # ─────────────────────────────────────────────────────────────────
+# MARKET HOLIDAYS
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/holidays")
+def get_holidays(year: int = None):
+    """
+    List all NSE + MCX-extra holidays for a given year (defaults to current year).
+
+    Returns each entry as {date, type, year} sorted by date.
+    type is "NSE" (national holidays shared with MCX) or "MCX_EXTRA"
+    (MCX-only closures such as Muharram that are not in the NSE list).
+
+    Example: GET /holidays?year=2026
+    """
+    try:
+        from config.market_holidays import get_holidays as _get
+        return {"ok": True, "holidays": _get(year)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/holidays/refresh", dependencies=[Depends(_require_api_key)])
+def refresh_holidays():
+    """
+    Force-refresh NSE holidays from the NSE holiday-master API, bypassing
+    the DB cache.  Updates the DB cache and the live set immediately.
+    Safe to call at any time — the bot continues running during the refresh.
+
+    Returns {"refreshed": {year: count, ...}}
+    """
+    try:
+        from config.market_holidays import refresh_holidays as _refresh
+        counts = _refresh()
+        return {"ok": True, "refreshed": counts}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/holidays/mcx-extra", dependencies=[Depends(_require_api_key)])
+def add_mcx_extra_holiday(body: dict):
+    """
+    Add an MCX-specific holiday that is NOT in the NSE list (e.g. Muharram).
+    Persists to DB immediately — survives bot restarts.
+
+    Body: {"date": "YYYY-MM-DD", "label": "Muharram"}
+    """
+    raw = body.get("date", "")
+    label = body.get("label", "")
+    if not raw:
+        return {"ok": False, "error": "body must contain 'date' (YYYY-MM-DD)"}
+    try:
+        from datetime import date as _date
+        from config.market_holidays import add_mcx_extra_holiday as _add
+        d = _date.fromisoformat(raw)
+        _add(d, label)
+        return {"ok": True, "date": d.isoformat(), "label": label}
+    except ValueError:
+        return {"ok": False, "error": f"Invalid date format '{raw}' — use YYYY-MM-DD"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.delete("/holidays/mcx-extra/{holiday_date}", dependencies=[Depends(_require_api_key)])
+def remove_mcx_extra_holiday(holiday_date: str):
+    """
+    Remove an MCX-specific holiday by date.
+    Returns ok=True whether or not the date was present.
+
+    Example: DELETE /holidays/mcx-extra/2026-07-06
+    """
+    try:
+        from datetime import date as _date
+        from config.market_holidays import remove_mcx_extra_holiday as _remove
+        d = _date.fromisoformat(holiday_date)
+        existed = _remove(d)
+        return {"ok": True, "date": d.isoformat(), "was_present": existed}
+    except ValueError:
+        return {"ok": False, "error": f"Invalid date format '{holiday_date}' — use YYYY-MM-DD"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────
 # WEBSOCKET — live push every 2 seconds
 # ─────────────────────────────────────────────────────────────────
 

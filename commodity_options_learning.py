@@ -1411,8 +1411,17 @@ class CommodityOptionsLearning:
         """Public entry point — called from the 5-second fast loop in main.py."""
         if not self._open_positions:
             return
-        now = datetime.now(tz=IST)
-        if not (MCX_MARKET_OPEN <= now.time() <= MCX_MARKET_CLOSE):
+        now    = datetime.now(tz=IST)
+        status = mcx_calendar.get_status(now)
+        # Skip exit checks when there is genuinely no market session:
+        #   CLOSED          — outside all trading hours
+        #   FULL_HOLIDAY    — MCX-specific whole-day closure
+        #   HOLIDAY_MORNING — national holiday, morning session closed (17:00 evening session still runs)
+        # OPENING_BLACKOUT and PAST_CUTOFF are kept active — open positions must
+        # still be monitored for SL/target even when new entries are blocked.
+        if status.phase in (SessionPhase.CLOSED,
+                            SessionPhase.FULL_HOLIDAY,
+                            SessionPhase.HOLIDAY_MORNING):
             return
         from data.data_store import store
         self._check_exits(store, now)
