@@ -390,18 +390,24 @@ class FyersStream:
     def _subscribe(self) -> None:
         """Subscribe to NSE + MCX symbols, excluding any known-invalid symbols."""
         import config.watchlist as _wl
+        from config.learning_watchlist import LEARNING_NSE_EQUITIES
         from commodity_options_learning import _fyers_sym, ALL_MCX_SHORTS
         mcx_symbols = [_fyers_sym(s) for s in ALL_MCX_SHORTS]
-        all_symbols = list(set(_wl.ALL_NSE_SYMBOLS + mcx_symbols))
+        # Union of production watchlist AND learning watchlist — the learning engine
+        # evaluates symbols not in the production list (e.g. WIPRO, HCLTECH, ONGC)
+        # and needs tick data for them to function.
+        nse_symbols = list(set(_wl.ALL_NSE_SYMBOLS + LEARNING_NSE_EQUITIES))
+        all_symbols = list(set(nse_symbols + mcx_symbols))
         # Drop symbols already confirmed invalid by a prior -300 error
         if self._invalid_symbols:
             before = len(all_symbols)
             all_symbols = [s for s in all_symbols if s not in self._invalid_symbols]
-            logger.info(f"[FyersStream] Skipped {before - len(all_symbols)} known-invalid symbol(s).")
+            if before > len(all_symbols):
+                logger.info(f"[FyersStream] Skipped {before - len(all_symbols)} known-invalid symbol(s).")
         self._ws_client.subscribe(symbols=all_symbols, data_type="SymbolUpdate")
         logger.info(
             f"Subscribed to {len(all_symbols)} symbols — "
-            f"NSE: {len(_wl.ALL_NSE_SYMBOLS)}, MCX: {len(mcx_symbols)} {mcx_symbols}"
+            f"NSE: {len(nse_symbols)}, MCX: {len(mcx_symbols)} {mcx_symbols}"
         )
 
     def _resubscribe_clean(self) -> None:
@@ -410,10 +416,12 @@ class FyersStream:
             if self._ws_client is None:
                 return
             import config.watchlist as _wl
+            from config.learning_watchlist import LEARNING_NSE_EQUITIES
             from commodity_options_learning import _fyers_sym, ALL_MCX_SHORTS
             mcx_symbols = [_fyers_sym(s) for s in ALL_MCX_SHORTS]
+            nse_symbols = set(_wl.ALL_NSE_SYMBOLS + LEARNING_NSE_EQUITIES)
             all_symbols = [
-                s for s in set(_wl.ALL_NSE_SYMBOLS + mcx_symbols)
+                s for s in set(nse_symbols) | set(mcx_symbols)
                 if s not in self._invalid_symbols
             ]
             self._ws_client.subscribe(symbols=all_symbols, data_type="SymbolUpdate")
@@ -438,6 +446,7 @@ class FyersStream:
 
     def _do_refresh_mcx(self) -> None:
         import config.watchlist as _wl
+        from config.learning_watchlist import LEARNING_NSE_EQUITIES
         from commodity_options_learning import _fyers_sym, ALL_MCX_SHORTS
 
         mcx_symbols = [_fyers_sym(s) for s in ALL_MCX_SHORTS]
@@ -450,7 +459,8 @@ class FyersStream:
 
         # Re-subscribe to full set (includes new symbols, keeps existing ones active)
         try:
-            all_symbols = list({s for s in _wl.ALL_NSE_SYMBOLS + mcx_symbols if s not in self._invalid_symbols})
+            nse_all = set(_wl.ALL_NSE_SYMBOLS + LEARNING_NSE_EQUITIES)
+            all_symbols = list({s for s in nse_all | set(mcx_symbols) if s not in self._invalid_symbols})
             self._ws_client.subscribe(symbols=all_symbols, data_type="SymbolUpdate")
             logger.info(f"[FyersStream] MCX refresh — resubscribed {len(all_symbols)} symbols")
         except Exception as e:

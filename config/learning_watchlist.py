@@ -16,54 +16,55 @@ contracts roll automatically when the expiry date approaches.
 # ── NSE Large-cap equities ────────────────────────────────────────
 # Diversified: banking, IT, pharma, energy, consumer, metals, telecom
 LEARNING_NSE_EQUITIES = [
-    # Banking (large-cap) — vetoed during Q4 results week; mid-caps below fill the gap
+    # Banking (large-cap)
     "NSE:HDFCBANK-EQ",
     "NSE:ICICIBANK-EQ",
     "NSE:SBIN-EQ",
     "NSE:AXISBANK-EQ",
+    "NSE:KOTAKBANK-EQ",
     # IT (large-cap)
     "NSE:TCS-EQ",
     "NSE:INFY-EQ",
-    "NSE:WIPRO-EQ",
-    "NSE:HCLTECH-EQ",
     # Consumer
     "NSE:HINDUNILVR-EQ",
     "NSE:NESTLEIND-EQ",
     "NSE:TITAN-EQ",
-    # Energy
+    # Energy & Industrial
     "NSE:RELIANCE-EQ",
-    "NSE:ONGC-EQ",
     "NSE:NTPC-EQ",
-    # Pharma (large-cap)
-    "NSE:SUNPHARMA-EQ",
-    "NSE:DRREDDY-EQ",
-    # Metals & Industrial
-    "NSE:TATASTEEL-EQ",
-    "NSE:HINDALCO-EQ",
+    "NSE:ADANIPORTS-EQ",
     # Auto
     "NSE:MARUTI-EQ",
-    "NSE:BAJAJ-AUTO-EQ",
+    "NSE:TMCV-EQ",
+    "NSE:TMPV-EQ",
+    # Pharma
+    "NSE:SUNPHARMA-EQ",
+    "NSE:DRREDDY-EQ",
+    # Metals
+    "NSE:TATASTEEL-EQ",
     # Cement
     "NSE:ULTRACEMCO-EQ",
-    # ── Mid-caps (F&O eligible) — staggered results, active when large-caps vetoed ──
-    # IT mid-cap (results 2-3 weeks after TCS/Infy cluster)
+    # Finance (large-cap)
+    "NSE:BAJFINANCE-EQ",
+    "NSE:BAJAJFINSV-EQ",
+    # Telecom
+    "NSE:BHARTIARTL-EQ",
+    # ── Mid-caps ─────────────────────────────────────────────────
     "NSE:PERSISTENT-EQ",
     "NSE:COFORGE-EQ",
     "NSE:LTTS-EQ",
-    # NBFC / Finance (independent results calendar)
+    "NSE:MPHASIS-EQ",
+    "NSE:DIVISLAB-EQ",
+    "NSE:POLICYBZR-EQ",
     "NSE:ABCAPITAL-EQ",
     "NSE:MUTHOOTFIN-EQ",
-    # Pharma mid-cap
     "NSE:AUROPHARMA-EQ",
     "NSE:ALKEM-EQ",
-    # Consumer & Retail
     "NSE:HAVELLS-EQ",
     "NSE:DMART-EQ",
-    # Banking (small/mid — independent results window)
     "NSE:IDFCFIRSTB-EQ",
     "NSE:FEDERALBNK-EQ",
-    # Digital / diversified
-    "NSE:ZOMATO-EQ",
+    "NSE:ETERNAL-EQ",
     "NSE:NAUKRI-EQ",
 ]
 
@@ -119,7 +120,10 @@ def get_mcx_learning_symbols() -> list[str]:
     """
     try:
         from commodity_options_learning import _fyers_sym, MCX_CONTRACTS
-        return [_fyers_sym(name) for name in sorted(MCX_CONTRACTS)]
+        # Only include instruments that are enabled in the DB — disabled ones
+        # are excluded from subscription and should not be evaluated either.
+        return [_fyers_sym(name) for name in sorted(MCX_CONTRACTS)
+                if MCX_CONTRACTS[name].get("enabled", True)]
     except Exception:
         pass
     # Fallback: basic date math, no per-instrument rollover config from DB

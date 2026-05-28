@@ -165,6 +165,9 @@ def _bootstrap_contracts() -> None:
                         "price_unit":  _r["price_unit"],
                         "min_price":   _r["min_price"],
                         "max_price":   _r["max_price"],
+                        # Store enabled flag so ALL_MCX_SHORTS can filter correctly.
+                        # Dashboard-disabled instruments must not be subscribed.
+                        "enabled":     bool(_r["enabled"]),
                     }
                     _ROLLOVER_BUFFER[_n] = _r["rollover_buffer"]
                     _months = json.loads(_r["valid_months"] or "[]")
@@ -175,11 +178,12 @@ def _bootstrap_contracts() -> None:
             pass
 
     if not loaded:
-        # First run or DB not yet created — use seed defaults
+        # First run or DB not yet created — use seed defaults (all enabled by default)
         for _n, _ls, _ss, _iv, _pu, _mn, _mx, _rb, _vm in _INSTRUMENT_SEEDS:
             MCX_CONTRACTS[_n] = {
                 "lot_size": _ls, "strike_step": _ss, "typical_iv": _iv,
                 "price_unit": _pu, "min_price": _mn, "max_price": _mx,
+                "enabled": True,
             }
             _ROLLOVER_BUFFER[_n] = _rb
             if _vm:
@@ -188,10 +192,12 @@ def _bootstrap_contracts() -> None:
 
 _bootstrap_contracts()
 
-# ALL_MCX_SHORTS: simple list, rebuilt whenever _load_contracts_from_db() runs.
-# Imported by fyers_stream.py — must be a real list, not a lazy proxy,
-# because fyers_stream captures it by reference at subscription time.
-ALL_MCX_SHORTS: list = list(MCX_CONTRACTS.keys())
+# ALL_MCX_SHORTS: only ENABLED instruments — imported by fyers_stream.py for
+# WebSocket subscription.  Must be a real list (not a generator) so mutations
+# via list[:] = [...] are visible to fyers_stream which holds a reference to it.
+# Disabled instruments remain in MCX_CONTRACTS for dashboard visibility but are
+# excluded from subscription and evaluation.
+ALL_MCX_SHORTS: list = [n for n, m in MCX_CONTRACTS.items() if m.get("enabled", True)]
 
 
 def _fyers_sym(short: str) -> str:
@@ -414,6 +420,9 @@ class CommodityOptionsLearning:
                 "price_unit":  r["price_unit"],
                 "min_price":   r["min_price"],
                 "max_price":   r["max_price"],
+                # Store enabled flag — ALL_MCX_SHORTS and get_mcx_learning_symbols
+                # filter on this so disabled instruments are never subscribed.
+                "enabled":     bool(r["enabled"]),
             }
             # Per-instrument SL/target overrides — None means "inherit strategy default"
             for _ov in ("sl_debit_pct", "trail_debit_pct", "trail_trigger_pct",
@@ -427,8 +436,10 @@ class CommodityOptionsLearning:
             months = json.loads(r["valid_months"] or "[]")
             if months:
                 _VALID_MONTHS[name] = months
-        # Keep ALL_MCX_SHORTS list in sync (fyers_stream re-reads it on reconnect)
-        ALL_MCX_SHORTS[:] = list(MCX_CONTRACTS.keys())
+        # Keep ALL_MCX_SHORTS list in sync — ENABLED instruments only.
+        # fyers_stream re-reads this list on reconnect; disabled instruments
+        # must not reappear here after being toggled off via the dashboard.
+        ALL_MCX_SHORTS[:] = [n for n, m in MCX_CONTRACTS.items() if m.get("enabled", True)]
         # Refresh enabled set from DB enabled column
         self._enabled_commodities = {
             r["name"] for r in rows if r["enabled"]
