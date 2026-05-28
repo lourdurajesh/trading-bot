@@ -7,9 +7,10 @@ Covers multiple asset classes and market segments so the strategies
 get exposed to different volatility profiles, correlation structures,
 and sector dynamics. Good for building intuition.
 
-MCX commodity futures use the nearest active contract — these roll
-monthly so they may need updating. Verified format: MCX:GOLD25JUNFUT
-(month code = first 3 letters of month + 2-digit year + FUT).
+MCX commodity futures use the nearest active contract — computed at call
+time via get_mcx_learning_symbols() using DB-backed rollover configuration
+from commodity_options_learning.  No manual monthly updates required;
+contracts roll automatically when the expiry date approaches.
 """
 
 # ── NSE Large-cap equities ────────────────────────────────────────
@@ -73,47 +74,73 @@ LEARNING_NSE_INDICES = [
     "NSE:FINNIFTY-INDEX",
 ]
 
-# ── MCX Commodities (nearest active futures) ─────────────────────
-# Update contract codes monthly (JUN → JUL etc.)
-# Format: MCX:SYMBOL + YY + MON + FUT  (e.g. MCX:CRUDEOIL26JUNFUT)
-# commodity_options_learning._fyers_sym() auto-computes these at runtime;
-# this list is the manual fallback used by the learning strategy engine.
-LEARNING_MCX_COMMODITIES = [
+# ── MCX commodity instrument names (logical, not contract codes) ──
+# These are the short instrument names used as keys in the commodity_instruments
+# DB table (MCX_CONTRACTS).  get_mcx_learning_symbols() converts each name to
+# the current front-month Fyers symbol automatically — no manual updates needed.
+#
+# To add/remove instruments, edit the commodity_instruments table via the
+# dashboard (/commodity/instruments API) instead of changing this list.
+# This list is only used as a fallback when the DB module is unavailable.
+_MCX_LEARNING_INSTRUMENTS = [
     # Precious metals
-    "MCX:GOLD26JUNFUT",        # gold — safe haven, INR/10gm
-    "MCX:GOLDM26JUNFUT",       # gold mini (100g lot)
-    "MCX:GOLDGUINEA26JUNFUT",  # gold guinea (8g lot)
-    "MCX:GOLDPETAL26JUNFUT",   # gold petal (1g lot)
-    "MCX:SILVER26JULFUT",      # silver — more volatile than gold, INR/kg
-    "MCX:SILVERM26JULFUT",     # silver mini (5 kg lot)
-    "MCX:SILVERMIC26JULFUT",   # silver micro (1 kg lot)
+    "GOLD", "GOLDM", "GOLDGUINEA", "GOLDPETAL",
+    "SILVER", "SILVERM", "SILVERMIC",
     # Energy
-    "MCX:CRUDEOIL26JUNFUT",    # crude oil — high volatility, INR/bbl
-    "MCX:CRUDEOILM26JUNFUT",   # crude oil mini (10 bbl lot)
-    "MCX:NATURALGAS26JUNFUT",  # natural gas — seasonal patterns, INR/mmBtu
-    "MCX:NATGASMINI26JUNFUT",  # natural gas mini (250 mmBtu lot)
+    "CRUDEOIL", "CRUDEOILM", "NATURALGAS", "NATGASMINI",
     # Base metals
-    "MCX:COPPER26JUNFUT",      # copper — global growth indicator, INR/kg
-    "MCX:COPPERM26JUNFUT",     # copper mini
-    "MCX:ZINC26JUNFUT",        # zinc, INR/kg
-    "MCX:ZINCMINI26JUNFUT",    # zinc mini
-    "MCX:ALUMINIUM26JUNFUT",   # aluminium, INR/kg
-    "MCX:ALUMINI26JUNFUT",     # aluminium mini
-    "MCX:LEAD26JUNFUT",        # lead, INR/kg
-    "MCX:LEADMINI26JUNFUT",    # lead mini
-    "MCX:NICKEL26JUNFUT",      # nickel, INR/kg
-    "MCX:NICKELM26JUNFUT",     # nickel mini
+    "COPPER", "COPPERM", "ZINC", "ZINCMINI",
+    "ALUMINIUM", "ALUMINI", "LEAD", "LEADMINI",
+    "NICKEL", "NICKELM",
     # Agricultural
-    "MCX:COTTON26JUNFUT",      # cotton, INR/bale
-    "MCX:MENTHAOIL26JUNFUT",   # mentha oil, INR/kg
+    "COTTON", "MENTHAOIL",
 ]
 
-# ── Combined ─────────────────────────────────────────────────────
-ALL_LEARNING_SYMBOLS = (
-    LEARNING_NSE_EQUITIES
-    + LEARNING_NSE_INDICES
-    + LEARNING_MCX_COMMODITIES
-)
+_MCX_MONTHS = [
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+]
 
-# Symbols that work with commodity data — skip options strategies
-COMMODITY_SYMBOLS = set(LEARNING_MCX_COMMODITIES)
+
+def get_mcx_learning_symbols() -> list[str]:
+    """
+    Return current front-month Fyers symbols for all MCX learning instruments.
+
+    Delegates to commodity_options_learning._fyers_sym() which reads per-instrument
+    rollover buffers and valid expiry months from the DB — always correct for today,
+    rolls to the next contract automatically as the expiry date approaches.
+
+    The instrument set is taken from MCX_CONTRACTS (DB-backed, manageable via the
+    /commodity/instruments dashboard API) so adding a new instrument there
+    automatically includes it in the learning universe without code changes.
+
+    Falls back to _MCX_LEARNING_INSTRUMENTS with a simple 5-day buffer if the
+    commodity module is not yet initialised (e.g. unit tests, early boot).
+    """
+    try:
+        from commodity_options_learning import _fyers_sym, MCX_CONTRACTS
+        return [_fyers_sym(name) for name in sorted(MCX_CONTRACTS)]
+    except Exception:
+        pass
+    # Fallback: basic date math, no per-instrument rollover config from DB
+    return _mcx_symbols_builtin(_MCX_LEARNING_INSTRUMENTS)
+
+
+def _mcx_symbols_builtin(shorts: list[str]) -> list[str]:
+    """
+    Compute MCX Fyers symbols from date arithmetic alone.
+    Used only when commodity_options_learning is not yet available.
+    Applies a conservative 5-day rollover buffer with no per-instrument overrides.
+    """
+    import calendar as _cal
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = datetime.now(tz=ZoneInfo("Asia/Kolkata"))
+    year, month = now.year, now.month
+    days_in_month = _cal.monthrange(year, month)[1]
+    if now.day >= days_in_month - 5:   # conservative 5-day buffer
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+    suffix = f"{str(year)[-2:]}{_MCX_MONTHS[month - 1]}FUT"
+    return [f"MCX:{s}{suffix}" for s in shorts]

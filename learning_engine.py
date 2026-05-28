@@ -70,13 +70,16 @@ class LearningEngine:
     def run_cycle(self) -> None:
         """Evaluate all strategies and manage open positions."""
         from config.learning_watchlist import (
-            LEARNING_NSE_EQUITIES, LEARNING_NSE_INDICES, LEARNING_MCX_COMMODITIES,
+            LEARNING_NSE_EQUITIES, LEARNING_NSE_INDICES, get_mcx_learning_symbols,
         )
         from strategies.trend_follow    import TrendFollowStrategy
         from strategies.mean_reversion  import MeanReversionStrategy
         from strategies.simple_momentum import SimpleMomentumStrategy
         from strategies.simple_rsi      import SimpleRSIStrategy
         from data.data_store            import store
+
+        # Compute current front-month contract codes each cycle — auto-rolls on expiry
+        mcx_symbols = get_mcx_learning_symbols()
 
         equity_strategies = [
             TrendFollowStrategy(),
@@ -89,7 +92,7 @@ class LearningEngine:
         self._check_exits(store)
 
         # ── 2. Equity + commodity entries — 1 trade per symbol per strategy ──
-        for symbol in LEARNING_NSE_EQUITIES + LEARNING_MCX_COMMODITIES:
+        for symbol in LEARNING_NSE_EQUITIES + mcx_symbols:
             if "-INDEX" in symbol:
                 continue  # safety: indices must never go through equity strategies
             if self._is_on_cooldown(symbol):
