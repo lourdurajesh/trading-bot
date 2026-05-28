@@ -236,7 +236,10 @@ def sync_holidays() -> None:
     if today.month == 12:
         years_needed.add(today.year + 1)   # pre-fetch next year in December
 
-    merged: set[date] = set()
+    # Always start from the hardcoded list so known dates survive even when the
+    # DB cache is stale or was written before a holiday was added to the list.
+    # The DB / NSE API can only ADD dates on top of this baseline.
+    merged: set[date] = set(_HARDCODED_NSE)
 
     for year in sorted(years_needed):
         cache_key = _NSE_KEY.format(year=year)

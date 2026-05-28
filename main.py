@@ -168,13 +168,29 @@ class TradingBot:
         # Step 7: Catch-up conviction score if bot started mid-day (after 9:30 AM)
         self._catch_up_conviction_score()
 
-        # Step 7: Run main evaluation loop
+        # Notify — bot is fully initialised and live
+        try:
+            import os
+            from notifications.alert_service import alert_service
+            alert_service.bot_started(
+                mode=BOT_MODE,
+                paper_trading=os.getenv("PAPER_TRADING", "false").lower() == "true",
+            )
+        except Exception:
+            pass
+
+        # Step 8: Run main evaluation loop
         logger.info("Bot is live. Starting evaluation loop.")
         self._run_loop()
 
     def _shutdown(self, *args) -> None:
         logger.info("Shutdown signal received. Stopping bot...")
         self._running = False
+        try:
+            from notifications.alert_service import alert_service
+            alert_service.bot_stopped()
+        except Exception:
+            pass
         try:
             from audit_log import audit_log
             audit_log.bot_event("BOT_STOP")
@@ -282,6 +298,16 @@ class TradingBot:
                             f"{result.direction} IEP={result.iep_score:+d} — "
                             f"{'TRADE DAY' if result.tradeable else 'no trade (below threshold)'}"
                         )
+                        try:
+                            from notifications.alert_service import alert_service
+                            alert_service.conviction_score(
+                                score=result.score, direction=result.direction,
+                                tradeable=result.tradeable, reasons=result.reasons,
+                                capital_pct=result.capital_pct, iep_score=result.iep_score,
+                                label="09:00 initial",
+                            )
+                        except Exception:
+                            pass
                     except Exception as e:
                         logger.error(f"[Main] Conviction scorer error: {e}")
 
@@ -300,6 +326,16 @@ class TradingBot:
                             f"{result.direction} IEP={result.iep_score:+d} — "
                             f"{'TRADE DAY' if result.tradeable else 'no trade (below threshold)'}"
                         )
+                        try:
+                            from notifications.alert_service import alert_service
+                            alert_service.conviction_score(
+                                score=result.score, direction=result.direction,
+                                tradeable=result.tradeable, reasons=result.reasons,
+                                capital_pct=result.capital_pct, iep_score=result.iep_score,
+                                label="09:10 IEP-refined",
+                            )
+                        except Exception:
+                            pass
                     except Exception as e:
                         logger.error(f"[Main] IEP re-score error: {e}")
 

@@ -338,6 +338,9 @@ class CommodityOptionsLearning:
         self._daily_entries_date: date = date.today()
         # Wired by main.py to trigger stream resubscription when a rollover symbol changes
         self._on_instrument_update = None
+        # Track the last session phase we logged so we only print INFO on phase transitions,
+        # not on every cycle (run_cycle fires every 60 s).
+        self._last_session_phase: Optional[SessionPhase] = None
         # Strategy registry — initialised early so get_strategy_cfg() is safe during _reload_open_positions
         self._strategy_registry: list[MCXStrategy] = sorted([
             TrendSpreadStrategy(),
@@ -957,7 +960,23 @@ class CommodityOptionsLearning:
         Restart-safe: age is derived from since_iso which is persisted to the
         system_health DB — a 10-minute outage that spans a bot restart is
         correctly detected without any in-memory counter.
+
+        Silently skipped when the MCX session is closed / on a holiday — data
+        misses are expected then and should not raise dashboard alerts.
         """
+        # Suppress during closed / holiday phases — Fyers will have no data
+        # by design; raising an alert would be a false positive.
+        _status = mcx_calendar.get_status()
+        if _status.phase in (
+            SessionPhase.CLOSED,
+            SessionPhase.FULL_HOLIDAY,
+            SessionPhase.HOLIDAY_MORNING,
+        ):
+            logger.debug(
+                f"[CommOpts] {instrument} data miss suppressed "
+                f"(session={_status.phase.value}): {reason}"
+            )
+            return
         logger.warning(f"[CommOpts] {instrument} data miss: {reason}")
         component = f"mcx_data_{instrument.lower()}"
         try:
@@ -996,6 +1015,31 @@ class CommodityOptionsLearning:
         except Exception:
             pass
 
+    def _clear_data_alerts(self) -> None:
+        """
+        Clear all MCX data-miss alerts from system_health.
+
+        Called when run_cycle detects a holiday or full-day MCX closure.
+        Data unavailability is expected during these sessions, so persisted
+        alerts are stale and should not continue showing on the dashboard.
+        They will be re-raised on the next live session if the issue persists.
+        """
+        try:
+            from system_health import system_health
+            cleared = []
+            for short in list(MCX_CONTRACTS.keys()):
+                key = f"mcx_data_{short.lower()}"
+                if system_health.get_alert(key):
+                    system_health.clear_alert(key)
+                    cleared.append(short)
+            if cleared:
+                logger.info(
+                    f"[CommOpts] Cleared {len(cleared)} stale data alert(s) "
+                    f"(holiday/closure): {cleared}"
+                )
+        except Exception:
+            pass
+
     def update_strategy_config(self, strategy: str, param: str, value) -> tuple[bool, str]:
         """Update a single MCX strategy config param at runtime."""
         target = next((s for s in self._strategy_registry if s.name == strategy), None)
@@ -1027,14 +1071,25 @@ class CommodityOptionsLearning:
         status = mcx_calendar.get_status(now)
 
         if not status.allows_entry:
-            # Notable phases get INFO; routine closed/cutoff phases get DEBUG
-            notable = {SessionPhase.HOLIDAY_MORNING, SessionPhase.FULL_HOLIDAY,
-                       SessionPhase.OPENING_BLACKOUT}
-            if status.phase in notable:
+            # Log only on phase transition — run_cycle fires every 60 s so
+            # repeating the same message fills the log pointlessly.
+            # First occurrence of a phase → INFO; repeated same phase → DEBUG.
+            if status.phase != self._last_session_phase:
                 logger.info(f"[CommOpts] {status.message}")
+                self._last_session_phase = status.phase
             else:
                 logger.debug(f"[CommOpts] {status.message}")
+
+            # On a holiday or MCX full-day closure, clear any persisted data-miss
+            # alerts — data unavailability is expected and not actionable.
+            # Alerts will be re-raised if the issue persists into the next live session.
+            if status.phase in (SessionPhase.HOLIDAY_MORNING, SessionPhase.FULL_HOLIDAY):
+                self._clear_data_alerts()
+
             return
+
+        # Market is open — reset phase tracker so the next closure logs at INFO again
+        self._last_session_phase = None
 
         today = now.date()
         if today != self._daily_entries_date:
@@ -1142,6 +1197,19 @@ class CommodityOptionsLearning:
         if not spot:
             self._record_data_miss(short, f"Fyers returned no LTP for {symbol}")
             return
+
+        # Reject stale LTP — Fyers stops ticking when the market closes; a cached
+        # price from a previous session must never trigger a new trade entry.
+        # 30-minute threshold: safe for all MCX instruments including slow metals.
+        _ltp_age = store.get_ltp_age(symbol)
+        if _ltp_age is not None and _ltp_age > 1800:
+            self._record_data_miss(
+                short,
+                f"LTP for {symbol} is {int(_ltp_age / 60)}min old — market may be closed or "
+                f"Fyers WebSocket has stopped ticking"
+            )
+            return
+
         if spot < meta["min_price"] or spot > meta["max_price"]:
             self._record_data_miss(
                 short,
@@ -1638,6 +1706,20 @@ class CommodityOptionsLearning:
                     f"{exit_reason} spot={spot:.2f} pnl=₹{pnl_approx:+.0f} "
                     f"({pnl_r:+.1f}R)"
                 )
+                try:
+                    from notifications.alert_service import alert_service
+                    alert_service.mcx_trade_closed(
+                        instrument  = instrument,
+                        direction   = trade["direction"],
+                        pnl_approx  = pnl_approx,
+                        pnl_r       = pnl_r,
+                        exit_reason = exit_reason,
+                        entry_spot  = trade.get("spot_at_entry", 0),
+                        exit_spot   = spot,
+                        mode        = "REAL" if self._is_real() else "PAPER",
+                    )
+                except Exception:
+                    pass
 
                 # ── Outcome metrics logging ───────────────────────
                 if _AUDIT_AVAILABLE:
@@ -1759,6 +1841,21 @@ class CommodityOptionsLearning:
             f"R:R={trade['rr']:.2f} lots={lots} SL@{meta.get('sl_price','?')} | "
             f"src={trade['data_source']}"
         )
+        try:
+            from notifications.alert_service import alert_service
+            alert_service.mcx_trade_opened(
+                instrument = instrument,
+                direction  = trade["direction"],
+                strategy   = trade.get("strategy", ""),
+                spot       = trade["spot_at_entry"],
+                net_debit  = trade["net_debit"],
+                lots       = lots,
+                sl_price   = meta.get("sl_price", 0),
+                target_pct = meta.get("target_pct", 0.65),
+                mode       = "REAL" if self._is_real() else "PAPER",
+            )
+        except Exception:
+            pass
 
     def _db_update_sl(self, trade_id: str, metadata: dict) -> None:
         """Persist trailing SL / dynamic target state to DB metadata column."""

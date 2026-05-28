@@ -49,6 +49,7 @@ class SystemHealth:
         severity:  str = "warning",
     ) -> None:
         existing = self._alerts.get(component, {})
+        prev_severity = existing.get("severity", "")
         now = datetime.now(tz=IST)
         alert = {
             "component":   component,
@@ -59,6 +60,16 @@ class SystemHealth:
         }
         self._alerts[component] = alert
         self._db_upsert(alert)
+
+        # Send Telegram notification when an alert is new at error/critical level,
+        # or when it escalates from warning → error/critical.
+        # Repeated updates at the same severity level are silent (avoid spam).
+        if severity in ("error", "critical") and prev_severity != severity:
+            try:
+                from notifications.alert_service import alert_service
+                alert_service.system_alert(component, message, severity)
+            except Exception:
+                pass
 
     def clear_alert(self, component: str) -> None:
         self._alerts.pop(component, None)
