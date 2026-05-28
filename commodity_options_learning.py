@@ -347,6 +347,9 @@ class CommodityOptionsLearning:
         # Track the last session phase we logged so we only print INFO on phase transitions,
         # not on every cycle (run_cycle fires every 60 s).
         self._last_session_phase: Optional[SessionPhase] = None
+        # Record startup time so _record_data_miss() can suppress false-positive alerts
+        # during the WebSocket warmup period (first N minutes after restart).
+        self._start_time: datetime = datetime.now(tz=IST)
         # Strategy registry — initialised early so get_strategy_cfg() is safe during _reload_open_positions
         self._strategy_registry: list[MCXStrategy] = sorted([
             TrendSpreadStrategy(),
@@ -988,6 +991,22 @@ class CommodityOptionsLearning:
                 f"(session={_status.phase.value}): {reason}"
             )
             return
+
+        # Startup grace period: suppress alerts while the WebSocket is warming up.
+        # On restart the Fyers WS needs a few minutes to reconnect and replay ticks;
+        # firing alerts immediately produces false positives on every restart.
+        # Grace window is configurable via dashboard: Health → Startup Data Grace Period.
+        _grace_mins = engine_settings.data_miss_startup_grace_minutes()
+        if _grace_mins > 0:
+            _elapsed_secs = (datetime.now(tz=IST) - self._start_time).total_seconds()
+            if _elapsed_secs < _grace_mins * 60:
+                _elapsed_min = int(_elapsed_secs / 60)
+                logger.debug(
+                    f"[CommOpts] {instrument} data miss suppressed "
+                    f"(startup grace {_grace_mins}min, {_elapsed_min}min elapsed): {reason}"
+                )
+                return
+
         logger.warning(f"[CommOpts] {instrument} data miss: {reason}")
         component = f"mcx_data_{instrument.lower()}"
         try:
@@ -1124,6 +1143,18 @@ class CommodityOptionsLearning:
     def _evaluate(self, short: str, store, now: datetime) -> None:
         meta   = MCX_CONTRACTS[short]
         symbol = _fyers_sym(short)   # e.g. MCX:CRUDEOIL26MAYFUT
+
+        # Skip immediately if Fyers already told us this symbol is invalid (-300).
+        # No point fetching LTP or raising a data-miss alert for a known-bad symbol.
+        try:
+            from data.fyers_stream import KNOWN_INVALID_SYMBOLS
+            if symbol in KNOWN_INVALID_SYMBOLS:
+                logger.debug(
+                    f"[CommOpts] {short} skipped — {symbol} is in Fyers invalid list"
+                )
+                return
+        except Exception:
+            pass
 
         # Per-instrument entry cutoff — reads from engine_settings at call time.
         # Silver instruments use silver_entry_cutoff (default 19:15);

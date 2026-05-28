@@ -81,9 +81,23 @@ class NSEParticipantCollector:
         Fetch today's NSE participant OI CSV, parse FII positions, persist.
         Returns list of ParticipantOIRow (one per index symbol).
         Call at 17:30 IST — data is published around 17:15 IST.
+        Returns empty list on trading holidays (NSE does not publish the file).
         """
         if target_date is None:
             target_date = datetime.now(tz=IST).date()
+
+        # NSE does not publish participant OI on trading holidays.
+        # Skip the network request and return cleanly rather than hitting a 404.
+        try:
+            from config.market_holidays import is_trading_holiday
+            if is_trading_holiday(target_date):
+                logger.debug(
+                    f"[NSECollector] Skipping {target_date} — NSE trading holiday, "
+                    f"no participant OI file published."
+                )
+                return []
+        except Exception:
+            pass   # if holiday check fails, proceed and let 404 handle it
 
         date_str = target_date.strftime("%d%m%Y")   # NSE uses DDMMYYYY in filename
         url = _NSE_CSV_URL.format(date=date_str)

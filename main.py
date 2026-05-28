@@ -287,9 +287,11 @@ class TradingBot:
                         logger.error(f"[Main] Edge monitor error: {e}")
 
                 # ── Pre-market conviction scoring (09:00–09:30 IST) ──
+                from config.market_holidays import is_trading_holiday as _is_holiday
                 if (_PREMARKT_SCORE_TIME <= now_time <= _PREMARKT_SCORE_END
                         and today != _conviction_scored_date
-                        and now_ist.weekday() < 5):
+                        and now_ist.weekday() < 5
+                        and not _is_holiday(today)):
                     try:
                         result = conviction_scorer.score("BANKNIFTY")
                         _conviction_scored_date = today
@@ -317,7 +319,8 @@ class TradingBot:
                 # before InstitutionalMomentum starts evaluating at 9:30 AM.
                 if (_PREMARKT_IEP_TIME <= now_time <= _PREMARKT_SCORE_END
                         and today != _conviction_iep_date
-                        and now_ist.weekday() < 5):
+                        and now_ist.weekday() < 5
+                        and not _is_holiday(today)):
                     try:
                         result = conviction_scorer.score("BANKNIFTY")
                         _conviction_iep_date = today
@@ -376,7 +379,8 @@ class TradingBot:
                     # ── OI close snapshot at 15:25 IST ────────────
                     if (now_time >= _OI_CLOSE_SNAP_TIME
                             and today != _oi_snap_saved_date
-                            and now_ist.weekday() < 5):
+                            and now_ist.weekday() < 5
+                            and not _is_holiday(today)):
                         try:
                             oi_analyzer.save_close_snapshot()
                             _oi_snap_saved_date = today
@@ -400,9 +404,12 @@ class TradingBot:
                         logger.debug(f"[Main] Analytics save error: {e}")
 
                 # ── NSE FII data collection at 17:30 IST ──────────
+                # NSE does not publish participant OI on trading holidays —
+                # skip the attempt entirely to avoid a noisy 404 warning.
                 if (_NSE_COLLECT_TIME <= now_time <= _NSE_COLLECT_END
                         and today != _nse_collected_date
-                        and now_ist.weekday() < 5):
+                        and now_ist.weekday() < 5
+                        and not _is_holiday(today)):
                     try:
                         rows = nse_participant_collector.collect()
                         _nse_collected_date = today
@@ -418,6 +425,11 @@ class TradingBot:
                             logger.warning("[Main] FII data unavailable today (holiday?)")
                     except Exception as e:
                         logger.error(f"[Main] NSE collector error: {e}")
+                elif (_is_holiday(today)
+                        and today != _nse_collected_date
+                        and now_time == _NSE_COLLECT_TIME):
+                    logger.debug("[Main] FII collection skipped — trading holiday")
+                    _nse_collected_date = today   # mark done so it doesn't retry
 
                 # ── Periodic Fyers token health check (every 30 min) ───
                 if now - last_token_check >= TOKEN_CHECK_INTERVAL:

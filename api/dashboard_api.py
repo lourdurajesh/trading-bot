@@ -1016,6 +1016,39 @@ def get_system_alerts():
         return {"alerts": [], "error": str(e)}
 
 
+@app.delete("/system/alerts/{component}")
+def dismiss_system_alert(component: str):
+    """
+    Dismiss (clear) a specific system health alert by component name.
+    Use when the underlying issue has been resolved but the alert persists,
+    or to clear stale data-miss alerts after a Fyers subscription change.
+    """
+    try:
+        from system_health import system_health
+        existed = system_health.get_alert(component) is not None
+        system_health.clear_alert(component)
+        return {"ok": True, "component": component, "was_active": existed}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.delete("/system/alerts")
+def dismiss_all_system_alerts():
+    """
+    Dismiss ALL active system health alerts.
+    Use with care — underlying issues may still be present.
+    """
+    try:
+        from system_health import system_health
+        alerts = system_health.get_alerts()
+        cleared = [a["component"] for a in alerts]
+        for component in cleared:
+            system_health.clear_alert(component)
+        return {"ok": True, "cleared": cleared, "count": len(cleared)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/system/token/refresh")
 def trigger_token_refresh():
     """Manually trigger a Fyers token refresh (bypasses cooldown)."""

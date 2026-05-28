@@ -52,6 +52,7 @@ _DEFAULTS: dict = {
     "bs_default_dte":               21,       # DTE used when live chain is unavailable
     # Health
     "data_miss_error_minutes":      10,       # escalate warning → error after N continuous minutes
+    "data_miss_startup_grace_minutes": 5,     # suppress data-miss alerts for N min after bot restart
     # Premarket
     "premarket_strong_thresh_pct":  0.50,     # IEP gap % that scores ±2
     "premarket_mild_thresh_pct":    0.15,     # IEP gap % that scores ±1
@@ -122,6 +123,11 @@ _METADATA: dict = {
         "label": "Data Miss Escalation", "type": "int", "unit": "minutes",
         "group": "Health",
         "note": "Fyers data alerts start as 'warning'. After this many continuous minutes they become 'error'.",
+    },
+    "data_miss_startup_grace_minutes": {
+        "label": "Startup Data Grace Period", "type": "int", "unit": "minutes",
+        "group": "Health",
+        "note": "Suppress MCX data-miss alerts for this many minutes after bot restart (WebSocket needs time to receive first tick). Set 0 to disable.",
     },
     "premarket_strong_thresh_pct": {
         "label": "Pre-Market Strong Threshold", "type": "float", "unit": "%",
@@ -203,6 +209,9 @@ class MCXEngineSettings:
 
     def data_miss_error_minutes(self) -> int:
         return int(self._get("data_miss_error_minutes"))
+
+    def data_miss_startup_grace_minutes(self) -> int:
+        return int(self._get("data_miss_startup_grace_minutes"))
 
     def premarket_strong_thresh_pct(self) -> float:
         return float(self._get("premarket_strong_thresh_pct"))
@@ -344,7 +353,8 @@ def _validate(key: str, value) -> tuple[bool, str]:
         "spread_delta":                 (lambda v: 0  < v <= 1.0,   "must be 0–1.0"),
         "bs_risk_free_rate":            (lambda v: 0  <= v <= 0.20, "must be 0–0.20 (e.g. 0.065 = 6.5%)"),
         "bs_default_dte":               (lambda v: 1  <= v <= 90,   "must be 1–90 days"),
-        "data_miss_error_minutes":      (lambda v: 1  <= v <= 120,  "must be 1–120 minutes"),
+        "data_miss_error_minutes":          (lambda v: 1  <= v <= 120,  "must be 1–120 minutes"),
+        "data_miss_startup_grace_minutes":  (lambda v: 0  <= v <= 60,   "must be 0–60 minutes"),
         "premarket_strong_thresh_pct":  (lambda v: 0  < v <= 5.0,  "must be 0–5.0%"),
         "premarket_mild_thresh_pct":    (lambda v: 0  < v <= 2.0,  "must be 0–2.0%"),
     }
