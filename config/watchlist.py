@@ -70,7 +70,7 @@ NSE_MIDCAP = [
     "NSE:IDFCFIRSTB-EQ",    # IDFC First Bank, high-beta, trending
     "NSE:FEDERALBNK-EQ",    # Federal Bank, Kerala-based, good range patterns
     # Diversified digital
-    "NSE:ZOMATO-EQ",        # food-tech, high volume, mean-reversion patterns
+    "NSE:ETERNAL-EQ",        # food-tech, high volume, mean-reversion patterns
     "NSE:NAUKRI-EQ",        # Info Edge, internet; independent sector cycle
 ]
 

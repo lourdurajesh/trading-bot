@@ -1821,6 +1821,45 @@ def remove_mcx_extra_holiday(holiday_date: str):
 
 
 # ─────────────────────────────────────────────────────────────────
+# INVALID SYMBOLS
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/stream/invalid-symbols")
+def get_invalid_symbols():
+    """
+    List all symbols Fyers has rejected (-300) with their first-seen timestamps.
+
+    Use this to understand which symbols need attention — either a wrong symbol
+    name, a contract not yet listed, or a Fyers plan that doesn't include it.
+    """
+    try:
+        from data.fyers_stream import get_invalid_symbols_info
+        return {"ok": True, "invalid_symbols": get_invalid_symbols_info()}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.delete("/stream/invalid-symbols", dependencies=[Depends(_require_api_key)])
+def clear_invalid_symbols():
+    """
+    Clear all persisted invalid symbols so they are retried on the next subscribe.
+
+    Call this after:
+      - Upgrading your Fyers data subscription
+      - Fixing a wrong symbol name in the watchlist
+      - A new MCX contract is listed that was previously missing
+
+    The symbols will be re-validated on the next WebSocket subscription attempt.
+    """
+    try:
+        from data.fyers_stream import clear_invalid_symbols as _clear
+        cleared = _clear()
+        return {"ok": True, "cleared": cleared, "count": len(cleared)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────
 # WEBSOCKET — live push every 2 seconds
 # ─────────────────────────────────────────────────────────────────
 

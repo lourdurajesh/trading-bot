@@ -31,7 +31,61 @@ logger = logging.getLogger(__name__)
 # Module-level set of Fyers symbols confirmed invalid by the broker (-300 error).
 # Persists for the lifetime of the process so resubscribes and add-instrument
 # validation can both consult it without circular imports.
+#
+# FyersStream._invalid_symbols is an alias of this same set object — any mutation
+# (update / clear) via KNOWN_INVALID_SYMBOLS is immediately visible to the stream.
 KNOWN_INVALID_SYMBOLS: set[str] = set()
+
+
+# ── Module-level DB helpers ────────────────────────────────────────────────────
+# Used by dashboard endpoints that don't have a reference to the stream instance.
+
+_DB_PATH         = "db/trades.db"
+_INVALID_SYM_KEY = "fyers.invalid_symbols"
+_INVALID_SYM_TTL = 30   # days
+
+
+def get_invalid_symbols_info() -> dict[str, str]:
+    """
+    Return all persisted invalid symbols with their first-seen ISO timestamp.
+    Falls back to current in-memory set (no timestamps) if DB is unavailable.
+    """
+    try:
+        import sqlite3, json
+        with sqlite3.connect(_DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT value FROM commodity_settings WHERE key=?",
+                (_INVALID_SYM_KEY,),
+            ).fetchone()
+        return json.loads(row[0]) if row else {s: "" for s in KNOWN_INVALID_SYMBOLS}
+    except Exception:
+        return {s: "" for s in KNOWN_INVALID_SYMBOLS}
+
+
+def clear_invalid_symbols() -> list[str]:
+    """
+    Clear all persisted invalid symbols from memory AND DB so they are retried
+    on the next WebSocket subscription.
+
+    Call after a Fyers plan upgrade, a symbol rename, or adding a new contract.
+    """
+    cleared = list(KNOWN_INVALID_SYMBOLS)
+    KNOWN_INVALID_SYMBOLS.clear()
+    try:
+        import sqlite3
+        with sqlite3.connect(_DB_PATH) as conn:
+            conn.execute(
+                "DELETE FROM commodity_settings WHERE key=?",
+                (_INVALID_SYM_KEY,),
+            )
+        if cleared:
+            logger.info(
+                f"[FyersStream] Cleared {len(cleared)} invalid symbol(s) "
+                f"from memory + DB: {cleared}"
+            )
+    except Exception as exc:
+        logger.debug(f"[FyersStream] DB clear of invalid symbols failed: {exc}")
+    return cleared
 
 
 class FyersStream:
@@ -55,8 +109,10 @@ class FyersStream:
         self._gap_start            = None
         # Signals _connect() to exit its sleep loop when the socket closes unexpectedly
         self._ws_closed = threading.Event()
-        # Symbols rejected by Fyers (-300); excluded from future subscriptions
-        self._invalid_symbols: set[str] = set()
+        # Alias to the module-level KNOWN_INVALID_SYMBOLS set — any mutation here
+        # is immediately visible everywhere (dashboard, add-instrument validation,
+        # resubscription logic) without needing a reference to this instance.
+        self._invalid_symbols: set[str] = KNOWN_INVALID_SYMBOLS
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
@@ -67,6 +123,10 @@ class FyersStream:
         if self._running:
             logger.warning("FyersStream already running.")
             return
+
+        # Load previously-known invalid symbols from DB before the first subscribe
+        # so the bot never re-tries symbols Fyers confirmed invalid on a prior run.
+        self._load_invalid_from_db()
 
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True, name="FyersStream")
@@ -198,15 +258,76 @@ class FyersStream:
         else:
             logger.info("FyersStream: closed cleanly on shutdown.")
 
+    # ── Invalid-symbol persistence ────────────────────────────────
+    # Symbols confirmed invalid by Fyers (-300) are stored in the DB with a
+    # timestamp.  On the next restart they are excluded from the initial
+    # subscription so the ERROR / WARNING never re-fires for the same symbols.
+    # TTL: 30 days — symbols are retried after that (handles plan upgrades,
+    # new contracts being listed, etc.).
+
+    def _load_invalid_from_db(self) -> None:
+        """Seed _invalid_symbols (= KNOWN_INVALID_SYMBOLS) from DB at startup."""
+        try:
+            import sqlite3, json
+            from datetime import datetime, timedelta
+            cutoff = (datetime.now() - timedelta(days=_INVALID_SYM_TTL)).isoformat()
+            with sqlite3.connect(_DB_PATH) as conn:
+                row = conn.execute(
+                    "SELECT value FROM commodity_settings WHERE key=?",
+                    (_INVALID_SYM_KEY,),
+                ).fetchone()
+            if not row:
+                return
+            data = json.loads(row[0])   # {"symbol": "iso-timestamp", ...}
+            fresh = {sym for sym, ts in data.items() if ts >= cutoff}
+            if fresh:
+                # self._invalid_symbols IS KNOWN_INVALID_SYMBOLS — one update suffices
+                self._invalid_symbols.update(fresh)
+                logger.info(
+                    f"[FyersStream] Loaded {len(fresh)} persisted invalid symbol(s) "
+                    f"from DB — will skip on subscribe: {sorted(fresh)}"
+                )
+        except Exception as exc:
+            logger.debug(f"[FyersStream] Could not load invalid symbols from DB: {exc}")
+
+    def _save_invalid_to_db(self) -> None:
+        """Persist current invalid symbols to DB so they survive restarts."""
+        try:
+            import sqlite3, json
+            from datetime import datetime, timedelta
+            cutoff = (datetime.now() - timedelta(days=_INVALID_SYM_TTL)).isoformat()
+            existing: dict[str, str] = {}
+            with sqlite3.connect(_DB_PATH) as conn:
+                row = conn.execute(
+                    "SELECT value FROM commodity_settings WHERE key=?",
+                    (_INVALID_SYM_KEY,),
+                ).fetchone()
+                if row:
+                    existing = json.loads(row[0])
+            existing = {sym: ts for sym, ts in existing.items() if ts >= cutoff}
+            now_iso = datetime.now().isoformat()
+            for sym in self._invalid_symbols:
+                existing.setdefault(sym, now_iso)   # first-seen timestamp wins
+            with sqlite3.connect(_DB_PATH) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO commodity_settings (key, value) VALUES (?,?)",
+                    (_INVALID_SYM_KEY, json.dumps(existing)),
+                )
+        except Exception as exc:
+            logger.debug(f"[FyersStream] Could not persist invalid symbols to DB: {exc}")
+
+    # ─────────────────────────────────────────────────────────────
+
     def _on_error(self, error) -> None:
         logger.error(f"Fyers WebSocket error: {error}")
         if isinstance(error, dict) and error.get("code") == -300:
             invalid = error.get("invalid_symbols", [])
             if invalid:
                 self._invalid_symbols.update(invalid)
-                KNOWN_INVALID_SYMBOLS.update(invalid)
+                # self._invalid_symbols IS KNOWN_INVALID_SYMBOLS — no double-update needed
+                self._save_invalid_to_db()   # persist so restart skips these symbols
                 logger.warning(
-                    f"[FyersStream] Invalid symbols dropped: {invalid}. "
+                    f"[FyersStream] Invalid symbols dropped and persisted: {invalid}. "
                     f"Resubscribing without them."
                 )
                 # Resubscribe immediately with the bad symbols removed
