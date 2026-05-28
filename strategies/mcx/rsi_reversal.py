@@ -58,21 +58,32 @@ class RSIReversalSpreadStrategy(MCXStrategy):
         ema20   = calc_ema(close, 20).iloc[-1]
         ema5    = calc_ema(close, 5).iloc[-1]
 
-        if rsi_val < 32 and ema5 >= ema20 * 0.995:
+        cfg = self.config   # thresholds editable via /commodity/config API
+        # ema_proximity_pct: max % divergence between EMA5 and EMA20 while still
+        # counting the trend as "intact" (e.g. 0.5 → multiplier 0.995 / 1.005)
+        proximity = cfg.ema_proximity_pct / 100.0
+
+        if rsi_val < cfg.rsi_oversold and ema5 >= ema20 * (1 - proximity):
             return MCXSignalResult(
                 direction     = "LONG",
                 strategy_name = self.name,
-                signal_reason = f"RSI={rsi_val:.1f} oversold, EMA20={ema20:.0f}",
+                signal_reason = (
+                    f"RSI={rsi_val:.1f} < {cfg.rsi_oversold:.0f} (oversold), "
+                    f"EMA5/EMA20 within {cfg.ema_proximity_pct:.1f}%"
+                ),
                 rsi_val       = round(rsi_val, 1),
                 ema5_val      = round(ema5, 2),
                 ema20_val     = round(ema20, 2),
             )
 
-        if rsi_val > 68 and ema5 <= ema20 * 1.005:
+        if rsi_val > cfg.rsi_overbought and ema5 <= ema20 * (1 + proximity):
             return MCXSignalResult(
                 direction     = "SHORT",
                 strategy_name = self.name,
-                signal_reason = f"RSI={rsi_val:.1f} overbought, EMA20={ema20:.0f}",
+                signal_reason = (
+                    f"RSI={rsi_val:.1f} > {cfg.rsi_overbought:.0f} (overbought), "
+                    f"EMA5/EMA20 within {cfg.ema_proximity_pct:.1f}%"
+                ),
                 rsi_val       = round(rsi_val, 1),
                 ema5_val      = round(ema5, 2),
                 ema20_val     = round(ema20, 2),

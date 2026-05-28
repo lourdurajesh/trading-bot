@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 from strategies.mcx_base import MCXStrategy, MCXStrategyConfig, MCXSignalResult
 from strategies.mcx import TrendSpreadStrategy, RSIReversalSpreadStrategy, BreakoutSpreadStrategy
 from config.mcx_calendar import mcx_calendar, SessionPhase, SessionStatus
+from config.mcx_engine_settings import engine_settings
 
 # ── Enhancement modules (fail-safe imports) ───────────────────────
 try:
@@ -69,11 +70,10 @@ except Exception:
 # MCX COMMODITY METADATA
 # ─────────────────────────────────────────────────────────────────
 
-MCX_MARKET_OPEN  = dtime(9, 0)
-MCX_MARKET_CLOSE = dtime(23, 30)
-# Stop taking new entries 30 min before close (spread widens)
-MCX_ENTRY_CUTOFF = dtime(20, 0)   # stop new entries at 8 PM — spreads widen after that
-# Note: MCX_OPEN_WAIT_MINUTES removed — use mcx_calendar.open_wait_minutes() instead
+MCX_MARKET_OPEN  = dtime(9, 0)    # MCX regulatory open — not user-configurable
+MCX_MARKET_CLOSE = dtime(23, 30)  # MCX regulatory close — not user-configurable
+# Entry cutoff, opening blackout, Silver cutoff, EOD exit time are now read from
+# engine_settings at runtime so they can be changed via the dashboard without restart.
 
 # Populated at startup from the commodity_instruments DB table.
 # Code throughout this module reads these dicts; they are refreshed whenever
@@ -234,8 +234,12 @@ def _norm_cdf(x: float) -> float:
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
 
-def _bs_price(spot, strike, iv, dte_days, opt_type="call", r=0.065) -> float:
-    """Black-Scholes option price. r = India risk-free rate ~6.5%."""
+def _bs_price(spot, strike, iv, dte_days, opt_type="call", r=None) -> float:
+    """Black-Scholes option price.
+    r: risk-free rate — defaults to engine_settings.bs_risk_free_rate() (India repo ≈ 6.5%).
+    """
+    if r is None:
+        r = engine_settings.bs_risk_free_rate()
     if dte_days <= 0 or iv <= 0 or spot <= 0:
         return 0.0
     T = dte_days / 365.0
@@ -257,13 +261,11 @@ def _atm_strike(spot: float, step: int) -> int:
 
 # ─────────────────────────────────────────────────────────────────
 # COMMODITY OPTIONS LEARNING ENGINE
-_SPREAD_DELTA = 0.35  # debit spread net-delta estimate used for debit→spot conversion
+# All numeric tuning constants (spread_delta, max_lots, max_capital_pct,
+# fill_poll_secs, bs params, etc.) are read from engine_settings at runtime.
+# Edit them via the dashboard /commodity/engine-settings API — no restart needed.
 
-# Real-trade execution constants
-_MCX_PRODUCT        = "INTRADAY"  # MCX options — broker auto-squares at session end
-_MAX_LOTS_PER_TRADE = 3           # hard cap per spread trade
-_MAX_CAPITAL_PCT    = 0.10        # max 10% of free capital per new trade
-_FILL_POLL_SECS     = 30          # order fill confirmation timeout (seconds)
+_MCX_PRODUCT = "INTRADAY"  # Fyers broker product type — MCX options auto-square at session end
 
 
 _SL_OVERRIDE_FIELDS = (
@@ -304,9 +306,11 @@ def _debit_sl_price(spot: float, direction: str, net_debit: float, strat_cfg: di
 
     sl_spot_dist = (sl_debit_pct × net_debit) / spread_delta
     High-IV spreads (large debit) get more spot room; cheap spreads get tighter SL.
+    spread_delta is read from engine_settings so it can be tuned via the dashboard.
     """
     sl_pct = strat_cfg.get("sl_debit_pct", 0.40)
-    dist   = round((sl_pct * net_debit) / _SPREAD_DELTA, 2) if net_debit > 0 else round(spot * 0.015, 2)
+    delta  = engine_settings.spread_delta()
+    dist   = round((sl_pct * net_debit) / delta, 2) if net_debit > 0 else round(spot * 0.015, 2)
     return round(spot - dist, 2) if direction == "LONG" else round(spot + dist, 2)
 
 
@@ -318,7 +322,8 @@ class CommodityOptionsLearning:
     Run learning_cycle() every 60 seconds during MCX hours.
     """
 
-    MAX_DAILY_ENTRIES_PER_INSTRUMENT = 2  # cap re-entries to avoid compounding on choppy instruments
+    # Max daily entries per instrument is read from engine_settings at runtime
+    # so it can be adjusted via the dashboard without restarting the bot.
 
     def __init__(self):
         self._open_positions: dict[str, dict] = {}  # key → trade
@@ -640,7 +645,8 @@ class CommodityOptionsLearning:
         """
         How many lots to trade.
         Paper: always 1 lot (learning, not sizing).
-        Real: scale up to _MAX_CAPITAL_PCT of free capital, hard-cap at _MAX_LOTS_PER_TRADE.
+        Real: scale up to engine_settings.max_capital_pct of free capital,
+              hard-cap at engine_settings.max_lots_per_trade.
         Returns 0 if insufficient funds (blocks entry).
         """
         if not self._is_real():
@@ -653,11 +659,13 @@ class CommodityOptionsLearning:
         if available <= 0:
             logger.warning(f"[CommOpts] {instrument} fund check returned 0 — blocking entry")
             return 0
-        max_lots = int((available * _MAX_CAPITAL_PCT) / cost_per_lot)
-        lots = max(1, min(max_lots, _MAX_LOTS_PER_TRADE))
+        max_cap   = engine_settings.max_capital_pct()
+        lot_cap   = engine_settings.max_lots_per_trade()
+        max_lots  = int((available * max_cap) / cost_per_lot)
+        lots      = max(1, min(max_lots, lot_cap))
         logger.info(
             f"[CommOpts] {instrument} lots={lots} "
-            f"(₹{available:,.0f} free, ₹{cost_per_lot:,.0f}/lot, cap={_MAX_CAPITAL_PCT:.0%})"
+            f"(₹{available:,.0f} free, ₹{cost_per_lot:,.0f}/lot, cap={max_cap:.0%})"
         )
         return lots
 
@@ -665,12 +673,15 @@ class CommodityOptionsLearning:
     # REAL ORDER EXECUTION
     # ─────────────────────────────────────────────────────────────
 
-    def _confirm_fill(self, order_id: str, timeout_secs: int = _FILL_POLL_SECS) -> tuple[bool, float]:
+    def _confirm_fill(self, order_id: str, timeout_secs: int = None) -> tuple[bool, float]:
         """
         Poll the broker orderbook until the order is filled or timed out.
         Returns (filled: bool, fill_price: float).
         In simulation mode always returns (True, 0.0).
+        timeout_secs defaults to engine_settings.fill_poll_secs() if not specified.
         """
+        if timeout_secs is None:
+            timeout_secs = engine_settings.fill_poll_secs()
         import time
         from execution.fyers_broker import fyers_broker
         if not fyers_broker._initialised:
@@ -930,6 +941,61 @@ class CommodityOptionsLearning:
             "next_open_at": status.next_open_at.isoformat() if status.next_open_at else None,
         }
 
+    # ─────────────────────────────────────────────────────────────
+    # DATA HEALTH MONITORING
+    # Fyers data failures are surfaced to system_health (→ dashboard)
+    # rather than silently swallowed as logger.info/debug calls.
+    # ─────────────────────────────────────────────────────────────
+
+    def _record_data_miss(self, instrument: str, reason: str) -> None:
+        """
+        Surface a Fyers data failure to the system_health dashboard.
+
+        First miss  → 'warning' alert raised immediately (never silent).
+        After ≥10 min of continuous failure → severity upgraded to 'error'.
+
+        Restart-safe: age is derived from since_iso which is persisted to the
+        system_health DB — a 10-minute outage that spans a bot restart is
+        correctly detected without any in-memory counter.
+        """
+        logger.warning(f"[CommOpts] {instrument} data miss: {reason}")
+        component = f"mcx_data_{instrument.lower()}"
+        try:
+            from system_health import system_health
+            existing = system_health.get_alert(component)
+            if existing:
+                # Alert already active — compute age from DB-persisted since_iso.
+                since = datetime.fromisoformat(existing["since_iso"])
+                if since.tzinfo is None:
+                    since = since.replace(tzinfo=IST)
+                age_min        = (datetime.now(tz=IST) - since).total_seconds() / 60
+                escalate_after = engine_settings.data_miss_error_minutes()
+                severity       = "error" if age_min >= escalate_after else "warning"
+                system_health.set_alert(
+                    component,
+                    f"MCX {instrument}: no valid data for {int(age_min)}min — {reason}. "
+                    f"Check Fyers subscription and contract rollover.",
+                    severity=severity,
+                )
+            else:
+                # First miss — warn immediately so the operator sees it straight away.
+                # since_iso is written to DB now; age tracking survives any restart.
+                system_health.set_alert(
+                    component,
+                    f"MCX {instrument}: data unavailable — {reason}",
+                    severity="warning",
+                )
+        except Exception:
+            pass
+
+    def _record_data_ok(self, instrument: str) -> None:
+        """Clear the system_health data-miss alert for an instrument on a successful read."""
+        try:
+            from system_health import system_health
+            system_health.clear_alert(f"mcx_data_{instrument.lower()}")
+        except Exception:
+            pass
+
     def update_strategy_config(self, strategy: str, param: str, value) -> tuple[bool, str]:
         """Update a single MCX strategy config param at runtime."""
         target = next((s for s in self._strategy_registry if s.name == strategy), None)
@@ -993,16 +1059,29 @@ class CommodityOptionsLearning:
         meta   = MCX_CONTRACTS[short]
         symbol = _fyers_sym(short)   # e.g. MCX:CRUDEOIL26MAYFUT
 
+        # Per-instrument entry cutoff — reads from engine_settings at call time.
+        # Silver instruments use silver_entry_cutoff (default 19:15);
+        # others use the global mcx_entry_cutoff (default 20:00).
+        # Both are editable via the dashboard /commodity/engine-settings API.
+        instr_cutoff = engine_settings.instrument_entry_cutoff(short)
+        if now.time() > instr_cutoff:
+            logger.debug(
+                f"[CommOpts] {short} past entry cutoff "
+                f"({instr_cutoff.strftime('%H:%M')} IST) — skipping new entries"
+            )
+            return
+
         # Already have an open position for this commodity?
         if any(short in k for k in self._open_positions):
             return
 
-        # Daily entry cap — prevents compounding losses on choppy instruments (e.g. Silver May-14)
+        # Daily entry cap — reads from engine_settings; editable via dashboard.
+        max_entries   = engine_settings.max_daily_entries()
         entries_today = self._daily_entries.get(short, 0)
-        if entries_today >= self.MAX_DAILY_ENTRIES_PER_INSTRUMENT:
+        if entries_today >= max_entries:
             logger.info(
                 f"[CommOpts] {short} daily entry cap reached "
-                f"({entries_today}/{self.MAX_DAILY_ENTRIES_PER_INSTRUMENT}) — skipping"
+                f"({entries_today}/{max_entries}) — skipping"
             )
             return
 
@@ -1058,16 +1137,28 @@ class CommodityOptionsLearning:
         except Exception as _e:
             logger.debug(f"[CommOpts] DB cooldown check error for {short}: {_e}")
 
-        # Get futures price
+        # Get futures price — track consecutive misses for dashboard health alerts
         spot = store.get_ltp(symbol)
-        if not spot or spot < meta["min_price"] or spot > meta["max_price"]:
-            logger.info(f"[CommOpts] {short} no valid spot (got {spot}, sym={symbol})")
+        if not spot:
+            self._record_data_miss(short, f"Fyers returned no LTP for {symbol}")
             return
+        if spot < meta["min_price"] or spot > meta["max_price"]:
+            self._record_data_miss(
+                short,
+                f"LTP {spot:.0f} outside valid range [{meta['min_price']}–{meta['max_price']}] "
+                f"for {symbol} — possible contract mismatch or price range config"
+            )
+            return
+        self._record_data_ok(short)
 
         # 1H data
         df = store.get_ohlcv(symbol, "1H", n=50)
         if df is None or len(df) < 20:
-            logger.info(f"[CommOpts] {short} insufficient 1H bars (got {len(df) if df is not None else 0})")
+            bar_count = len(df) if df is not None else 0
+            logger.warning(
+                f"[CommOpts] {short} insufficient 1H bars ({bar_count}/20 required) — "
+                f"Fyers may not have seeded history for {symbol} yet"
+            )
             return
 
         # Try strategies in priority order — first match wins
@@ -1123,7 +1214,7 @@ class CommodityOptionsLearning:
             self._daily_entries[short] = self._daily_entries.get(short, 0) + 1
             logger.info(
                 f"[CommOpts] {short} daily entries: "
-                f"{self._daily_entries[short]}/{self.MAX_DAILY_ENTRIES_PER_INSTRUMENT}"
+                f"{self._daily_entries[short]}/{engine_settings.max_daily_entries()}"
             )
 
             # ── Audit: TRADE taken ────────────────────────────────
@@ -1177,7 +1268,7 @@ class CommodityOptionsLearning:
         step    = meta["strike_step"]
         iv      = meta["typical_iv"]
         lot     = meta["lot_size"]
-        dte     = 21   # target ~3 weeks to expiry
+        dte     = engine_settings.bs_default_dte()   # target DTE — configurable via dashboard
 
         atm  = _atm_strike(spot, step)
 
@@ -1357,9 +1448,11 @@ class CommodityOptionsLearning:
             exit_reason = None
             pnl_approx  = None
 
-            # Delta-based P&L estimate (per unit, used for reporting only)
+            # Delta-based P&L estimate (per unit, used for reporting only).
+            # spread_delta is read from engine_settings — configurable via dashboard.
+            _delta    = engine_settings.spread_delta()
             spot_move = spot - entry_spot if direction == "LONG" else entry_spot - spot
-            est_pnl   = round(spot_move * 0.35, 2)
+            est_pnl   = round(spot_move * _delta, 2)
 
             # ── Trailing SL & Dynamic Target ──────────────────────────────────────
             # Merge strategy defaults with per-instrument overrides so Silver/Copper
@@ -1372,8 +1465,8 @@ class CommodityOptionsLearning:
             tgt_up_mult     = strat_cfg.get("target_upgrade_mult", 2.0)
 
             # Convert debit-% params to spot-point distances for this trade
-            sl_dist    = round((sl_debit_pct    * net_debit) / _SPREAD_DELTA, 2) if net_debit > 0 else round(entry_spot * 0.015, 2)
-            trail_dist = round((trail_debit_pct * net_debit) / _SPREAD_DELTA, 2) if net_debit > 0 else round(entry_spot * 0.011, 2)
+            sl_dist    = round((sl_debit_pct    * net_debit) / _delta, 2) if net_debit > 0 else round(entry_spot * 0.015, 2)
+            trail_dist = round((trail_debit_pct * net_debit) / _delta, 2) if net_debit > 0 else round(entry_spot * 0.011, 2)
             # Trail trigger as a fraction of SL distance — e.g. 0.50 means "activate
             # trail once spot has moved half the SL distance in our favour".
             # Previously used (pct × debit / delta) which gave 135 pts vs SL of 108 pts,
@@ -1428,7 +1521,7 @@ class CommodityOptionsLearning:
             # the initial target exit — without this cap, low-R:R spreads (e.g.
             # Crude Oil R:R ≈ 1.5) have 2×SL > T1_dist, meaning T1 exits first
             # and the dynamic target never triggers.
-            t1_dist_pts = round((max_profit * target_pct) / _SPREAD_DELTA, 2)
+            t1_dist_pts = round((max_profit * target_pct) / _delta, 2)
             upgrade_trigger = min(
                 round(tgt_up_mult * sl_dist, 2),
                 round(t1_dist_pts * 0.90, 2),   # hard cap: never exceed 90% of T1
@@ -1438,7 +1531,7 @@ class CommodityOptionsLearning:
                 target_pct     = tgt_up_pct
                 sl_updated     = True
                 # T1 spot level: the price at which est_pnl would equal old target
-                t1_spot_dist = round((max_profit * old_target_pct) / _SPREAD_DELTA, 2)
+                t1_spot_dist = round((max_profit * old_target_pct) / _delta, 2)
                 # Small buffer (half a trail_dist) so a 1-tick wick at T1 doesn't stop us
                 t1_sl_buffer = round(trail_dist * 0.25, 2)
                 if direction == "LONG":
@@ -1508,7 +1601,8 @@ class CommodityOptionsLearning:
                     pnl_approx  = round(max_profit * target_pct, 2)
 
             # ── EOD ─────────────────────────────────────────────────────────────
-            if exit_reason is None and now.time() >= dtime(23, 15):
+            # eod_exit_time is configurable via /commodity/engine-settings (default 23:15)
+            if exit_reason is None and now.time() >= engine_settings.mcx_eod_exit_time():
                 exit_reason = "EOD_MCX"
                 pnl_approx  = round(est_pnl, 2)
 

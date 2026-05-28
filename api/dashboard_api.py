@@ -1333,7 +1333,8 @@ def commodity_manual_close(trade_id: str):
             spot = entry_spot  # last resort: no P&L movement
 
         spot_move = spot - entry_spot if direction == "LONG" else entry_spot - spot
-        est_pnl   = round(spot_move * 0.35, 2)
+        from config.mcx_engine_settings import engine_settings as _es
+        est_pnl   = round(spot_move * _es.spread_delta(), 2)
         pnl_r     = round(est_pnl / net_debit, 2) if net_debit > 0 else 0
         pnl_inr   = round(est_pnl * lot_size, 2)
 
@@ -1682,6 +1683,47 @@ def update_commodity_strategy_config(strategy: str, param: str, body: dict):
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/commodity/engine-settings")
+def get_engine_settings():
+    """
+    Return all MCX engine settings with current values, defaults, labels, and units.
+    Used by the dashboard settings UI to build the configuration form.
+
+    Groups: Session | Risk | Execution | Pricing | Health | Premarket
+    """
+    try:
+        from config.mcx_engine_settings import engine_settings
+        return {"ok": True, "settings": engine_settings.all_settings()}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.put("/commodity/engine-settings/{key}", dependencies=[Depends(_require_api_key)])
+def update_engine_setting(key: str, body: dict):
+    """
+    Update a single MCX engine setting at runtime.
+    Change takes effect on the next engine cycle — no restart required.
+
+    Body: {"value": <new_value>}
+
+    Examples:
+      PUT /commodity/engine-settings/mcx_open_wait_minutes  {"value": 20}
+      PUT /commodity/engine-settings/max_daily_entries       {"value": 3}
+      PUT /commodity/engine-settings/silver_entry_cutoff     {"value": "19:30"}
+    """
+    value = body.get("value")
+    if value is None:
+        return {"ok": False, "error": "Request body must contain 'value'"}
+    try:
+        from config.mcx_engine_settings import engine_settings
+        ok, err = engine_settings.set(key, value)
+        if not ok:
+            return {"ok": False, "error": err}
+        return {"ok": True, "key": key, "value": engine_settings._cache.get(key, value)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @app.delete("/commodity/cooldown/{instrument}")
 def clear_commodity_cooldown(instrument: str):
     """Manually clear an active entry cooldown for a commodity instrument."""
@@ -1764,19 +1806,28 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
     try:
         from paper_trading import paper_trading_engine
         if paper_trading_engine.is_active():
+            from config.settings import TOTAL_CAPITAL
             paper_wallet = {
                 "balance":      paper_trading_engine.get_balance(),
                 "is_exhausted": paper_trading_engine.is_capital_exhausted(),
-                "starting":     500_000.0,
+                "starting":     TOTAL_CAPITAL,
             }
     except Exception:
         pass
 
-    # System health alerts — any component failures needing attention
+    # System health alerts — any component failures needing attention.
+    # Surfaced here so the frontend can show a persistent banner/badge
+    # without requiring the operator to check logs.
     system_alerts: list[dict] = []
+    alert_summary: dict = {"count": 0, "has_critical": False, "has_error": False}
     try:
         from system_health import system_health
         system_alerts = system_health.get_alerts()
+        alert_summary = {
+            "count":        len(system_alerts),
+            "has_critical": any(a.get("severity") == "critical" for a in system_alerts),
+            "has_error":    any(a.get("severity") in ("error", "critical") for a in system_alerts),
+        }
     except Exception:
         pass
 
@@ -1866,6 +1917,7 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
         "mcx_session":     mcx_session,
         "paper_wallet":    paper_wallet,
         "system_alerts":   system_alerts,
+        "alert_summary":   alert_summary,   # {count, has_critical, has_error} for badge/banner
         "token_status":    token_status,
         "learning":        learning,
     }, new_hash

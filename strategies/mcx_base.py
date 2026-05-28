@@ -70,6 +70,28 @@ class MCXStrategyConfig:
     target_upgraded_pct:  float  = 0.80   # raised target after strong move
     target_upgrade_mult:  float  = 2.0    # trigger: move >= mult x SL distance
 
+    # ── Signal condition parameters (mutable) ─────────────────────
+    # Each strategy only reads the fields relevant to its logic;
+    # unused fields in the other strategies have no effect.
+    #
+    # TrendSpread
+    rsi_long_min:         float  = 55.0   # LONG: RSI must be above this
+    rsi_long_max:         float  = 68.0   # LONG: RSI must be below this (avoid overbought)
+    rsi_short_min:        float  = 32.0   # SHORT: RSI must be above this (avoid oversold)
+    rsi_short_max:        float  = 45.0   # SHORT: RSI must be below this
+    ema_gap_min_pct:      float  = 0.3    # min EMA5-EMA20 separation % (noise filter)
+    #
+    # RSIReversalSpread
+    rsi_oversold:         float  = 32.0   # LONG trigger: RSI below this = oversold
+    rsi_overbought:       float  = 68.0   # SHORT trigger: RSI above this = overbought
+    ema_proximity_pct:    float  = 0.5    # max EMA5-EMA20 divergence % (trend-intact check)
+    #
+    # BreakoutSpread
+    breakout_lookback:    int    = 12     # bars used to define the consolidation range
+    atr_buffer_mult:      float  = 0.30   # ATR multiplier for breakout confirmation buffer
+    rsi_breakout_long:    float  = 52.0   # LONG breakout: RSI must exceed this
+    rsi_breakout_short:   float  = 48.0   # SHORT breakout: RSI must be below this
+
     # Fields that must never be written to the config file or updated via API
     _READONLY_FIELDS: ClassVar[frozenset] = frozenset(
         {"priority", "risk", "risk_label", "risk_color"}

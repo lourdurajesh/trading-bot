@@ -60,25 +60,33 @@ class TrendSpreadStrategy(MCXStrategy):
         ema5        = calc_ema(close, 5).iloc[-1]
         ema_gap_pct = abs(ema5 - ema20) / ema20 * 100
 
+        cfg = self.config   # read once — thresholds editable via /commodity/config API
+
         if (ema5 > ema20 and spot > ema20
-                and 55 < rsi_val < 68
-                and ema_gap_pct >= 0.3):
+                and cfg.rsi_long_min < rsi_val < cfg.rsi_long_max
+                and ema_gap_pct >= cfg.ema_gap_min_pct):
             return MCXSignalResult(
                 direction     = "LONG",
                 strategy_name = self.name,
-                signal_reason = f"EMA5={ema5:.0f}>EMA20={ema20:.0f}(+{ema_gap_pct:.1f}%), RSI={rsi_val:.1f}",
+                signal_reason = (
+                    f"EMA5={ema5:.0f}>EMA20={ema20:.0f}(+{ema_gap_pct:.1f}%), "
+                    f"RSI={rsi_val:.1f} in [{cfg.rsi_long_min:.0f},{cfg.rsi_long_max:.0f}]"
+                ),
                 rsi_val       = round(rsi_val, 1),
                 ema5_val      = round(ema5, 2),
                 ema20_val     = round(ema20, 2),
             )
 
         if (ema5 < ema20 and spot < ema20
-                and 32 < rsi_val < 45
-                and ema_gap_pct >= 0.3):
+                and cfg.rsi_short_min < rsi_val < cfg.rsi_short_max
+                and ema_gap_pct >= cfg.ema_gap_min_pct):
             return MCXSignalResult(
                 direction     = "SHORT",
                 strategy_name = self.name,
-                signal_reason = f"EMA5={ema5:.0f}<EMA20={ema20:.0f}(-{ema_gap_pct:.1f}%), RSI={rsi_val:.1f}",
+                signal_reason = (
+                    f"EMA5={ema5:.0f}<EMA20={ema20:.0f}(-{ema_gap_pct:.1f}%), "
+                    f"RSI={rsi_val:.1f} in [{cfg.rsi_short_min:.0f},{cfg.rsi_short_max:.0f}]"
+                ),
                 rsi_val       = round(rsi_val, 1),
                 ema5_val      = round(ema5, 2),
                 ema20_val     = round(ema20, 2),

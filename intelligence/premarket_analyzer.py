@@ -35,13 +35,13 @@ IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger(__name__)
 
 # NSE pre-open IEP is finalised ~9:08 AM; this module is only meaningful
-# between 9:00 and 9:15 AM IST. Calling outside this window returns 0.
+# between 9:00 and 9:20 AM IST. Calling outside this window returns 0.
 _IEP_WINDOW_START = dtime(9, 0)
 _IEP_WINDOW_END   = dtime(9, 20)   # allow a few minutes past open for late fetches
 
-# Gap thresholds for scoring (percent)
-_STRONG_THRESH  = 0.50   # ±2
-_MILD_THRESH    = 0.15   # ±1
+# Gap thresholds are read from engine_settings at call time so they can be
+# adjusted via the dashboard without restarting the bot.
+# Defaults: strong=0.50% (±2 score), mild=0.15% (±1 score)
 
 _NSE_HEADERS = {
     "User-Agent": (
@@ -92,6 +92,19 @@ class PreMarketAnalyzer:
             "[PreMarket] NSE IEP API unavailable — falling back to Fyers LTP proxy. "
             "The reading may differ from the final NSE call-auction IEP."
         )
+        # Escalate to dashboard so operator sees it without checking logs.
+        # The IEP is time-critical (09:00–09:20 window) — a degraded reading
+        # at this point may under-score the conviction score for today.
+        try:
+            from system_health import system_health
+            system_health.set_alert(
+                "nse_iep_api",
+                "NSE pre-open IEP API unavailable — conviction IEP score is based on Fyers LTP "
+                "proxy (less accurate). NSE API may be rate-limiting or unreachable.",
+                severity="warning",
+            )
+        except Exception:
+            pass
         return self._score_from_fyers()
 
     def get_iep(self) -> Optional[dict]:
@@ -138,13 +151,20 @@ class PreMarketAnalyzer:
 
     @staticmethod
     def _gap_to_score(gap_pct: float, source: str) -> tuple[int, str]:
-        if gap_pct > _STRONG_THRESH:
+        # Thresholds are read at call time from engine_settings (DB-backed, editable via UI)
+        try:
+            from config.mcx_engine_settings import engine_settings
+            strong = engine_settings.premarket_strong_thresh_pct()
+            mild   = engine_settings.premarket_mild_thresh_pct()
+        except Exception:
+            strong, mild = 0.50, 0.15   # fallback to defaults if settings unavailable
+        if gap_pct > strong:
             return 2, f"Pre-open {source} gap +{gap_pct:.2f}% → gap-up open (bullish)"
-        if gap_pct > _MILD_THRESH:
+        if gap_pct > mild:
             return 1, f"Pre-open {source} gap +{gap_pct:.2f}% → mild gap-up (mildly bullish)"
-        if gap_pct < -_STRONG_THRESH:
+        if gap_pct < -strong:
             return -2, f"Pre-open {source} gap {gap_pct:.2f}% → gap-down open (bearish)"
-        if gap_pct < -_MILD_THRESH:
+        if gap_pct < -mild:
             return -1, f"Pre-open {source} gap {gap_pct:.2f}% → mild gap-down (mildly bearish)"
         return 0, f"Pre-open {source} gap {gap_pct:.2f}% → flat open (neutral)"
 
@@ -182,6 +202,12 @@ class PreMarketAnalyzer:
                             f"[PreMarket] NSE IEP={iep:.2f} prevClose={prev:.2f} "
                             f"gap={((iep-prev)/prev*100):+.2f}%"
                         )
+                        # NSE API restored — clear any outstanding dashboard alert
+                        try:
+                            from system_health import system_health
+                            system_health.clear_alert("nse_iep_api")
+                        except Exception:
+                            pass
                         return iep, prev
 
         except Exception as e:
@@ -208,6 +234,11 @@ class PreMarketAnalyzer:
                             f"[PreMarket] NSE IEP (endpoint2)={iep:.2f} prev={prev:.2f} "
                             f"gap={((iep-prev)/prev*100):+.2f}%"
                         )
+                        try:
+                            from system_health import system_health
+                            system_health.clear_alert("nse_iep_api")
+                        except Exception:
+                            pass
                         return iep, prev
         except Exception as e:
             logger.debug(f"[PreMarket] Fallback NSE API failed: {e}")

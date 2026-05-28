@@ -18,11 +18,13 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-_NORMAL_OPEN       = dtime(9,  0)
-_EVENING_OPEN      = dtime(17, 0)    # on national holidays: US/evening session opens
-_MARKET_CLOSE      = dtime(23, 30)
-_ENTRY_CUTOFF      = dtime(20,  0)   # no new entries after 20:00
-_OPEN_WAIT_MINUTES = 30              # opening blackout (false-breakout filter)
+# ── Regulatory MCX session boundaries (exchange-mandated, not user-configurable) ──
+_NORMAL_OPEN  = dtime(9,  0)    # full-session open (all days)
+_EVENING_OPEN = dtime(17, 0)    # national-holiday evening/US session open
+_MARKET_CLOSE = dtime(23, 30)   # MCX mandated close
+
+# _ENTRY_CUTOFF and _OPEN_WAIT_MINUTES are user preferences and are read at
+# call time from engine_settings so changes take effect without a restart.
 
 
 class SessionPhase(str, Enum):
@@ -78,6 +80,10 @@ class MCXSessionCalendar:
         t = dt.time()
 
         from config.market_holidays import NSE_HOLIDAYS, MCX_EXTRA_HOLIDAYS
+        # Read user-configurable values at call time so dashboard changes take effect immediately
+        from config.mcx_engine_settings import engine_settings as _es
+        _OPEN_WAIT_MINUTES = _es.mcx_open_wait_minutes()
+        _ENTRY_CUTOFF      = _es.mcx_entry_cutoff()
 
         # Weekend — always closed
         if d.weekday() >= 5:
@@ -190,10 +196,12 @@ class MCXSessionCalendar:
         return None
 
     def open_wait_minutes(self) -> int:
-        return _OPEN_WAIT_MINUTES
+        from config.mcx_engine_settings import engine_settings
+        return engine_settings.mcx_open_wait_minutes()
 
     def entry_cutoff(self) -> dtime:
-        return _ENTRY_CUTOFF
+        from config.mcx_engine_settings import engine_settings
+        return engine_settings.mcx_entry_cutoff()
 
 
 # Module-level singleton

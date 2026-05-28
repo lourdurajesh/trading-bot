@@ -84,6 +84,15 @@ class SystemHealth:
             })
         return result
 
+    def get_alert(self, component: str) -> Optional[dict]:
+        """Return the raw internal alert dict for a component, or None if not set.
+        The dict contains 'since_iso' (ISO timestamp of first occurrence, never
+        overwritten) and 'updated_iso' (last update time).  Used by callers that
+        need to compute how long a condition has been active — this is correct
+        across bot restarts because alerts are persisted to DB.
+        """
+        return self._alerts.get(component)
+
     def has_alerts(self) -> bool:
         return bool(self._alerts)
 
