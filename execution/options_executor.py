@@ -290,18 +290,41 @@ class OptionsExecutor:
 
             chain_data = resp.get("data", {})
 
-            # Diagnostic: warn if Fyers returned expiries but no strike rows.
-            # Occurs when the F&O data subscription is inactive or Fyers API
-            # returns a partial response (underlyingValue=null, optionsChain=[]).
-            expiry_blocks = chain_data.get("expiryData", [])
-            total_strikes = sum(len(b.get("optionsChain", [])) for b in expiry_blocks)
-            underlying_val = chain_data.get("underlyingValue")
-            if expiry_blocks and total_strikes == 0:
+            # Diagnostic: check where Fyers put the strike rows.
+            # Fyers v3 has two observed layouts:
+            #   Layout A (older): strikes are inside expiryData[i]["optionsChain"]
+            #   Layout B (newer): strikes are in the top-level chain_data["optionsChain"],
+            #                     each strike has an "expiry" field; expiryData items are empty.
+            expiry_blocks      = chain_data.get("expiryData", [])
+            top_level_strikes  = chain_data.get("optionsChain", [])
+            per_expiry_strikes = sum(len(b.get("optionsChain", [])) for b in expiry_blocks)
+            underlying_val     = chain_data.get("underlyingValue")
+
+            # Also check if underlyingValue lives inside the first expiry block
+            if underlying_val is None and expiry_blocks:
+                underlying_val = expiry_blocks[0].get("underlyingValue")
+
+            if expiry_blocks and per_expiry_strikes == 0 and not top_level_strikes:
                 logger.warning(
                     f"[OptionsExecutor] Chain for {underlying} has {len(expiry_blocks)} expiries "
-                    f"but 0 strikes (underlyingValue={underlying_val}). "
-                    f"Check Fyers F&O data subscription. "
-                    f"Raw keys in data: {list(chain_data.keys())}"
+                    f"but 0 strikes in both layouts (underlyingValue={underlying_val}). "
+                    f"Check Fyers F&O / NSE Derivatives segment on the account. "
+                    f"Top-level keys: {list(chain_data.keys())}"
+                )
+            elif per_expiry_strikes == 0 and top_level_strikes:
+                # Layout B detected — normalise into Layout A so the rest of the code works.
+                logger.info(
+                    f"[OptionsExecutor] {underlying}: Fyers v3 Layout B detected — "
+                    f"{len(top_level_strikes)} strikes at top level, none inside expiryData. "
+                    f"Normalising to per-expiry layout."
+                )
+                chain_data = self._normalise_layout_b(chain_data, underlying_val)
+
+            # Log first expiry block keys at DEBUG to help trace future format changes
+            if expiry_blocks:
+                logger.debug(
+                    f"[OptionsExecutor] {underlying} expiryData[0] keys: "
+                    f"{list(expiry_blocks[0].keys())}"
                 )
 
             self._chain_cache[underlying] = (chain_data, now)
@@ -310,6 +333,77 @@ class OptionsExecutor:
         except Exception as e:
             logger.debug(f"[OptionsExecutor] Chain fetch exception: {e}")
             return None
+
+    def _normalise_layout_b(self, chain_data: dict, underlying_val) -> dict:
+        """
+        Convert Fyers v3 Layout B → Layout A so the rest of the pipeline works unchanged.
+
+        Layout B (newer Fyers v3):
+          chain_data["optionsChain"] = [
+              {"strikePrice": 24500, "expiry": "2025-01-30", "call_ltp": ..., ...},
+              {"strikePrice": 24550, "expiry": "2025-01-30", ...},
+              {"strikePrice": 24500, "expiry": "2025-02-27", ...},
+              ...
+          ]
+          chain_data["expiryData"] = [
+              {"expiry": "2025-01-30"},        ← optionsChain is missing / empty
+              {"expiry": "2025-02-27"},
+          ]
+
+        Layout A (what the rest of the code expects):
+          chain_data["expiryData"] = [
+              {"expiry": "2025-01-30", "optionsChain": [...strikes for that expiry...]},
+              {"expiry": "2025-02-27", "optionsChain": [...strikes for that expiry...]},
+          ]
+          chain_data["underlyingValue"] = <float>
+
+        We group the flat strike list by their "expiry" field, then inject them into
+        the matching expiryData blocks.  If a strike carries "expiryDate" instead of
+        "expiry", both keys are checked.
+        """
+        from collections import defaultdict
+
+        top_strikes: list[dict] = chain_data.get("optionsChain", [])
+        expiry_blocks: list[dict] = chain_data.get("expiryData", [])
+
+        # ── Group strikes by expiry key ───────────────────────────
+        # Fyers has used both "expiry" and "expiryDate" in different API versions.
+        expiry_map: dict[str, list[dict]] = defaultdict(list)
+        for row in top_strikes:
+            key = row.get("expiry") or row.get("expiryDate") or ""
+            expiry_map[key].append(row)
+
+        # ── Rebuild expiryData with populated optionsChain ────────
+        new_expiry_data = []
+        for blk in expiry_blocks:
+            expiry_key = blk.get("expiry", "")
+            new_blk = dict(blk)                          # shallow copy — preserve metadata
+            new_blk["optionsChain"] = expiry_map.get(expiry_key, [])
+            new_expiry_data.append(new_blk)
+
+        # If expiryData was empty but strikes exist, synthesise expiry blocks
+        # from the unique expiry values found in the top-level strike list.
+        if not expiry_blocks and expiry_map:
+            logger.info(
+                f"[OptionsExecutor] Layout B: no expiryData blocks present — "
+                f"synthesising {len(expiry_map)} expiry blocks from strike list."
+            )
+            for expiry_key, rows in sorted(expiry_map.items()):
+                new_expiry_data.append({"expiry": expiry_key, "optionsChain": rows})
+
+        result = dict(chain_data)
+        result["expiryData"] = new_expiry_data
+        # Ensure underlyingValue is set at the top level (may have been None)
+        if underlying_val is not None:
+            result["underlyingValue"] = underlying_val
+
+        total_placed = sum(len(b["optionsChain"]) for b in new_expiry_data)
+        logger.debug(
+            f"[OptionsExecutor] Layout B normalised: "
+            f"{len(top_strikes)} flat strikes → "
+            f"{len(new_expiry_data)} expiry blocks ({total_placed} strikes placed)"
+        )
+        return result
 
     # ─────────────────────────────────────────────────────────────
     # STRIKE + EXPIRY SELECTION
