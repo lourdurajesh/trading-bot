@@ -289,6 +289,21 @@ class OptionsExecutor:
                 return None
 
             chain_data = resp.get("data", {})
+
+            # Diagnostic: warn if Fyers returned expiries but no strike rows.
+            # Occurs when the F&O data subscription is inactive or Fyers API
+            # returns a partial response (underlyingValue=null, optionsChain=[]).
+            expiry_blocks = chain_data.get("expiryData", [])
+            total_strikes = sum(len(b.get("optionsChain", [])) for b in expiry_blocks)
+            underlying_val = chain_data.get("underlyingValue")
+            if expiry_blocks and total_strikes == 0:
+                logger.warning(
+                    f"[OptionsExecutor] Chain for {underlying} has {len(expiry_blocks)} expiries "
+                    f"but 0 strikes (underlyingValue={underlying_val}). "
+                    f"Check Fyers F&O data subscription. "
+                    f"Raw keys in data: {list(chain_data.keys())}"
+                )
+
             self._chain_cache[underlying] = (chain_data, now)
             return chain_data
 
@@ -313,8 +328,23 @@ class OptionsExecutor:
     ) -> Optional[OptionResult]:
         """Pick best expiry and strike from live chain data."""
         try:
-            spot      = float(chain_data.get("underlyingValue", 0))
+            spot      = float(chain_data.get("underlyingValue", 0) or 0)
             expiries  = chain_data.get("expiryData", [])
+
+            # Fyers sometimes returns underlyingValue=null even when the chain
+            # has strike rows (observed post-holiday restarts).  Fall back to
+            # the WebSocket LTP which is always up to date.
+            if not spot:
+                try:
+                    from data.data_store import store as _store
+                    spot = float(_store.get_ltp(underlying) or 0)
+                    if spot:
+                        logger.debug(
+                            f"[OptionsExecutor] underlyingValue null for {underlying} — "
+                            f"using WebSocket LTP {spot:.2f} as spot fallback"
+                        )
+                except Exception:
+                    pass
 
             if not spot or not expiries:
                 return None
