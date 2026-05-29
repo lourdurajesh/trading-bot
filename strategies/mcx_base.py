@@ -80,6 +80,8 @@ class MCXStrategyConfig:
     rsi_short_min:        float  = 32.0   # SHORT: RSI must be above this (avoid oversold)
     rsi_short_max:        float  = 45.0   # SHORT: RSI must be below this
     ema_gap_min_pct:      float  = 0.3    # min EMA5-EMA20 separation % (noise filter)
+    min_rvol_trend:       float  = 1.3    # RVOL floor — crossover on dead volume is noise
+    min_adx_trend:        float  = 20.0   # ADX floor — filters EMA crossovers in ranging markets
     #
     # RSIReversalSpread
     rsi_oversold:         float  = 32.0   # LONG trigger: RSI below this = oversold
@@ -89,8 +91,10 @@ class MCXStrategyConfig:
     # BreakoutSpread
     breakout_lookback:    int    = 12     # bars used to define the consolidation range
     atr_buffer_mult:      float  = 0.30   # ATR multiplier for breakout confirmation buffer
-    rsi_breakout_long:    float  = 52.0   # LONG breakout: RSI must exceed this
-    rsi_breakout_short:   float  = 48.0   # SHORT breakout: RSI must be below this
+    rsi_breakout_long:    float  = 55.0   # LONG breakout: RSI must exceed this (raised from 52 — real momentum)
+    rsi_breakout_short:   float  = 45.0   # SHORT breakout: RSI must be below this (lowered from 48)
+    min_rvol_breakout:    float  = 1.5    # RVOL floor — breakout without volume is a false breakout
+    min_adx_breakout:     float  = 20.0   # ADX floor — filters ranging markets where range highs are noise
 
     # Fields that must never be written to the config file or updated via API
     _READONLY_FIELDS: ClassVar[frozenset] = frozenset(

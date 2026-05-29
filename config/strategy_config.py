@@ -86,8 +86,8 @@ STRATEGY_CONFIGS: dict = {
 
     "momentum_reversal": {
         "enabled":            {"value": True,  "type": "bool",  "description": "Enable MomentumReversal (extreme RSI fade)"},
-        "RSI_OVERBOUGHT":     {"value": 82,    "type": "int",   "min": 70,  "max": 95,  "description": "RSI level for SHORT reversal signal"},
-        "RSI_OVERSOLD":       {"value": 18,    "type": "int",   "min": 5,   "max": 30,  "description": "RSI level for LONG reversal signal"},
+        "RSI_OVERBOUGHT":     {"value": 75,    "type": "int",   "min": 70,  "max": 95,  "description": "RSI level for SHORT reversal signal (lowered from 82 — 82+ is too rare on 1H NSE charts)"},
+        "RSI_OVERSOLD":       {"value": 25,    "type": "int",   "min": 5,   "max": 30,  "description": "RSI level for LONG reversal signal (raised from 18 — 18- is almost never seen)"},
         "MAX_ADX":            {"value": 25,    "type": "int",   "min": 10,  "max": 50,  "description": "ADX must be BELOW this (not a strong trend)"},
         "ATR_STOP_BUFFER":    {"value": 0.5,   "type": "float", "min": 0.1, "max": 2.0, "description": "ATR buffer for stop loss"},
         "TARGET_1_R":         {"value": 1.5,   "type": "float", "min": 0.5, "max": 5.0, "description": "Target 1 in multiples of risk"},

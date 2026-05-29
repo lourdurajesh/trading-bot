@@ -1697,6 +1697,38 @@ class CommodityOptionsLearning:
                         f"spot {spot:.2f} > breakout {breakout_level:.2f}"
                     )
 
+            # ── Signal invalidation exit (TrendSpread only) ──────────────────────
+            # When the EMA alignment that triggered the original entry has reversed
+            # with a meaningful gap (same 0.3% noise filter as entry), the trade
+            # thesis is gone. Exit immediately instead of waiting for SL to grind in.
+            # Theta decay makes sitting in a directionless debit spread costly.
+            if exit_reason is None and strategy == "TrendSpread":
+                _df_exit = store.get_ohlcv(_fyers_sym(instrument), "1H", n=30)
+                if _df_exit is not None and len(_df_exit) >= 20:
+                    from analysis.indicators import ema as _ema_fn
+                    _close_exit = _df_exit["close"]
+                    _ema5_now   = _ema_fn(_close_exit, 5).iloc[-1]
+                    _ema20_now  = _ema_fn(_close_exit, 20).iloc[-1]
+                    _gap_now    = abs(_ema5_now - _ema20_now) / _ema20_now * 100
+                    _gap_thresh = strat_cfg.get("ema_gap_min_pct", 0.3)
+
+                    if direction == "LONG" and _ema5_now < _ema20_now and _gap_now >= _gap_thresh:
+                        exit_reason = "SIGNAL_INVALIDATED"
+                        pnl_approx  = round(est_pnl, 2)
+                        logger.info(
+                            f"[CommOpts] {instrument} LONG TrendSpread invalidated — "
+                            f"EMA5={_ema5_now:.0f} crossed below EMA20={_ema20_now:.0f} "
+                            f"(gap={_gap_now:.1f}% >= {_gap_thresh:.1f}%)"
+                        )
+                    elif direction == "SHORT" and _ema5_now > _ema20_now and _gap_now >= _gap_thresh:
+                        exit_reason = "SIGNAL_INVALIDATED"
+                        pnl_approx  = round(est_pnl, 2)
+                        logger.info(
+                            f"[CommOpts] {instrument} SHORT TrendSpread invalidated — "
+                            f"EMA5={_ema5_now:.0f} crossed above EMA20={_ema20_now:.0f} "
+                            f"(gap={_gap_now:.1f}% >= {_gap_thresh:.1f}%)"
+                        )
+
             # ── Spot-based SL ────────────────────────────────────────────────────
             if exit_reason is None:
                 sl_type = "trail" if trade_meta.get("trail_active") else "initial"

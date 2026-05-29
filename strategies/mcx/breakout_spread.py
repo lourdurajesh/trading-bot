@@ -1,25 +1,54 @@
 """
 breakout_spread.py
 ──────────────────
-BreakoutSpread — 12-bar range breakout with EMA trend alignment, ATR buffer,
-and RSI confirmation.
+BreakoutSpread — 12-bar range breakout with multi-factor confirmation.
 
 Entry criteria
 ──────────────
-LONG:  spot > 12-bar high + ATR x 0.30  AND  RSI > 52  AND  EMA5 > EMA20
-SHORT: spot < 12-bar low  - ATR x 0.30  AND  RSI < 48  AND  EMA5 < EMA20
+LONG:
+  last_close > 12-bar WICK high + ATR×0.30  — candle closed above real resistance
+  RSI > 55                                   — real momentum, not midline noise
+  EMA5 > EMA20, gap ≥ 0.3%                  — uptrend with meaningful separation
+  ADX ≥ 20                                   — trending market, not ranging chop
+  RVOL ≥ 1.5×                               — volume confirms the breakout
+  MACD histogram > 0                         — momentum is bullish and not exhausting
 
-Guard upgrades vs original design (22% win rate, −₹4k all-time):
-  EMA trend alignment — breakout must agree with the hourly trend direction.
-    A long breakout in a downtrend (EMA5 < EMA20) is typically a dead-cat
-    bounce; requiring EMA5 > EMA20 for LONG (and vice-versa for SHORT) filters
-    the worst false-breakout category without removing valid setups.
-  ATR buffer raised 20% → 30% — a 20% ATR buffer still lets noise through.
-    30% means the price needs 50% more clearing room, keeping only breakouts
-    with real momentum behind them.
+SHORT: mirror of the above, with all conditions inverted.
 
-The 12-bar lookback defines a meaningful consolidation range on hourly charts
-(5 bars was too short — pure intraday noise).
+Design decisions vs original (22% win rate, −₹4k all-time)
+──────────────────────────────────────────────────────────
+  Candle-close confirmation (was: live spot tick)
+    The biggest source of false fires. A wick that briefly pokes above the
+    range during one engine cycle (every 15 min) triggered the signal, even
+    when the candle body never cleared the level. Requiring last_close >
+    range_high means a full hourly candle must close above before we act.
+
+  Range from high/low wicks (was: close prices)
+    Resistance lives at wick highs, not close prices. Using closes
+    underestimates the breakout level by the wick size, making the strategy
+    trigger prematurely inside the candle range.
+
+  Volume gate — RVOL ≥ 1.5 (was: none)
+    A breakout on thin volume is textbook false breakout. Volume must confirm.
+
+  ADX ≥ 20 (was: none)
+    Without ADX, the strategy fires in sideways chop where the 12-bar range
+    high is just noise. ADX > 20 confirms a directional market.
+
+  MACD histogram sign check (was: none)
+    Filters breakouts where momentum is already decelerating toward the top
+    of its cycle — the candle breaks out but the MACD histogram is ticking
+    toward zero or has already crossed.
+
+  RSI threshold raised to 55/45 (was: 52/48)
+    RSI 52 is barely above midline — meaningless for breakout momentum.
+    55+ / 45- matches TrendSpread's momentum bands.
+
+  EMA gap ≥ 0.3% (was: none)
+    EMA5 > EMA20 by 1 tick still passed. Requires meaningful trend separation
+    consistent with TrendSpread's noise filter.
+
+All thresholds are runtime-configurable via the /commodity/config API.
 
 Note: opening blackout is enforced centrally by MCXSessionCalendar in
 run_cycle() — this strategy does not need its own time check.
@@ -49,7 +78,7 @@ class BreakoutSpreadStrategy(MCXStrategy):
         return MCXStrategyConfig(
             priority            = 3,
             risk                = "HIGH",
-            risk_label          = "Price breakout — frequent false signals, high failure rate",
+            risk_label          = "Price breakout — multi-factor confirmed; filters added for volume, ADX, MACD",
             risk_color          = "#ef4444",
             cooldown_enabled    = True,
             cooldown_hours      = 3.0,
@@ -64,35 +93,66 @@ class BreakoutSpreadStrategy(MCXStrategy):
     def generate_signal(
         self, df: pd.DataFrame, spot: float, now: datetime
     ) -> Optional[MCXSignalResult]:
-        from analysis.indicators import rsi as calc_rsi, ema as calc_ema, atr as calc_atr
+        from analysis.indicators import (
+            rsi as calc_rsi,
+            ema as calc_ema,
+            atr as calc_atr,
+            adx as calc_adx,
+            macd as calc_macd,
+            relative_volume as calc_rvol,
+        )
 
-        cfg = self.config   # thresholds editable via /commodity/config API
-
-        close   = df["close"]
-        rsi_val = calc_rsi(close).iloc[-1]
-        ema20   = calc_ema(close, 20).iloc[-1]
-        ema5    = calc_ema(close, 5).iloc[-1]
-        atr_val = calc_atr(df).iloc[-1]
+        cfg   = self.config
+        close = df["close"]
 
         lookback = cfg.breakout_lookback
         if len(close) < lookback + 2:
             return None
 
-        # Range over the last `lookback` closed bars (excludes the current bar)
-        prev_high = close.iloc[-(lookback + 1):-1].max()
-        prev_low  = close.iloc[-(lookback + 1):-1].min()
+        # ── Indicators ────────────────────────────────────────────
+        rsi_val          = calc_rsi(close).iloc[-1]
+        ema5             = calc_ema(close, 5).iloc[-1]
+        ema20            = calc_ema(close, 20).iloc[-1]
+        atr_val          = calc_atr(df).iloc[-1]
+        adx_series, _, _ = calc_adx(df)
+        adx_now          = adx_series.iloc[-1]
+        _, _, macd_hist  = calc_macd(close)
+        macd_h           = macd_hist.iloc[-1]
+        rvol             = calc_rvol(df).iloc[-1]
+
+        # ── Consolidation range from wick highs/lows ──────────────
+        # Use df["high"]/df["low"] — not closes — because resistance and
+        # support live at the wicks, not candle bodies.
+        # Excludes the current (potentially still-forming) bar.
+        prev_high = df["high"].iloc[-(lookback + 1):-1].max()
+        prev_low  = df["low"].iloc[-(lookback + 1):-1].min()
         buffer    = round(atr_val * cfg.atr_buffer_mult, 2)
 
-        # EMA trend alignment: breakout direction must agree with the hourly trend.
-        # A long breakout below a falling EMA is a dead-cat bounce — skip it.
-        if spot > prev_high + buffer and rsi_val > cfg.rsi_breakout_long and ema5 > ema20:
+        # ── Shared derived values ─────────────────────────────────
+        ema_gap_pct = abs(ema5 - ema20) / ema20 * 100
+
+        # Use the last *completed* candle close, not the live spot tick.
+        # Requiring a candle close above the level eliminates wick-only spikes
+        # that were the main source of single-cycle false triggers.
+        last_close = close.iloc[-1]
+
+        # ── LONG ─────────────────────────────────────────────────
+        if (last_close > prev_high + buffer              # closed above range
+                and rsi_val > cfg.rsi_breakout_long      # momentum > 55
+                and ema5 > ema20                          # uptrend
+                and ema_gap_pct >= cfg.ema_gap_min_pct   # separation not noise
+                and adx_now >= cfg.min_adx_breakout      # directional, not ranging
+                and rvol >= cfg.min_rvol_breakout         # volume confirms
+                and macd_h > 0):                          # MACD bullish
             return MCXSignalResult(
                 direction      = "LONG",
                 strategy_name  = self.name,
                 signal_reason  = (
-                    f"Breakout above {prev_high:.0f}+{buffer:.0f}buf "
+                    f"Closed above {prev_high:.0f}+{buffer:.0f}buf "
                     f"(ATR×{cfg.atr_buffer_mult:.2f}), "
-                    f"RSI={rsi_val:.1f}>{cfg.rsi_breakout_long:.0f}, EMA5>EMA20"
+                    f"RSI={rsi_val:.1f}>{cfg.rsi_breakout_long:.0f}, "
+                    f"ADX={adx_now:.0f}, RVOL={rvol:.1f}x, "
+                    f"MACD-H={macd_h:.2f}, EMA5>EMA20(+{ema_gap_pct:.1f}%)"
                 ),
                 rsi_val        = round(rsi_val, 1),
                 ema5_val       = round(ema5, 2),
@@ -100,14 +160,23 @@ class BreakoutSpreadStrategy(MCXStrategy):
                 breakout_level = round(prev_high, 2),
             )
 
-        if spot < prev_low - buffer and rsi_val < cfg.rsi_breakout_short and ema5 < ema20:
+        # ── SHORT ────────────────────────────────────────────────
+        if (last_close < prev_low - buffer               # closed below range
+                and rsi_val < cfg.rsi_breakout_short     # weakness < 45
+                and ema5 < ema20                          # downtrend
+                and ema_gap_pct >= cfg.ema_gap_min_pct   # separation not noise
+                and adx_now >= cfg.min_adx_breakout      # directional, not ranging
+                and rvol >= cfg.min_rvol_breakout         # volume confirms
+                and macd_h < 0):                          # MACD bearish
             return MCXSignalResult(
                 direction      = "SHORT",
                 strategy_name  = self.name,
                 signal_reason  = (
-                    f"Breakdown below {prev_low:.0f}-{buffer:.0f}buf "
+                    f"Closed below {prev_low:.0f}-{buffer:.0f}buf "
                     f"(ATR×{cfg.atr_buffer_mult:.2f}), "
-                    f"RSI={rsi_val:.1f}<{cfg.rsi_breakout_short:.0f}, EMA5<EMA20"
+                    f"RSI={rsi_val:.1f}<{cfg.rsi_breakout_short:.0f}, "
+                    f"ADX={adx_now:.0f}, RVOL={rvol:.1f}x, "
+                    f"MACD-H={macd_h:.2f}, EMA5<EMA20(-{ema_gap_pct:.1f}%)"
                 ),
                 rsi_val        = round(rsi_val, 1),
                 ema5_val       = round(ema5, 2),

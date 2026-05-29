@@ -32,8 +32,8 @@ from strategies.base_strategy import BaseStrategy, Direction, Signal, SignalType
 logger = logging.getLogger(__name__)
 
 # ── Strategy parameters (runtime-updatable via config/strategy_config.py) ──
-RSI_OVERBOUGHT = 82    # SHORT reversal trigger
-RSI_OVERSOLD   = 18    # LONG reversal trigger
+RSI_OVERBOUGHT = 75    # SHORT reversal trigger (was 82 — too extreme for 1H NSE charts)
+RSI_OVERSOLD   = 25    # LONG reversal trigger  (was 18 — almost never reached on 1H)
 MAX_ADX        = 25    # ADX must be BELOW this — not a strong trend
 ATR_STOP_BUFFER= 0.5   # ATR buffer beyond swing extreme for stop
 TARGET_1_R     = 1.5   # first target
@@ -209,19 +209,21 @@ class MomentumReversalStrategy(BaseStrategy):
         score = 0.0
 
         # RSI extremity (0 – 0.30)
+        # Bands updated to match new RSI_OVERBOUGHT/RSI_OVERSOLD thresholds (75/25).
+        # Deeper extremes still score higher — the bands just start lower.
         if is_short:
-            if rsi_val >= 90:
+            if rsi_val >= 85:
                 score += 0.30
-            elif rsi_val >= 85:
+            elif rsi_val >= 80:
                 score += 0.22
-            elif rsi_val >= 82:
+            elif rsi_val >= 75:
                 score += 0.14
         else:
-            if rsi_val <= 10:
+            if rsi_val <= 15:
                 score += 0.30
-            elif rsi_val <= 15:
+            elif rsi_val <= 20:
                 score += 0.22
-            elif rsi_val <= 18:
+            elif rsi_val <= 25:
                 score += 0.14
 
         # ADX weakness (0 – 0.20): lower ADX = stronger reversal signal

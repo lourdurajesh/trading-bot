@@ -179,11 +179,18 @@ class RegimeDetector:
                 notes=f"BB squeeze breakout ({direction}), ADX {adx_val:.0f}",
             )
 
-        # TRENDING: strong ADX + directional DI + EMA slope
-        if adx_val > 25 and abs(slope_val) > 0.3:
+        # TRENDING: ADX > 20 with directional EMA slope.
+        # Previous threshold was ADX > 25 — this created a dead zone where stocks with
+        # ADX 20-25 (the most common "moderately trending" state for NSE large-caps intraday)
+        # fell to the default RANGING bucket. In RANGING, only MeanReversion (RSI < 40) and
+        # MomentumReversal (RSI >= 75) run — both too strict for typical midday conditions.
+        # ADX > 20 is the standard textbook "directional market" threshold.
+        # TrendFollow / ShortTrend still have their own internal ADX >= 20 gate, so they
+        # self-filter — the regime only controls which routing bucket is used.
+        if adx_val > 20 and abs(slope_val) > 0.2:
             confidence = self._confidence([
-                adx_val > 25,
-                adx_val > 30,             # bonus for strong trend
+                adx_val > 25,             # bonus for strong trend (was the old entry gate)
+                adx_val > 30,             # bonus for very strong trend
                 abs(slope_val) > 0.5,
                 plus_val != minus_val,    # directional clarity
             ])
@@ -197,10 +204,10 @@ class RegimeDetector:
                 notes=f"Trending {direction}, ADX {adx_val:.0f}, slope {slope_val:.2f}%",
             )
 
-        # RANGING: low ADX + tight BB + flat slope
-        if adx_val < 20 and abs(slope_val) < 0.3:
+        # RANGING: ADX < 20 — no meaningful directional pressure.
+        # Slope requirement removed: any low-ADX stock is ranging regardless of EMA direction.
+        if adx_val < 20:
             confidence = self._confidence([
-                adx_val < 20,
                 adx_val < 15,             # bonus for very flat
                 abs(slope_val) < 0.2,
                 bb_w < 0.08,
@@ -214,7 +221,8 @@ class RegimeDetector:
                 notes=f"Ranging, ADX {adx_val:.0f}, BB width {bb_w:.3f}",
             )
 
-        # Default: ambiguous, treat as RANGING with low confidence
+        # Default: ADX > 20 but slope <= 0.2% — high ADX without a clear EMA direction.
+        # Treat as RANGING: the trend may be stalling or the move is too recent to read.
         return RegimeResult(
             regime=Regime.RANGING,
             confidence=0.4,
