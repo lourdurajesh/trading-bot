@@ -38,7 +38,7 @@ Usage:
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -203,16 +203,34 @@ class OptionsExecutor:
         chain_data = self._get_chain(underlying)
 
         if chain_data:
-            return self._select_from_chain(
+            result = self._select_from_chain(
                 chain_data, underlying, short_name, lot_size,
                 option_type, target_delta, min_dte, max_dte,
             )
-        else:
-            logger.info(f"[OptionsExecutor] Chain unavailable for {underlying} — using BS estimate")
-            return self._simulate_option(
-                underlying, short_name, lot_size, strike_step,
-                option_type, target_delta, min_dte,
+            if result:
+                return result
+
+            # No expiry in DTE range from the default (nearest) chain.
+            # Fyers timestamp="" always returns the nearest expiry only.
+            # Re-fetch targeting min_dte+3 days out to get the next weekly expiry.
+            target_date  = datetime.now(tz=IST) + timedelta(days=min_dte + 3)
+            target_epoch = int(target_date.timestamp())
+            logger.info(
+                f"[OptionsExecutor] {underlying}: nearest expiry outside DTE {min_dte}-{max_dte} "
+                f"— retrying chain for ~{target_date.strftime('%Y-%m-%d')} expiry"
             )
+            chain_next = self._get_chain_for_timestamp(underlying, target_epoch)
+            if chain_next:
+                return self._select_from_chain(
+                    chain_next, underlying, short_name, lot_size,
+                    option_type, target_delta, min_dte, max_dte,
+                )
+
+        logger.info(f"[OptionsExecutor] Chain unavailable for {underlying} — using BS estimate")
+        return self._simulate_option(
+            underlying, short_name, lot_size, strike_step,
+            option_type, target_delta, min_dte,
+        )
 
     def get_lot_size(self, underlying: str) -> int:
         _, lot_size, _ = self._resolve_underlying(underlying)
@@ -331,6 +349,34 @@ class OptionsExecutor:
 
         except Exception as e:
             logger.debug(f"[OptionsExecutor] Chain fetch exception: {e}")
+            return None
+
+    def _get_chain_for_timestamp(self, underlying: str, epoch: int) -> Optional[dict]:
+        """Fetch chain for a specific expiry epoch (used when nearest expiry is outside DTE range)."""
+        try:
+            from execution.fyers_broker import fyers_broker
+            if not fyers_broker._initialised:
+                return None
+            resp = fyers_broker._client.optionchain(data={
+                "symbol":      underlying,
+                "strikecount": 15,
+                "timestamp":   str(epoch),
+            })
+            if resp.get("s") != "ok":
+                logger.debug(f"[OptionsExecutor] Chain fetch (ts={epoch}) failed: {resp.get('message')}")
+                return None
+            chain_data       = resp.get("data", {})
+            expiry_blocks    = chain_data.get("expiryData", [])
+            top_level_strikes = chain_data.get("optionsChain", [])
+            underlying_val   = chain_data.get("underlyingValue")
+            if underlying_val is None and expiry_blocks:
+                underlying_val = expiry_blocks[0].get("underlyingValue")
+            per_expiry_strikes = sum(len(b.get("optionsChain", [])) for b in expiry_blocks)
+            if per_expiry_strikes == 0 and top_level_strikes:
+                chain_data = self._normalise_layout_b(chain_data, underlying_val)
+            return chain_data
+        except Exception as e:
+            logger.debug(f"[OptionsExecutor] Chain fetch (ts={epoch}) exception: {e}")
             return None
 
     def _normalise_layout_b(self, chain_data: dict, underlying_val) -> dict:

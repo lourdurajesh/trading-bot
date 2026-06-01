@@ -506,7 +506,9 @@ class FyersStream:
             "1D":  {"resolution": "D",  "days_back": 365},
         }
 
-        for symbol in nse_priority:
+        # Equities — silent skip on empty is acceptable (many mid-caps have thin history)
+        equity_symbols = [s for s in nse_priority if "-INDEX" not in s]
+        for symbol in equity_symbols:
             for tf, params in nse_timeframes.items():
                 try:
                     df = self._fetch_historical(symbol, params["resolution"], params["days_back"])
@@ -515,6 +517,27 @@ class FyersStream:
                 except Exception as e:
                     logger.error(f"Historical seed failed for {symbol} [{tf}]: {e}")
                 time.sleep(0.3)   # rate limit — Fyers allows ~10 req/sec
+
+        # Indices — seeded separately so failures are always visible.
+        # Regime detector needs ≥50 1H candles; without them all index options strategies
+        # return regime=UNKNOWN and never fire.
+        from config.watchlist import NSE_INDICES
+        logger.info(f"[FyersStream] Seeding index historical data for {NSE_INDICES} ...")
+        for symbol in NSE_INDICES:
+            for tf, params in nse_timeframes.items():
+                try:
+                    df = self._fetch_historical(symbol, params["resolution"], params["days_back"])
+                    if df is not None and len(df) > 0:
+                        store.load_historical(symbol, tf, df)
+                        logger.info(f"[FyersStream] Index seed OK: {symbol} [{tf}] — {len(df)} candles")
+                    else:
+                        logger.warning(
+                            f"[FyersStream] Index seed EMPTY: {symbol} [{tf}] — "
+                            f"regime detector will return UNKNOWN until live ticks build candles"
+                        )
+                except Exception as e:
+                    logger.error(f"[FyersStream] Index seed FAILED: {symbol} [{tf}]: {e}")
+                time.sleep(0.3)
 
         # Seed MCX futures — 1H candles are enough for the EMA/RSI trend check
         logger.info("Seeding MCX historical data...")
