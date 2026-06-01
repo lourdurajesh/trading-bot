@@ -79,33 +79,55 @@ class InstitutionalMomentumStrategy(BaseStrategy):
             return None
 
         # Check today's pre-market conviction score (force override respected)
+        forced = False
         try:
             from intelligence.conviction_scorer import conviction_scorer
             result = conviction_scorer.get_last_score()
-            if conviction_scorer.is_forced():
-                logger.info(
-                    f"[InstitutionalMomentum] FORCE mode active — direction={result.direction} "
-                    f"capital={result.capital_pct}% — bypassing conviction gate"
-                )
+            forced = conviction_scorer.is_forced()
         except Exception as e:
             logger.warning(f"[InstitutionalMomentum] Could not get conviction score: {e}")
             return None
 
-        if result is None or not result.tradeable:
+        if not forced and (result is None or not result.tradeable):
             score_str = f"{result.score}" if result else "None"
             self.log_skip(symbol, f"Conviction score {score_str} below threshold")
             return None
 
-        # Direction from scorer
-        if result.direction == "BULLISH":
+        # Direction: from scorer normally; EMA fallback when forced + NEUTRAL
+        score_direction = result.direction if result else "NEUTRAL"
+        if score_direction == "NEUTRAL" and forced:
+            try:
+                from data.data_store import store
+                from analysis.indicators import ema as calc_ema
+                df = store.get_ohlcv(symbol, "1H", n=30)
+                if df is not None and len(df) >= 10:
+                    close  = df["close"]
+                    ema9   = calc_ema(close, 9).iloc[-1]
+                    ema21  = calc_ema(close, 21).iloc[-1]
+                    score_direction = "BULLISH" if ema9 > ema21 else "BEARISH"
+                    logger.info(
+                        f"[InstitutionalMomentum] FORCE+NEUTRAL — EMA fallback: "
+                        f"EMA9={ema9:.1f} {'>' if ema9>ema21 else '<'} EMA21={ema21:.1f} → {score_direction}"
+                    )
+            except Exception as _e:
+                logger.warning(f"[InstitutionalMomentum] EMA fallback failed: {_e}")
+
+        if score_direction == "BULLISH":
             direction   = Direction.LONG
             option_type = "call"
-        elif result.direction == "BEARISH":
+        elif score_direction == "BEARISH":
             direction   = Direction.SHORT
             option_type = "put"
         else:
-            self.log_skip(symbol, f"Conviction direction NEUTRAL (score={result.score})")
+            self.log_skip(symbol, f"Conviction direction NEUTRAL (score={result.score if result else 'N/A'})")
             return None
+
+        if forced:
+            logger.info(
+                f"[InstitutionalMomentum] FORCE mode — threshold bypassed | "
+                f"direction={score_direction} (score={result.score if result else 'N/A'}) | "
+                f"capital={result.capital_pct if result else 35}%"
+            )
 
         # Prefer BANKNIFTY, allow NIFTY as fallback
         short_name = _ALLOWED[symbol]
@@ -133,7 +155,7 @@ class InstitutionalMomentumStrategy(BaseStrategy):
             return None
 
         # Calculate lot sizing based on capital deployment %
-        capital_pct  = result.capital_pct     # 35 or 50
+        capital_pct  = (result.capital_pct if result and result.capital_pct else 35)
         capital_budget = TOTAL_CAPITAL * capital_pct / 100
         cost_per_lot   = premium * lot_size
         target_lots    = int(capital_budget / cost_per_lot) if cost_per_lot > 0 else 0
