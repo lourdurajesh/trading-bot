@@ -203,10 +203,29 @@ const WS_LOGS  = "ws://140.245.26.69:8000/ws/logs";
 
 /* ── API key helper ── */
 const getApiKey = () => localStorage.getItem("dashboardApiKey") || "";
-const authHeaders = (extra) => {
-  const key = getApiKey();
-  return key ? {"Content-Type":"application/json","X-API-Key":key, ...(extra||{})}
-              : {"Content-Type":"application/json", ...(extra||{})};
+const setApiKey = (k) => localStorage.setItem("dashboardApiKey", k.trim());
+
+/**
+ * Authenticated fetch for mutating endpoints that require X-API-Key.
+ * On 403: prompts the user for the key, saves it, and retries once.
+ */
+const authedFetch = async (url, opts = {}) => {
+  const makeHeaders = (key) => ({
+    "Content-Type": "application/json",
+    ...(key ? {"X-API-Key": key} : {}),
+  });
+  let key = getApiKey();
+  let res = await fetch(url, {...opts, headers: makeHeaders(key)});
+  if (res.status === 403) {
+    const newKey = window.prompt(
+      "Access denied (403).\n\nEnter your DASHBOARD_API_KEY from the server .env file:",
+      ""
+    );
+    if (!newKey) throw new Error("API key required — request cancelled");
+    setApiKey(newKey);
+    res = await fetch(url, {...opts, headers: makeHeaders(newKey.trim())});
+  }
+  return res.json();
 };
 
 /* ── helpers ── */
@@ -2841,23 +2860,24 @@ function App() {
                       {(() => {
                         const isForced = forceStatus && forceStatus.forced;
                         const forceDir = forceStatus && forceStatus.direction;
+                        const refreshForceStatus = () =>
+                          fetch(`${API}/conviction/force/status`).then(r=>r.json()).then(setForceStatus).catch(()=>{});
                         const doForce = (dir) => {
                           if (!window.confirm(`Force index trading ${dir}?\n\nThis bypasses the conviction score gate and will fire InstitutionalMomentum signals in ${dir} direction.\n\nClear it manually when done.`)) return;
-                          fetch(`${API}/conviction/force`, {
+                          authedFetch(`${API}/conviction/force`, {
                             method: "POST",
-                            headers: authHeaders(),
                             body: JSON.stringify({direction: dir, capital_pct: 35}),
-                          }).then(r=>r.json()).then(d=>{
-                            if (d.ok) fetch(`${API}/conviction/force/status`).then(r=>r.json()).then(setForceStatus).catch(()=>{});
+                          }).then(d=>{
+                            if (d.ok) refreshForceStatus();
                             else alert("Force failed: " + (d.error||"unknown error"));
-                          }).catch(e=>alert("Request failed: "+e));
+                          }).catch(e=>alert("" + e));
                         };
                         const doClear = () => {
-                          fetch(`${API}/conviction/force/clear`, {method:"POST", headers: authHeaders()})
-                            .then(r=>r.json()).then(d=>{
-                              if (d.ok) fetch(`${API}/conviction/force/status`).then(r=>r.json()).then(setForceStatus).catch(()=>{});
+                          authedFetch(`${API}/conviction/force/clear`, {method:"POST"})
+                            .then(d=>{
+                              if (d.ok) refreshForceStatus();
                               else alert("Clear failed: " + (d.error||"unknown error"));
-                            }).catch(e=>alert("Request failed: "+e));
+                            }).catch(e=>alert("" + e));
                         };
                         return (
                           <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #1e2433",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
