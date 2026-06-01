@@ -313,10 +313,9 @@ class OptionsExecutor:
                 )
             elif per_expiry_strikes == 0 and top_level_strikes:
                 # Layout B detected — normalise into Layout A so the rest of the code works.
-                logger.info(
+                logger.debug(
                     f"[OptionsExecutor] {underlying}: Fyers v3 Layout B detected — "
-                    f"{len(top_level_strikes)} strikes at top level, none inside expiryData. "
-                    f"Normalising to per-expiry layout."
+                    f"{len(top_level_strikes)} strikes at top level. Normalising to per-expiry layout."
                 )
                 chain_data = self._normalise_layout_b(chain_data, underlying_val)
 

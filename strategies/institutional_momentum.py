@@ -136,22 +136,28 @@ class InstitutionalMomentumStrategy(BaseStrategy):
             # (strategy_selector evaluates BANKNIFTY first via priority ordering)
             logger.debug(f"[InstitutionalMomentum] Using NIFTY as fallback (BANKNIFTY evaluated first)")
 
+        short = symbol.replace("NSE:","").replace("-INDEX","")
+
         spot = self.get_ltp(symbol)
         if not spot or spot < 1000:
-            self.log_skip(symbol, f"Invalid spot price: {spot}")
+            logger.info(f"[InstitutionalMomentum] {short} SKIP — invalid spot: {spot}")
             return None
 
         # Fetch ATM option from live chain — no simulation fallback allowed
         premium, lot_size, dte, nfo_symbol, iv = self._get_atm_option(symbol, option_type)
+        logger.info(
+            f"[InstitutionalMomentum] {short} | option={nfo_symbol} premium=₹{premium} "
+            f"DTE={dte} lot={lot_size}"
+        )
         if not nfo_symbol:
-            self.log_skip(symbol, "No live option chain data — skipping (no simulation fallback)")
+            logger.info(f"[InstitutionalMomentum] {short} SKIP — no live option chain data")
             return None
         if not premium or premium < 5.0:
-            self.log_skip(symbol, f"ATM premium ₹{premium} too low or unavailable")
+            logger.info(f"[InstitutionalMomentum] {short} SKIP — ATM premium ₹{premium} too low")
             return None
 
         if dte < _MIN_DTE or dte > _MAX_DTE:
-            self.log_skip(symbol, f"DTE={dte} outside valid range [{_MIN_DTE}-{_MAX_DTE}]")
+            logger.info(f"[InstitutionalMomentum] {short} SKIP — DTE={dte} outside [{_MIN_DTE}-{_MAX_DTE}]")
             return None
 
         # Calculate lot sizing based on capital deployment %
@@ -161,7 +167,7 @@ class InstitutionalMomentumStrategy(BaseStrategy):
         target_lots    = int(capital_budget / cost_per_lot) if cost_per_lot > 0 else 0
 
         if target_lots <= 0:
-            self.log_skip(symbol, f"Zero lots at ₹{premium} premium, {lot_size} lot size")
+            logger.info(f"[InstitutionalMomentum] {short} SKIP — zero lots at ₹{premium} × {lot_size}")
             return None
 
         # Signal levels

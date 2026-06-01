@@ -59,25 +59,28 @@ class DirectionalOptionsStrategy(BaseStrategy):
         # Accept TRENDING, BREAKOUT, or VOLATILE — strategy_selector already
         # filters regime; duplicating the check here blocked VOLATILE path.
         regime = regime_detector.get_regime(symbol, "1H")
+        short = symbol.replace("NSE:","").replace("-INDEX","")
         if regime.regime not in (Regime.TRENDING, Regime.BREAKOUT, Regime.VOLATILE):
-            self.log_skip(symbol, f"Regime {regime.regime.value} not suitable for directional options")
+            logger.info(f"[DirectionalOptions] {short} SKIP — regime={regime.regime.value}")
             return None
 
         # IV rank should be low — cheap options
         iv_rank = options_engine.get_iv_rank(symbol)
         if iv_rank is None or iv_rank < 0:
-            self.log_skip(symbol, "IV rank unavailable (insufficient history) — skipping to avoid overpaying for options")
+            logger.info(f"[DirectionalOptions] {short} SKIP — IV rank unavailable")
             return None
         if iv_rank >= MAX_IV_RANK:
-            self.log_skip(symbol, f"IV rank {iv_rank:.0f} too high — options expensive")
+            logger.info(f"[DirectionalOptions] {short} SKIP — IV rank {iv_rank:.0f} >= {MAX_IV_RANK}")
             return None
 
         df = self.get_ohlcv(symbol, self.timeframe)
         if df is None:
+            logger.info(f"[DirectionalOptions] {short} SKIP — no OHLCV data")
             return None
 
         spot = self.get_ltp(symbol)
         if not spot:
+            logger.info(f"[DirectionalOptions] {short} SKIP — no LTP")
             return None
 
         alignment = ema_alignment(df)
@@ -89,6 +92,12 @@ class DirectionalOptionsStrategy(BaseStrategy):
         bullish_3 = alignment["ema9"] > alignment["ema21"] > alignment["ema50"]
         bearish_3 = alignment["ema9"] < alignment["ema21"] < alignment["ema50"]
 
+        logger.info(
+            f"[DirectionalOptions] {short} | regime={regime.regime.value} IV={iv_rank:.0f} "
+            f"EMA9={alignment['ema9']:.0f} EMA21={alignment['ema21']:.0f} EMA50={alignment['ema50']:.0f} "
+            f"RSI={rsi_val:.0f} | bull3={bullish_3} bear3={bearish_3}"
+        )
+
         # Determine direction
         if bullish_3 and rsi_val > 50:
             direction    = Direction.LONG
@@ -99,11 +108,7 @@ class DirectionalOptionsStrategy(BaseStrategy):
             option_type  = "put"
             reason = f"Bearish EMA alignment | RSI {rsi_val:.0f} | Buy put debit spread"
         else:
-            self.log_skip(
-                symbol,
-                f"No clear directional bias: EMA9={alignment['ema9']:.0f} "
-                f"EMA21={alignment['ema21']:.0f} EMA50={alignment['ema50']:.0f} RSI={rsi_val:.0f}"
-            )
+            logger.info(f"[DirectionalOptions] {short} SKIP — no clean EMA stack or RSI not aligned")
             return None
 
         # ── Fetch live option from chain ──────────────────────────
@@ -118,7 +123,7 @@ class DirectionalOptionsStrategy(BaseStrategy):
         )
 
         if not opt:
-            self.log_skip(symbol, "No live option chain data — skipping (no simulation fallback)")
+            logger.info(f"[DirectionalOptions] {short} SKIP — no valid option in chain (DTE {MIN_DTE}-{MAX_DTE})")
             return None
 
         # Live data — use real premium and contract symbol
