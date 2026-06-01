@@ -2858,19 +2858,17 @@ function App() {
                       </div>
                       {/* ── Force Override Controls ── */}
                       {(() => {
-                        const isForced = forceStatus && forceStatus.forced;
-                        const forceDir = forceStatus && forceStatus.direction;
                         const refreshForceStatus = () =>
                           fetch(`${API}/conviction/force/status`).then(r=>r.json()).then(setForceStatus).catch(()=>{});
-                        const doForce = (dir) => {
-                          if (!window.confirm(`Force index trading ${dir}?\n\nThis bypasses the conviction score gate and will fire InstitutionalMomentum signals in ${dir} direction.\n\nClear it manually when done.`)) return;
-                          authedFetch(`${API}/conviction/force`, {
-                            method: "POST",
-                            body: JSON.stringify({direction: dir, capital_pct: 35}),
-                          }).then(d=>{
-                            if (d.ok) refreshForceStatus();
-                            else alert("Force failed: " + (d.error||"unknown error"));
-                          }).catch(e=>alert("" + e));
+                        const doForce = () => {
+                          const dir = forceStatus && forceStatus.direction;
+                          const dirLabel = dir ? ` (direction: ${dir} from today's score)` : " (no score computed yet — run scorer first)";
+                          if (!window.confirm(`Force-enable index trading?\n\nThis bypasses the conviction threshold gate. Direction is decided by the strategies based on today's market data${dirLabel}.\n\nClear it manually when done.`)) return;
+                          authedFetch(`${API}/conviction/force`, {method:"POST"})
+                            .then(d=>{
+                              if (d.ok) refreshForceStatus();
+                              else alert("Force failed: " + (d.error||"unknown error"));
+                            }).catch(e=>alert("" + e));
                         };
                         const doClear = () => {
                           authedFetch(`${API}/conviction/force/clear`, {method:"POST"})
@@ -2879,27 +2877,29 @@ function App() {
                               else alert("Clear failed: " + (d.error||"unknown error"));
                             }).catch(e=>alert("" + e));
                         };
+                        const isForced = forceStatus && forceStatus.forced;
+                        const forceDir = forceStatus && forceStatus.direction;
+                        const dirColor = forceDir==="BULLISH"?"#22c55e":forceDir==="BEARISH"?"#ef4444":"#f59e0b";
+                        const dirBg    = forceDir==="BULLISH"?"#052e16":forceDir==="BEARISH"?"#450a0a":"#1c1a08";
                         return (
                           <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #1e2433",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                             <span style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em"}}>Force Trade:</span>
                             {isForced ? (
                               <>
-                                <span style={{fontSize:11,fontWeight:700,color:forceDir==="BULLISH"?"#22c55e":"#ef4444",background:forceDir==="BULLISH"?"#052e16":"#450a0a",padding:"3px 10px",borderRadius:4}}>
-                                  FORCED {forceDir}
+                                <span style={{fontSize:11,fontWeight:700,color:dirColor,background:dirBg,padding:"3px 10px",borderRadius:4}}>
+                                  FORCED — {forceDir||"awaiting score"}
                                 </span>
                                 <button onClick={doClear} style={{fontSize:11,padding:"3px 10px",background:"#1e2433",border:"1px solid #475569",color:"#cbd5e1",borderRadius:4,cursor:"pointer"}}>
                                   Clear Override
                                 </button>
                               </>
                             ) : (
-                              <>
-                                <button onClick={()=>doForce("BULLISH")} style={{fontSize:11,padding:"3px 10px",background:"#052e16",border:"1px solid #16a34a",color:"#22c55e",borderRadius:4,cursor:"pointer",fontWeight:600}}>
-                                  Force BULLISH
-                                </button>
-                                <button onClick={()=>doForce("BEARISH")} style={{fontSize:11,padding:"3px 10px",background:"#450a0a",border:"1px solid #b91c1c",color:"#f87171",borderRadius:4,cursor:"pointer",fontWeight:600}}>
-                                  Force BEARISH
-                                </button>
-                              </>
+                              <button onClick={doForce} style={{fontSize:11,padding:"3px 10px",background:"#1e2433",border:"1px solid #475569",color:"#e2e8f0",borderRadius:4,cursor:"pointer",fontWeight:600}}>
+                                Force Enable
+                              </button>
+                            )}
+                            {!isForced && forceDir && (
+                              <span style={{fontSize:10,color:"#64748b"}}>score points {forceDir}</span>
                             )}
                           </div>
                         );

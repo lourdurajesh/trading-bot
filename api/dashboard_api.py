@@ -1539,28 +1539,23 @@ def get_conviction_today():
 
 
 @app.post("/conviction/force")
-def force_index_trade(body: dict, _: None = Depends(_require_api_key)):
+def force_index_trade(_: None = Depends(_require_api_key)):
     """
-    Force-enable index trading regardless of conviction score.
-    Body: {"direction": "BULLISH"|"BEARISH", "capital_pct": 35}
-    capital_pct is optional (default 35).
-    This bypasses conviction score + tradeable gate in InstitutionalMomentum.
+    Bypass the conviction score threshold gate.
+    Direction is still determined by today's actual computed score (FII, OI, IEP, etc.).
     POST /conviction/force/clear to remove the override.
     """
     try:
         from intelligence.conviction_scorer import conviction_scorer
-        direction   = str(body.get("direction", "")).upper()
-        capital_pct = int(body.get("capital_pct", 35))
-        conviction_scorer.set_force(direction, capital_pct)
+        conviction_scorer.set_force()
+        last = conviction_scorer.get_last_score()
         return {
-            "ok":          True,
-            "forced":      True,
-            "direction":   direction,
-            "capital_pct": capital_pct,
-            "message":     f"Index trading forced {direction} @ {capital_pct}% capital — conviction gate bypassed",
+            "ok":       True,
+            "forced":   True,
+            "direction": last.direction if last else "no score yet — run scorer first",
+            "score":     last.score     if last else None,
+            "message":  "Conviction threshold bypassed — direction from today's score",
         }
-    except ValueError as e:
-        return {"error": str(e)}
     except Exception as e:
         return {"error": str(e)}
 
@@ -1578,13 +1573,15 @@ def clear_force_index_trade(_: None = Depends(_require_api_key)):
 
 @app.get("/conviction/force/status")
 def force_index_status():
-    """Return whether force mode is currently active."""
+    """Return whether force mode is currently active and what direction the score points to."""
     try:
         from intelligence.conviction_scorer import conviction_scorer
+        forced = conviction_scorer.is_forced()
+        last   = conviction_scorer._last_score
         return {
-            "forced":    conviction_scorer.is_forced(),
-            "direction": conviction_scorer._force_direction,
-            "capital_pct": conviction_scorer._force_capital_pct if conviction_scorer.is_forced() else None,
+            "forced":    forced,
+            "direction": last.direction if last else None,
+            "score":     last.score     if last else None,
         }
     except Exception as e:
         return {"error": str(e)}

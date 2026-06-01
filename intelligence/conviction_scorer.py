@@ -66,32 +66,28 @@ class ConvictionScorer:
         self._vix_history: list[dict] = []
         self._load_vix_history()
         self._last_score: Optional[ConvictionScore] = None
-        self._force_direction: Optional[str] = None   # "BULLISH" | "BEARISH" | None
-        self._force_capital_pct: int = 35
+        self._force_enabled: bool = False
 
     # ─────────────────────────────────────────────────────────────
     # FORCE OVERRIDE
     # ─────────────────────────────────────────────────────────────
 
-    def set_force(self, direction: str, capital_pct: int = 35) -> None:
-        """Force index trading in the given direction, bypassing conviction gate."""
-        if direction not in ("BULLISH", "BEARISH"):
-            raise ValueError(f"direction must be BULLISH or BEARISH, got {direction!r}")
-        self._force_direction  = direction
-        self._force_capital_pct = capital_pct
+    def set_force(self) -> None:
+        """Bypass the conviction threshold gate — direction still comes from the real score."""
+        self._force_enabled = True
         logger.warning(
-            f"[ConvictionScorer] FORCE mode enabled: {direction} @ {capital_pct}% capital "
-            f"— conviction score check bypassed"
+            "[ConvictionScorer] FORCE mode enabled — conviction threshold bypassed; "
+            "direction will be taken from today's computed score"
         )
 
     def clear_force(self) -> None:
         """Remove force override and restore normal conviction-gated behaviour."""
-        if self._force_direction:
+        if self._force_enabled:
             logger.info("[ConvictionScorer] FORCE mode cleared — returning to normal conviction gating")
-        self._force_direction = None
+        self._force_enabled = False
 
     def is_forced(self) -> bool:
-        return self._force_direction is not None
+        return self._force_enabled
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
@@ -171,17 +167,29 @@ class ConvictionScorer:
 
     def get_last_score(self) -> Optional[ConvictionScore]:
         """Return the most recently computed score (cached).
-        When force mode is active, returns a synthetic tradeable score so that
-        InstitutionalMomentumStrategy fires regardless of the real conviction level.
+        When force mode is active, returns the real score with tradeable=True so the
+        threshold gate is bypassed while direction comes from actual market data.
         """
-        if self._force_direction:
+        if self._force_enabled and self._last_score is not None:
+            s = self._last_score
             return ConvictionScore(
-                score       = 10 if self._force_direction == "BULLISH" else -10,
-                direction   = self._force_direction,
-                reasons     = [f"FORCE OVERRIDE — manual direction: {self._force_direction}"],
-                capital_pct = self._force_capital_pct,
+                score       = s.score,
+                direction   = s.direction,
+                reasons     = [f"FORCE OVERRIDE — threshold bypassed"] + s.reasons,
+                capital_pct = s.capital_pct if s.capital_pct else 35,
                 tradeable   = True,
-                timestamp   = datetime.now(tz=IST).strftime("%Y-%m-%d %H:%M"),
+                timestamp   = s.timestamp,
+                fii_score   = s.fii_score,
+                oi_score    = s.oi_score,
+                iep_score   = s.iep_score,
+                vix_score   = s.vix_score,
+                gift_score  = s.gift_score,
+                rs_score    = s.rs_score,
+            )
+        if self._force_enabled and self._last_score is None:
+            logger.warning(
+                "[ConvictionScorer] FORCE mode active but no score computed yet — "
+                "run pre-market scorer first (9:00 AM) or trigger /conviction/score"
             )
         return self._last_score
 
