@@ -66,6 +66,32 @@ class ConvictionScorer:
         self._vix_history: list[dict] = []
         self._load_vix_history()
         self._last_score: Optional[ConvictionScore] = None
+        self._force_direction: Optional[str] = None   # "BULLISH" | "BEARISH" | None
+        self._force_capital_pct: int = 35
+
+    # ─────────────────────────────────────────────────────────────
+    # FORCE OVERRIDE
+    # ─────────────────────────────────────────────────────────────
+
+    def set_force(self, direction: str, capital_pct: int = 35) -> None:
+        """Force index trading in the given direction, bypassing conviction gate."""
+        if direction not in ("BULLISH", "BEARISH"):
+            raise ValueError(f"direction must be BULLISH or BEARISH, got {direction!r}")
+        self._force_direction  = direction
+        self._force_capital_pct = capital_pct
+        logger.warning(
+            f"[ConvictionScorer] FORCE mode enabled: {direction} @ {capital_pct}% capital "
+            f"— conviction score check bypassed"
+        )
+
+    def clear_force(self) -> None:
+        """Remove force override and restore normal conviction-gated behaviour."""
+        if self._force_direction:
+            logger.info("[ConvictionScorer] FORCE mode cleared — returning to normal conviction gating")
+        self._force_direction = None
+
+    def is_forced(self) -> bool:
+        return self._force_direction is not None
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
@@ -144,7 +170,19 @@ class ConvictionScorer:
         return result
 
     def get_last_score(self) -> Optional[ConvictionScore]:
-        """Return the most recently computed score (cached)."""
+        """Return the most recently computed score (cached).
+        When force mode is active, returns a synthetic tradeable score so that
+        InstitutionalMomentumStrategy fires regardless of the real conviction level.
+        """
+        if self._force_direction:
+            return ConvictionScore(
+                score       = 10 if self._force_direction == "BULLISH" else -10,
+                direction   = self._force_direction,
+                reasons     = [f"FORCE OVERRIDE — manual direction: {self._force_direction}"],
+                capital_pct = self._force_capital_pct,
+                tradeable   = True,
+                timestamp   = datetime.now(tz=IST).strftime("%Y-%m-%d %H:%M"),
+            )
         return self._last_score
 
     def record_vix(self, vix: float) -> None:

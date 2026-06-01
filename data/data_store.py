@@ -133,17 +133,24 @@ class DataStore:
 
     def get_ohlcv(self, symbol: str, timeframe: str, n: int = 200) -> Optional[pd.DataFrame]:
         """
-        Returns the last `n` closed OHLCV candles for a symbol/timeframe.
+        Returns the last `n` candles for a symbol/timeframe, including the
+        current forming (open) bar so that indicators like RSI reflect live
+        price movement within the current period rather than freezing at the
+        previous bar's close.
         Returns None if insufficient data (< 30 candles).
 
         Columns: timestamp, open, high, low, close, volume
         """
         with self._lock:
             candles = self._candles[symbol].get(timeframe, [])
-            if len(candles) < 30:
-                logger.debug(f"Insufficient candles for {symbol} [{timeframe}]: {len(candles)}")
+            open_candle = self._open_candle[symbol].get(timeframe)
+            all_candles = list(candles)
+            if open_candle is not None:
+                all_candles.append(open_candle)
+            if len(all_candles) < 30:
+                logger.debug(f"Insufficient candles for {symbol} [{timeframe}]: {len(all_candles)}")
                 return None
-            df = pd.DataFrame(candles[-n:])
+            df = pd.DataFrame(all_candles[-n:])
             df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("Asia/Kolkata")
             df = df.sort_values("timestamp").reset_index(drop=True)
             return df

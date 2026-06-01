@@ -2024,6 +2024,9 @@ function App() {
   const [stratConfig, setStratConfig] = React.useState(null);
   const [mcxConfig,   setMcxConfig]   = React.useState(null);
 
+  /* conviction force override */
+  const [forceStatus, setForceStatus] = React.useState(null);
+
   /* daily journal */
   const [journal, setJournal]         = React.useState(null);
   const [journalLoading, setJournalLoading] = React.useState(false);
@@ -2100,8 +2103,10 @@ function App() {
       fetch(`${API}/config/strategies`).then(r=>r.json()).then(d=>{if(d.config)setStratConfig(d.config);}).catch(()=>{});
     const loadMcxConfig = () =>
       fetch(`${API}/commodity/config`).then(r=>r.json()).then(d=>{if(d.ok)setMcxConfig(d);}).catch(()=>{});
+    const loadForceStatus = () =>
+      fetch(`${API}/conviction/force/status`).then(r=>r.json()).then(setForceStatus).catch(()=>{});
 
-    loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadComm(); loadConfig(); loadMcxConfig();
+    loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadComm(); loadConfig(); loadMcxConfig(); loadForceStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
 
     const t1 = setInterval(loadServices,   15000);
@@ -2109,7 +2114,8 @@ function App() {
     const t3 = setInterval(loadDrought,    60000);
     const t5 = setInterval(loadComm,       60000);
     const t6 = setInterval(loadMcxConfig,  30000);  // refresh cooldown status every 30s
-    return () => [t1,t2,t3,t5,t6].forEach(clearInterval);
+    const t7 = setInterval(loadForceStatus, 10000);
+    return () => [t1,t2,t3,t5,t6,t7].forEach(clearInterval);
   }, []);
 
   /* ── journal fetch: load on mount + when tab is opened ── */
@@ -2811,6 +2817,53 @@ function App() {
                           );
                         })}
                       </div>
+                      {/* ── Force Override Controls ── */}
+                      {(() => {
+                        const isForced = forceStatus && forceStatus.forced;
+                        const forceDir = forceStatus && forceStatus.direction;
+                        const doForce = (dir) => {
+                          if (!window.confirm(`Force index trading ${dir}?\n\nThis bypasses the conviction score gate and will fire InstitutionalMomentum signals in ${dir} direction.\n\nClear it manually when done.`)) return;
+                          fetch(`${API}/conviction/force`, {
+                            method: "POST",
+                            headers: {"Content-Type":"application/json"},
+                            body: JSON.stringify({direction: dir, capital_pct: 35}),
+                          }).then(r=>r.json()).then(d=>{
+                            if (d.ok) fetch(`${API}/conviction/force/status`).then(r=>r.json()).then(setForceStatus).catch(()=>{});
+                            else alert("Force failed: " + (d.error||"unknown error"));
+                          }).catch(e=>alert("Request failed: "+e));
+                        };
+                        const doClear = () => {
+                          fetch(`${API}/conviction/force/clear`, {method:"POST"})
+                            .then(r=>r.json()).then(d=>{
+                              if (d.ok) fetch(`${API}/conviction/force/status`).then(r=>r.json()).then(setForceStatus).catch(()=>{});
+                              else alert("Clear failed: " + (d.error||"unknown error"));
+                            }).catch(e=>alert("Request failed: "+e));
+                        };
+                        return (
+                          <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #1e2433",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                            <span style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em"}}>Force Trade:</span>
+                            {isForced ? (
+                              <>
+                                <span style={{fontSize:11,fontWeight:700,color:forceDir==="BULLISH"?"#22c55e":"#ef4444",background:forceDir==="BULLISH"?"#052e16":"#450a0a",padding:"3px 10px",borderRadius:4}}>
+                                  FORCED {forceDir}
+                                </span>
+                                <button onClick={doClear} style={{fontSize:11,padding:"3px 10px",background:"#1e2433",border:"1px solid #475569",color:"#cbd5e1",borderRadius:4,cursor:"pointer"}}>
+                                  Clear Override
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button onClick={()=>doForce("BULLISH")} style={{fontSize:11,padding:"3px 10px",background:"#052e16",border:"1px solid #16a34a",color:"#22c55e",borderRadius:4,cursor:"pointer",fontWeight:600}}>
+                                  Force BULLISH
+                                </button>
+                                <button onClick={()=>doForce("BEARISH")} style={{fontSize:11,padding:"3px 10px",background:"#450a0a",border:"1px solid #b91c1c",color:"#f87171",borderRadius:4,cursor:"pointer",fontWeight:600}}>
+                                  Force BEARISH
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })()}

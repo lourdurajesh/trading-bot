@@ -78,10 +78,15 @@ class InstitutionalMomentumStrategy(BaseStrategy):
         if now < _ENTRY_OPEN or now >= _TIME_STOP:
             return None
 
-        # Check today's pre-market conviction score
+        # Check today's pre-market conviction score (force override respected)
         try:
             from intelligence.conviction_scorer import conviction_scorer
             result = conviction_scorer.get_last_score()
+            if conviction_scorer.is_forced():
+                logger.info(
+                    f"[InstitutionalMomentum] FORCE mode active — direction={result.direction} "
+                    f"capital={result.capital_pct}% — bypassing conviction gate"
+                )
         except Exception as e:
             logger.warning(f"[InstitutionalMomentum] Could not get conviction score: {e}")
             return None

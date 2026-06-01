@@ -1538,6 +1538,58 @@ def get_conviction_today():
         return {"error": str(e)}
 
 
+@app.post("/conviction/force")
+def force_index_trade(body: dict, _: None = Depends(_require_api_key)):
+    """
+    Force-enable index trading regardless of conviction score.
+    Body: {"direction": "BULLISH"|"BEARISH", "capital_pct": 35}
+    capital_pct is optional (default 35).
+    This bypasses conviction score + tradeable gate in InstitutionalMomentum.
+    POST /conviction/force/clear to remove the override.
+    """
+    try:
+        from intelligence.conviction_scorer import conviction_scorer
+        direction   = str(body.get("direction", "")).upper()
+        capital_pct = int(body.get("capital_pct", 35))
+        conviction_scorer.set_force(direction, capital_pct)
+        return {
+            "ok":          True,
+            "forced":      True,
+            "direction":   direction,
+            "capital_pct": capital_pct,
+            "message":     f"Index trading forced {direction} @ {capital_pct}% capital — conviction gate bypassed",
+        }
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/conviction/force/clear")
+def clear_force_index_trade(_: None = Depends(_require_api_key)):
+    """Remove the conviction force override and restore normal gating."""
+    try:
+        from intelligence.conviction_scorer import conviction_scorer
+        conviction_scorer.clear_force()
+        return {"ok": True, "forced": False, "message": "Force override cleared — normal conviction gating restored"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/conviction/force/status")
+def force_index_status():
+    """Return whether force mode is currently active."""
+    try:
+        from intelligence.conviction_scorer import conviction_scorer
+        return {
+            "forced":    conviction_scorer.is_forced(),
+            "direction": conviction_scorer._force_direction,
+            "capital_pct": conviction_scorer._force_capital_pct if conviction_scorer.is_forced() else None,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/plan/refresh")
 def refresh_plan():
     try:
