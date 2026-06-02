@@ -170,15 +170,15 @@ class InstitutionalMomentumStrategy(BaseStrategy):
             logger.info(f"[InstitutionalMomentum] {short} SKIP — zero lots at ₹{premium} × {lot_size}")
             return None
 
-        # Signal levels
-        # stop_loss = option price at which we exit (30% loss on option premium)
+        # stop_loss = absolute NFO price at 30% loss (70% of premium)
+        # target_1  = absolute NFO price at 55% gain (155% of premium)
+        # Both are absolute price levels — position_manager compares directly to LTP.
         stop_loss = round(premium * 0.70, 2)
-        # target_1  = absolute PROFIT amount per unit (55% gain → passed to RR calc)
-        profit_per_unit = round(premium * 0.55, 2)
+        target_1  = round(premium * 1.55, 2)
 
         # Construct reason from conviction scorer
         score_summary = f"Score={result.score:+d} {result.direction}"
-        top_reasons   = " | ".join(result.reasons[:2])  # first 2 signals are the biggest
+        top_reasons   = " | ".join(result.reasons[:2])
         reason = (
             f"InstitutionalMomentum: {score_summary} | "
             f"ATM {option_type.upper()} {short_name} | "
@@ -187,33 +187,41 @@ class InstitutionalMomentumStrategy(BaseStrategy):
             f"{top_reasons}"
         )
 
+        # entry_legs / exit_legs own the leg geometry — order_manager and
+        # position_manager are data-driven from these; no strategy name branching.
+        entry_legs = [{"symbol": nfo_symbol, "direction": "LONG"}]
+        exit_legs  = [{"symbol": nfo_symbol, "direction": "SHORT"}]
+
         signal = Signal(
-            symbol      = symbol,
-            strategy    = self.name,
-            direction   = direction,
-            signal_type = SignalType.OPTIONS,
-            entry       = premium,
-            stop_loss   = stop_loss,
-            target_1    = profit_per_unit,
-            confidence  = self._conviction_to_confidence(result.score),
-            timeframe   = self.timeframe,
-            regime      = "INSTITUTIONAL",
-            reason      = reason,
-            options_meta = {
+            symbol         = symbol,
+            strategy       = self.name,
+            direction      = direction,
+            signal_type    = SignalType.OPTIONS,
+            entry          = premium,
+            stop_loss      = stop_loss,
+            target_1       = target_1,
+            confidence     = self._conviction_to_confidence(result.score),
+            timeframe      = self.timeframe,
+            regime         = "INSTITUTIONAL",
+            reason         = reason,
+            monitor_symbol = nfo_symbol,
+            options_meta   = {
                 "strategy":            "institutional_momentum",
                 "option_type":         option_type,
                 "short_name":          short_name,
-                "atm_strike":          round(spot / (100 if "BANK" in symbol else 50)) * (100 if "BANK" in symbol else 50),  # BANKNIFTY=100pt intervals, NIFTY/FINNIFTY=50pt
+                "atm_strike":          round(spot / (100 if "BANK" in symbol else 50)) * (100 if "BANK" in symbol else 50),
                 "dte":                 dte,
                 "iv":                  round(iv, 4) if iv else 0.15,
                 "lot_size":            lot_size,
                 "nfo_symbol":          nfo_symbol,
                 "conviction_score":    result.score,
                 "capital_pct":         capital_pct,
-                "institutional_lots":  target_lots,   # passed to options_risk._calculate_lots
+                "institutional_lots":  target_lots,
                 "stop_pct":            30,
                 "target_pct":          55,
                 "time_stop":           _TIME_STOP.strftime("%H:%M"),
+                "entry_legs":          entry_legs,
+                "exit_legs":           exit_legs,
             }
         )
         signal.calculate_rr()

@@ -145,19 +145,26 @@ class DirectionalOptionsStrategy(BaseStrategy):
         if confidence < MIN_SIGNAL_CONFIDENCE:
             return None
 
+        # stop_loss = absolute NFO premium at 50% loss
+        # target_1  = absolute NFO premium at full profit (debit + max_profit)
+        # Both are absolute price levels for direct LTP comparison.
+        entry_legs = [{"symbol": nfo_symbol, "direction": "LONG"}]
+        exit_legs  = [{"symbol": nfo_symbol, "direction": "SHORT"}]
+
         signal = Signal(
-            symbol      = symbol,
-            strategy    = self.name,
-            direction   = direction,
-            signal_type = SignalType.OPTIONS,
-            entry       = round(debit_cost, 2),
-            stop_loss   = round(debit_cost * 0.5, 2),   # exit at 50% premium loss
-            target_1    = round(max_profit, 2),
-            confidence  = round(confidence, 2),
-            timeframe   = self.timeframe,
-            regime      = regime.regime.value,
-            reason      = reason,
-            options_meta = {
+            symbol         = symbol,
+            strategy       = self.name,
+            direction      = direction,
+            signal_type    = SignalType.OPTIONS,
+            entry          = round(debit_cost, 2),
+            stop_loss      = round(debit_cost * 0.5, 2),
+            target_1       = round(debit_cost + max_profit, 2),
+            confidence     = round(confidence, 2),
+            timeframe      = self.timeframe,
+            regime         = regime.regime.value,
+            reason         = reason,
+            monitor_symbol = nfo_symbol,
+            options_meta   = {
                 "strategy":    "debit_spread",
                 "option_type": option_type,
                 "atm_strike":  atm_strike,
@@ -165,7 +172,9 @@ class DirectionalOptionsStrategy(BaseStrategy):
                 "iv_rank":     iv_rank,
                 "iv":          round(iv, 4),
                 "lot_size":    lot_size,
-                "nfo_symbol":  nfo_symbol,   # actual tradeable symbol if live
+                "nfo_symbol":  nfo_symbol,
+                "entry_legs":  entry_legs,
+                "exit_legs":   exit_legs,
             }
         )
         signal.calculate_rr()

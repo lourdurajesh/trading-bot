@@ -69,6 +69,11 @@ class Signal:
     # Options-specific (populated by options strategies)
     options_meta: dict  = field(default_factory=dict)
 
+    # Symbol whose LTP drives stop/target checks for this position.
+    # Equity: same as symbol. Options: the NFO contract symbol.
+    # Set by options strategies; equity strategies leave it empty.
+    monitor_symbol: str = ""
+
     # Hold type — injected by StrategySelector from strategy.hold_type
     hold_type:    str   = "intraday"   # "intraday" | "swing"
 
@@ -106,20 +111,17 @@ class Signal:
         return True
 
     def calculate_rr(self) -> float:
-        """Calculate and store Risk:Reward ratio."""
+        """Calculate and store Risk:Reward ratio.
+
+        stop_loss and target_1 are always absolute price (or premium) levels.
+        risk  = |entry - stop_loss|
+        reward = |target_1 - entry|
+        This works uniformly for equity, long options, and short options.
+        """
         risk = abs(self.entry - self.stop_loss)
         if risk == 0:
             return 0.0
-        if self.signal_type == SignalType.OPTIONS:
-            # For options, target_1 is an absolute profit amount (not a price level).
-            # Debit spreads:  entry=premium paid, stop_loss=exit premium at 50% loss,
-            #                 target_1=max_profit (absolute INR per unit).
-            # Credit spreads: entry=credit received, stop_loss=2× credit,
-            #                 target_1=credit × profit_target_pct.
-            # In both cases reward = target_1 directly (not |target_1 - entry|).
-            reward = self.target_1
-        else:
-            reward = abs(self.target_1 - self.entry)
+        reward = abs(self.target_1 - self.entry)
         self.risk_reward = round(reward / risk, 2)
         return self.risk_reward
 

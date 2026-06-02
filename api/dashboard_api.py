@@ -1571,6 +1571,24 @@ def clear_force_index_trade(_: None = Depends(_require_api_key)):
         return {"error": str(e)}
 
 
+@app.get("/debug/candles")
+def debug_candles():
+    """Return candle counts per symbol/timeframe — use to diagnose regime=UNKNOWN."""
+    try:
+        from data.data_store import store
+        from config.watchlist import NSE_INDICES
+        result = {}
+        for sym in NSE_INDICES:
+            result[sym] = {}
+            for tf in ("15m", "1H", "1D"):
+                df = store.get_ohlcv(sym, tf)
+                result[sym][tf] = len(df) if df is not None else 0
+        summary = store.summary()
+        return {"index_candles": result, "full_store_summary": summary}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/conviction/force/status")
 def force_index_status():
     """Return whether force mode is currently active and what direction the score points to."""

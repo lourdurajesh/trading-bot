@@ -126,6 +126,21 @@ class OptionsIncomeStrategy(BaseStrategy):
             f"Strangle: {put_strike:.0f}P / {call_strike:.0f}C"
         )
 
+        call_sym = opt_call.symbol if opt_call else None
+        put_sym  = opt_put.symbol  if opt_put  else None
+
+        # stop_loss = combined premium at 2× credit (position doubles = stop)
+        # target_1  = combined premium at PROFIT_TARGET fraction of credit (target value)
+        # monitor_combine = "sum": position_manager sums call + put LTPs for comparison.
+        entry_legs = [leg for leg in [
+            {"symbol": call_sym, "direction": "SHORT"} if call_sym else None,
+            {"symbol": put_sym,  "direction": "SHORT"} if put_sym  else None,
+        ] if leg]
+        exit_legs = [leg for leg in [
+            {"symbol": call_sym, "direction": "LONG"} if call_sym else None,
+            {"symbol": put_sym,  "direction": "LONG"} if put_sym  else None,
+        ] if leg]
+
         signal = Signal(
             symbol      = symbol,
             strategy    = self.name,
@@ -133,7 +148,7 @@ class OptionsIncomeStrategy(BaseStrategy):
             signal_type = SignalType.OPTIONS,
             entry       = estimated_credit,
             stop_loss   = stop_loss_credit,
-            target_1    = estimated_credit * PROFIT_TARGET,
+            target_1    = round(estimated_credit * PROFIT_TARGET, 2),
             confidence  = round(confidence, 2),
             timeframe   = self.timeframe,
             regime      = regime.regime.value,
@@ -146,8 +161,12 @@ class OptionsIncomeStrategy(BaseStrategy):
                 "iv":                round(iv, 4),
                 "lot_size":          lot_size,
                 "profit_target_pct": PROFIT_TARGET,
-                "nfo_call":          opt_call.symbol if opt_call else None,
-                "nfo_put":           opt_put.symbol if opt_put else None,
+                "nfo_call":          call_sym,
+                "nfo_put":           put_sym,
+                "entry_legs":        entry_legs,
+                "exit_legs":         exit_legs,
+                "monitor_symbols":   [s for s in [call_sym, put_sym] if s],
+                "monitor_combine":   "sum",
             }
         )
         signal.calculate_rr()

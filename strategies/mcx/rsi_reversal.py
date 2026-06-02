@@ -59,30 +59,30 @@ class RSIReversalSpreadStrategy(MCXStrategy):
         ema5    = calc_ema(close, 5).iloc[-1]
 
         cfg = self.config   # thresholds editable via /commodity/config API
-        # ema_proximity_pct: max % divergence between EMA5 and EMA20 while still
-        # counting the trend as "intact" (e.g. 0.5 → multiplier 0.995 / 1.005)
-        proximity = cfg.ema_proximity_pct / 100.0
 
-        if rsi_val < cfg.rsi_oversold and ema5 >= ema20 * (1 - proximity):
+        # Require EMA5 >= EMA20 for LONG (uptrend confirmed before fading oversold dip).
+        # The old proximity check allowed EMA5 up to 0.5% below EMA20, which fired
+        # in downtrends where RSI hit oversold by continued selling — catching a knife.
+        if rsi_val < cfg.rsi_oversold and ema5 >= ema20:
             return MCXSignalResult(
                 direction     = "LONG",
                 strategy_name = self.name,
                 signal_reason = (
                     f"RSI={rsi_val:.1f} < {cfg.rsi_oversold:.0f} (oversold), "
-                    f"EMA5/EMA20 within {cfg.ema_proximity_pct:.1f}%"
+                    f"EMA5 {ema5:.1f} >= EMA20 {ema20:.1f} (uptrend intact)"
                 ),
                 rsi_val       = round(rsi_val, 1),
                 ema5_val      = round(ema5, 2),
                 ema20_val     = round(ema20, 2),
             )
 
-        if rsi_val > cfg.rsi_overbought and ema5 <= ema20 * (1 + proximity):
+        if rsi_val > cfg.rsi_overbought and ema5 <= ema20:
             return MCXSignalResult(
                 direction     = "SHORT",
                 strategy_name = self.name,
                 signal_reason = (
                     f"RSI={rsi_val:.1f} > {cfg.rsi_overbought:.0f} (overbought), "
-                    f"EMA5/EMA20 within {cfg.ema_proximity_pct:.1f}%"
+                    f"EMA5 {ema5:.1f} <= EMA20 {ema20:.1f} (downtrend intact)"
                 ),
                 rsi_val       = round(rsi_val, 1),
                 ema5_val      = round(ema5, 2),

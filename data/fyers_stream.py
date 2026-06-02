@@ -241,6 +241,7 @@ class FyersStream:
     def _on_connect(self) -> None:
         logger.info("Fyers WebSocket connected. Subscribing to symbols...")
         self._subscribe()
+        self.subscribe_open_option_positions()
         # Successful connection — reset failure counter and clear any dead-feed alert (Bug 9)
         if self._consecutive_failures > 0:
             self._consecutive_failures = 0
@@ -429,6 +430,55 @@ class FyersStream:
         except Exception as e:
             logger.error(f"[FyersStream] Resubscribe failed: {e}")
 
+    def subscribe_extra(self, symbols: list) -> None:
+        """Subscribe to additional symbols that aren't in the static watchlist.
+
+        Used for options NFO contracts (e.g. NSE:NIFTY2562524750CE) so that
+        position_manager can read live option premium LTP from the data store.
+        """
+        if not self._running or self._ws_client is None:
+            return
+        clean = [s for s in symbols if s and s not in self._invalid_symbols]
+        if not clean:
+            return
+        try:
+            self._ws_client.subscribe(symbols=clean, data_type="SymbolUpdate")
+            logger.info(f"[FyersStream] Extra subscribe (options NFO): {clean}")
+        except Exception as e:
+            logger.warning(f"[FyersStream] Extra subscribe failed: {e}")
+
+    def subscribe_open_option_positions(self) -> None:
+        """Subscribe NFO symbols for any already-open options positions on startup.
+
+        Reads monitor_symbol and entry_legs from each open position so that
+        position_manager has live LTP data for stop/target checks immediately
+        after reconnect.
+        """
+        try:
+            from risk.portfolio_tracker import portfolio_tracker
+            positions = portfolio_tracker.get_open_positions()
+            nfo_syms = []
+            for pos in positions:
+                # monitor_symbol: single symbol for single-leg strategies
+                ms = pos.get("monitor_symbol")
+                if ms and ms not in self._invalid_symbols:
+                    nfo_syms.append(ms)
+                # entry_legs: covers multi-leg strategies (short strangle, etc.)
+                meta = pos.get("options_meta") or {}
+                for leg in meta.get("entry_legs", []):
+                    s = leg.get("symbol")
+                    if s and s not in self._invalid_symbols:
+                        nfo_syms.append(s)
+                # monitor_symbols: explicit list for sum-combine positions
+                for s in meta.get("monitor_symbols", []):
+                    if s and s not in self._invalid_symbols:
+                        nfo_syms.append(s)
+            unique = list(dict.fromkeys(nfo_syms))  # deduplicate preserving order
+            if unique:
+                self.subscribe_extra(unique)
+        except Exception as e:
+            logger.warning(f"[FyersStream] Could not subscribe open option positions: {e}")
+
     def refresh_mcx_subscriptions(self) -> None:
         """Subscribe to any new MCX symbols and seed their history.
 
@@ -561,13 +611,16 @@ class FyersStream:
         end_date   = datetime.now(tz=IST)
         start_date = end_date - timedelta(days=days_back)
 
+        # cont_flag="1" is only meaningful for futures continuous contracts.
+        # Fyers rejects or returns empty data for index/equity symbols when it is set.
+        is_index = "-INDEX" in symbol
         data = {
             "symbol":     symbol,
             "resolution": resolution,
             "date_format": "1",
             "range_from": start_date.strftime("%Y-%m-%d"),
             "range_to":   end_date.strftime("%Y-%m-%d"),
-            "cont_flag":  "1",
+            "cont_flag":  "0" if is_index else "1",
         }
 
         response = self._fyers_client.history(data=data)

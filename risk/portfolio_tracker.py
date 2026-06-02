@@ -53,6 +53,8 @@ class Position:
     sl_order_id:         str     = ""
     # Set to True the moment the T1 partial exit fires — survives restart (T1 edge case fix)
     t1_hit:              bool    = False
+    # Symbol whose LTP drives stop/target checks (equity: same as symbol; options: NFO contract)
+    monitor_symbol:      str     = ""
 
 
 class PortfolioTracker:
@@ -106,6 +108,7 @@ class PortfolioTracker:
             hold_type          = getattr(signal, "hold_type", "intraday"),
             options_meta       = signal.options_meta or {},
             original_stop_loss = signal.stop_loss,   # frozen at entry — never updated
+            monitor_symbol     = getattr(signal, "monitor_symbol", "") or signal.symbol,
         )
 
         self._open_positions[signal.symbol] = position
@@ -215,6 +218,7 @@ class PortfolioTracker:
                 "unrealised_pnl":  round(unrealised, 2),
                 "entry_time":      pos.entry_time.isoformat(),
                 "options_meta":    options_meta,
+                "monitor_symbol":  pos.monitor_symbol or pos.symbol,
             })
         return result
 
@@ -380,6 +384,7 @@ class PortfolioTracker:
                 ("sl_order_id",        "TEXT DEFAULT ''"),
                 ("options_meta",       "TEXT DEFAULT '{}'"),
                 ("t1_hit",             "INTEGER DEFAULT 0"),
+                ("monitor_symbol",     "TEXT DEFAULT ''"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typedef}")
@@ -406,8 +411,8 @@ class PortfolioTracker:
                 (id, symbol, strategy, direction, signal_type, hold_type, entry_price,
                  exit_price, stop_loss, target_1, target_2, position_size, capital_at_risk,
                  realised_pnl, status, exit_reason, entry_time, exit_time,
-                 original_stop_loss, sl_order_id, options_meta, t1_hit)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 original_stop_loss, sl_order_id, options_meta, t1_hit, monitor_symbol)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 pos.id, pos.symbol, pos.strategy, pos.direction, pos.signal_type, pos.hold_type,
                 pos.entry_price, pos.exit_price, pos.stop_loss, pos.target_1, pos.target_2,
@@ -419,6 +424,7 @@ class PortfolioTracker:
                 pos.sl_order_id or "",
                 json.dumps(pos.options_meta) if pos.options_meta else "{}",
                 1 if pos.t1_hit else 0,
+                pos.monitor_symbol or "",
             ))
 
     def _update_position_db(self, pos: Position) -> None:
@@ -459,6 +465,7 @@ class PortfolioTracker:
                     original_stop_loss = float(row["original_stop_loss"]) if "original_stop_loss" in row.keys() and row["original_stop_loss"] else row["stop_loss"],
                     sl_order_id        = row["sl_order_id"] if "sl_order_id" in row.keys() and row["sl_order_id"] else "",
                     t1_hit             = bool(row["t1_hit"]) if "t1_hit" in row.keys() and row["t1_hit"] else False,
+                    monitor_symbol     = row["monitor_symbol"] if "monitor_symbol" in row.keys() and row["monitor_symbol"] else row["symbol"],
                 )
                 self._open_positions[pos.symbol] = pos
 

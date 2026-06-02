@@ -44,9 +44,7 @@ PARTIAL_EXIT_PCT        = 0.5   # exit 50% at T1
 DYNAMIC_TARGET_START_R  = 3.0   # first dynamic milestone after T1 (~2R)
 DYNAMIC_TARGET_STEP     = 1.0   # advance target by this many R per milestone
 
-# Options-specific exit thresholds
-OPTIONS_DEBIT_STOP_PCT   = 0.50     # exit debit spread when premium drops to 50% of entry
-OPTIONS_CREDIT_STOP_MULT = 2.0      # exit short strangle when value rises to 2× original credit
+
 
 
 class PositionManager:
@@ -103,7 +101,7 @@ class PositionManager:
             opt_size = pos.position_size if pos else 0
             self._check_options_position(
                 symbol, direction, entry, stop, target_1,
-                opt_size, options_meta, now,          # Bug 8: pass actual qty, not 0
+                opt_size, options_meta, now, pos_dict,
             )
             return
 
@@ -284,24 +282,21 @@ class PositionManager:
         size: int,
         options_meta: dict,
         now: datetime,
+        pos_dict: dict,
     ) -> None:
         """
-        Options-specific position monitoring.
+        Unified options position monitoring.
 
-        Key differences from equity:
-        - Monitor OPTION premium LTP (via NFO symbol), not underlying price
-        - No trailing stop (theta decay changes the math)
-        - DTE-based forced exit (expiry risk)
-        - Debit spread: stop = 50% of entry premium (option value halved)
-        - Short strangle: stop = 2× original credit received (value doubles)
-        - EOD exit applies (don't hold overnight unless explicitly swing)
+        All exit rules are data-driven from the position record — no strategy
+        name branching. Each strategy must declare:
+          - monitor_symbol (or monitor_symbols + monitor_combine="sum")
+          - stop_loss as an absolute price/premium level
+          - target_1 as an absolute price/premium level
+          - time_stop in options_meta if a time-based exit is needed
         """
-        strategy = options_meta.get("strategy", "")
-
         # ── 1. DTE-based forced exit ──────────────────────────────
         expiry_str = options_meta.get("expiry")
         if not expiry_str:
-            # Try to derive from NFO symbol embedded in options_meta
             nfo = options_meta.get("nfo_symbol") or options_meta.get("nfo_call")
             if nfo:
                 try:
@@ -324,102 +319,93 @@ class PositionManager:
             except Exception:
                 pass
 
-        # ── 2. Get current option premium LTP ─────────────────────
-        # For debit spreads, monitor the long leg NFO symbol
-        # For short strangles, monitor both legs
-        option_ltp = self._get_option_ltp(options_meta, strategy)
-
+        # ── 2. Get current monitor LTP ────────────────────────────
+        option_ltp = self._get_monitor_ltp(pos_dict)
         if option_ltp is None:
-            # Cannot get option price — use underlying as fallback
-            ltp = store.get_ltp(symbol)
-            if ltp:
-                option_ltp = ltp
-            else:
-                return
+            logger.debug(f"[PositionManager] {symbol}: monitor LTP unavailable — skipping")
+            return
 
         # ── 3. EOD forced exit (3:15 PM) ─────────────────────────
         if now.time() >= EOD_EXIT_TIME:
             opt_pos = portfolio_tracker.get_position(symbol)
             if opt_pos and opt_pos.hold_type == "swing":
-                # Swing options (e.g. OptionsIncome, IronCondor) are placed as
-                # CARRYFORWARD — broker won't auto-square, so we skip EOD exit too.
                 return
             logger.info(f"[PositionManager] EOD OPTIONS exit: {symbol}")
             self._exit_options_position(symbol, size, "EOD_FORCED", options_meta)
             return
 
-        # ── 4. Debit spread exit rules ────────────────────────────
-        if strategy == "debit_spread":
-            # Entry = debit paid (premium). Stop = 50% of premium (option halved in value).
-            stop_level = entry * OPTIONS_DEBIT_STOP_PCT
-            if option_ltp <= stop_level:
+        # ── 4. Time stop (optional — set in options_meta["time_stop"]) ───
+        time_stop_str = options_meta.get("time_stop")
+        if time_stop_str:
+            try:
+                h, m = map(int, time_stop_str.split(":"))
+                if now.time() >= time(h, m):
+                    logger.info(f"[PositionManager] TIME STOP {symbol}: {time_stop_str} — exiting")
+                    self._exit_options_position(symbol, size, "TIME_STOP", options_meta)
+                    return
+            except Exception:
+                pass
+
+        # ── 5. Stop loss — absolute level comparison ───────────────
+        # For long options: exit when LTP drops to or below stop
+        # For short options (strangle): exit when combined LTP rises to stop
+        if stop > 0:
+            if direction == "SHORT" and option_ltp >= stop:
                 logger.warning(
                     f"[PositionManager] OPTIONS STOP {symbol}: "
-                    f"premium {option_ltp:.2f} <= stop {stop_level:.2f} "
-                    f"(50% of entry {entry:.2f})"
+                    f"value {option_ltp:.2f} >= stop {stop:.2f}"
                 )
-                self._exit_options_position(symbol, size, "STOP_50PCT_PREMIUM", options_meta)
+                self._exit_options_position(symbol, size, "STOP", options_meta)
+                return
+            elif direction == "LONG" and option_ltp <= stop:
+                logger.warning(
+                    f"[PositionManager] OPTIONS STOP {symbol}: "
+                    f"premium {option_ltp:.2f} <= stop {stop:.2f}"
+                )
+                self._exit_options_position(symbol, size, "STOP", options_meta)
                 return
 
-            # Profit target — option premium reached target_1
-            if option_ltp >= target_1 and symbol not in self._partial_exited:
+        # ── 6. Target — absolute level comparison ──────────────────
+        # For long options: exit when LTP rises to target
+        # For short options (strangle): exit when combined LTP falls to target
+        if target_1 > 0 and symbol not in self._partial_exited:
+            hit = (direction == "LONG" and option_ltp >= target_1) or \
+                  (direction == "SHORT" and option_ltp <= target_1)
+            if hit:
                 logger.info(
                     f"[PositionManager] OPTIONS TARGET {symbol}: "
-                    f"premium {option_ltp:.2f} >= target {target_1:.2f}"
+                    f"ltp {option_ltp:.2f} {'≥' if direction == 'LONG' else '≤'} target {target_1:.2f}"
                 )
-                self._exit_options_position(symbol, size, "TARGET1", options_meta)
+                self._exit_options_position(symbol, size, "TARGET", options_meta)
                 self._partial_exited.add(symbol)
                 return
 
-        # ── 5. Short strangle exit rules ─────────────────────────
-        elif strategy == "short_strangle":
-            # Entry = credit received. Stop = 2× credit (position value doubled)
-            # For short strangle, current_value = sum of current call + put premiums
-            stop_level = entry * OPTIONS_CREDIT_STOP_MULT
-            if option_ltp >= stop_level:
-                logger.warning(
-                    f"[PositionManager] SHORT STRANGLE STOP {symbol}: "
-                    f"current value {option_ltp:.2f} >= stop {stop_level:.2f} "
-                    f"(2× credit {entry:.2f})"
-                )
-                self._exit_options_position(symbol, size, "STOP_2X_CREDIT", options_meta)
-                return
-
-            # Profit target — value decayed to 50% of original credit (50% profit)
-            profit_target = entry * 0.50
-            if option_ltp <= profit_target and symbol not in self._partial_exited:
-                logger.info(
-                    f"[PositionManager] STRANGLE TARGET {symbol}: "
-                    f"value {option_ltp:.2f} <= target {profit_target:.2f} "
-                    f"(50% profit on credit)"
-                )
-                self._exit_options_position(symbol, size, "TARGET_50PCT_CREDIT", options_meta)
-                self._partial_exited.add(symbol)
-                return
-
-    def _get_option_ltp(self, options_meta: dict, strategy: str) -> Optional[float]:
+    def _get_monitor_ltp(self, pos_dict: dict) -> Optional[float]:
         """
-        Fetch current option premium from data store.
-        For debit spreads: long leg LTP.
-        For short strangles: sum of call + put LTP (total position value).
+        Return the live LTP of the position's monitor instrument.
+
+        Uses monitor_symbol for single-leg positions.
+        Uses options_meta["monitor_symbols"] + monitor_combine="sum" for multi-leg.
+        Returns None if the symbol has no data — caller skips the check.
+        Never falls back to the underlying index price.
         """
         try:
-            if strategy == "debit_spread":
-                nfo = options_meta.get("nfo_symbol")
-                if nfo:
-                    ltp = store.get_ltp(nfo)
-                    return float(ltp) if ltp and ltp > 0 else None
+            options_meta = pos_dict.get("options_meta") or {}
+            combine = options_meta.get("monitor_combine", "single")
 
-            elif strategy == "short_strangle":
-                call_sym = options_meta.get("nfo_call")
-                put_sym  = options_meta.get("nfo_put")
-                call_ltp = store.get_ltp(call_sym) if call_sym else None
-                put_ltp  = store.get_ltp(put_sym)  if put_sym  else None
-                if call_ltp and put_ltp:
-                    return float(call_ltp) + float(put_ltp)
+            if combine == "sum":
+                syms = options_meta.get("monitor_symbols", [])
+                ltps = [store.get_ltp(s) for s in syms if s]
+                valid = [float(v) for v in ltps if v and v > 0]
+                return sum(valid) if valid and len(valid) == len(syms) else None
+            else:
+                monitor_sym = pos_dict.get("monitor_symbol") or ""
+                if not monitor_sym:
+                    return None
+                ltp = store.get_ltp(monitor_sym)
+                return float(ltp) if ltp and ltp > 0 else None
         except Exception:
-            pass
-        return None
+            return None
 
     def _exit_options_position(
         self, symbol: str, size: int, reason: str, options_meta: dict
@@ -452,7 +438,14 @@ class PositionManager:
             order_id = self._place_options_exit_orders(pos, size, options_meta)
 
         if order_id:
-            closed = portfolio_tracker.close_position(symbol, pos.entry_price, reason)
+            # Use live monitor LTP for exit price so P&L is accurate
+            pos_dict_for_ltp = {
+                "monitor_symbol": pos.monitor_symbol or pos.symbol,
+                "options_meta":   options_meta,
+            }
+            exit_ltp   = self._get_monitor_ltp(pos_dict_for_ltp)
+            exit_price = exit_ltp if exit_ltp and exit_ltp > 0 else pos.entry_price
+            closed = portfolio_tracker.close_position(symbol, exit_price, reason)
             if closed:
                 # Notify options risk gate of the P&L
                 try:
@@ -479,37 +472,23 @@ class PositionManager:
             )
 
     def _place_options_exit_orders(self, pos, size: int, options_meta: dict) -> Optional[str]:
-        """Place live Fyers NFO exit orders for options positions."""
+        """
+        Place exit orders for all legs using options_meta["exit_legs"].
+        Data-driven — no strategy name branching.
+        """
         try:
             from execution.fyers_broker import fyers_broker
-            strategy = options_meta.get("strategy", "")
-
-            if strategy == "short_strangle":
-                # Buy back both legs to close
-                call_sym = options_meta.get("nfo_call")
-                put_sym  = options_meta.get("nfo_put")
-                lot_size = int(options_meta.get("lot_size", 1))
-                ids = []
-                if call_sym:
-                    ids.append(fyers_broker.place_order(
-                        symbol=call_sym, direction="LONG",
-                        qty=lot_size, order_type="MARKET",
-                    ))
-                if put_sym:
-                    ids.append(fyers_broker.place_order(
-                        symbol=put_sym, direction="LONG",
-                        qty=lot_size, order_type="MARKET",
-                    ))
-                return ids[0] if ids else None
-
-            else:
-                # Debit spread — sell the long leg
-                nfo = options_meta.get("nfo_symbol")
-                if nfo:
-                    return fyers_broker.place_order(
-                        symbol=nfo, direction="SHORT",
-                        qty=size, order_type="MARKET",
-                    )
+            exit_legs = options_meta.get("exit_legs", [])
+            lot_size  = int(options_meta.get("lot_size", 1))
+            ids = []
+            for leg in exit_legs:
+                oid = fyers_broker.place_order(
+                    symbol=leg["symbol"], direction=leg["direction"],
+                    qty=lot_size, order_type="MARKET",
+                )
+                if oid:
+                    ids.append(oid)
+            return ids[0] if ids else None
         except Exception as e:
             logger.error(f"[PositionManager] Options exit order error: {e}")
         return None

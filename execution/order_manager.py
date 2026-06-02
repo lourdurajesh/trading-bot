@@ -365,49 +365,46 @@ class OrderManager:
         """
         Place all legs for an options signal.
 
-        Debit spread  — buy 1 ATM leg (NFO symbol from options_meta["nfo_symbol"])
-        Short strangle — sell call + sell put
-        Iron condor   — sell short call, buy long call, sell short put, buy long put
+        Leg geometry is fully data-driven from options_meta["entry_legs"]:
+            [{"symbol": "NSE:NIFTY..CE", "direction": "LONG"}, ...]
 
-        No SL order is placed at the broker — position_manager monitors premium
-        price and sends a market-close order when the SL level is breached.
+        No SL order is placed at the broker — position_manager monitors option
+        premium LTP and issues a market-close order when stop/target is breached.
         """
-        meta          = signal.options_meta or {}
-        strategy_type = meta.get("strategy", "")
-        lot_size      = int(meta.get("lot_size", 1)) or 1
-        lots          = max(1, signal.position_size // lot_size)
-        qty           = lots * lot_size
+        meta      = signal.options_meta or {}
+        lot_size  = int(meta.get("lot_size", 1)) or 1
+        lots      = max(1, signal.position_size // lot_size)
+        qty       = lots * lot_size
 
-        # Paper trading — record position, skip real order placement
-        # paper_trading_engine (₹5L wallet) is exclusive to learning mirrors.
-        if PAPER_TRADING:
-            portfolio_tracker.open_position(signal, fill_price=signal.entry)
-            logger.info(
-                f"[OrderManager] [PAPER/OPTIONS] {strategy_type} "
-                f"{signal.symbol} × {lots} lot(s)"
+        entry_legs = meta.get("entry_legs", [])
+        if not entry_legs:
+            logger.warning(
+                f"[OrderManager] {signal.symbol}: options_meta has no entry_legs — "
+                f"strategy must declare leg geometry. Signal dropped."
             )
             return
 
-        legs = self._build_option_legs(strategy_type, meta, qty)
-        if not legs:
-            logger.warning(
-                f"[OrderManager] OPTIONS: no NFO symbols in options_meta for "
-                f"{signal.symbol} ({strategy_type}) — cannot execute. "
-                f"Run during market hours with live Fyers chain to get NFO symbols."
+        # Paper trading — record position and subscribe monitor symbols; skip real orders.
+        if PAPER_TRADING:
+            portfolio_tracker.open_position(signal, fill_price=signal.entry)
+            logger.info(
+                f"[OrderManager] [PAPER/OPTIONS] {meta.get('strategy','')} "
+                f"{signal.symbol} × {lots} lot(s)"
             )
+            try:
+                from data.fyers_stream import fyers_stream
+                fyers_stream.subscribe_extra([leg["symbol"] for leg in entry_legs])
+            except Exception:
+                pass
             return
 
         broker      = self._get_broker(signal.symbol)
         placed_ids  = []
+        opt_product = "CARRYFORWARD" if getattr(signal, "hold_type", "intraday") == "swing" else "INTRADAY"
 
-        # CARRYFORWARD allows holding F&O positions overnight.
-        # Swing options strategies (e.g. OptionsIncome, IronCondor) opt into this.
-        opt_product = (
-            "CARRYFORWARD"
-            if getattr(signal, "hold_type", "intraday") == "swing"
-            else "INTRADAY"
-        )
-        for nfo_symbol, direction in legs:
+        for leg in entry_legs:
+            nfo_symbol = leg["symbol"]
+            direction  = leg["direction"]
             oid = broker.place_order(
                 symbol     = nfo_symbol,
                 direction  = direction,
@@ -417,16 +414,9 @@ class OrderManager:
             )
             if oid:
                 placed_ids.append((nfo_symbol, direction, oid))
-                logger.info(
-                    f"[OrderManager] OPTIONS leg placed: "
-                    f"{direction} {qty} × {nfo_symbol} → {oid}"
-                )
+                logger.info(f"[OrderManager] OPTIONS leg placed: {direction} {qty} × {nfo_symbol} → {oid}")
             else:
-                logger.error(
-                    f"[OrderManager] OPTIONS leg FAILED: "
-                    f"{direction} {qty} × {nfo_symbol}"
-                )
-                # Bug 3: Close every successfully placed leg to prevent naked exposure
+                logger.error(f"[OrderManager] OPTIONS leg FAILED: {direction} {qty} × {nfo_symbol}")
                 if placed_ids:
                     logger.critical(
                         f"[OrderManager] PARTIAL OPTIONS FILL on {signal.symbol} — "
@@ -434,64 +424,24 @@ class OrderManager:
                     )
                     for placed_sym, placed_dir, _ in placed_ids:
                         close_dir = "LONG" if placed_dir == "SHORT" else "SHORT"
-                        close_id = broker.place_order(
-                            symbol     = placed_sym,
-                            direction  = close_dir,
-                            qty        = qty,
-                            order_type = "MARKET",
+                        close_id  = broker.place_order(
+                            symbol=placed_sym, direction=close_dir,
+                            qty=qty, order_type="MARKET",
                         )
                         if close_id:
                             logger.info(f"[OrderManager] Rolled back leg {placed_sym}: {close_id}")
                         else:
-                            logger.critical(
-                                f"[OrderManager] ROLLBACK FAILED for {placed_sym} — "
-                                f"MANUAL CLOSE REQUIRED IMMEDIATELY"
-                            )
+                            logger.critical(f"[OrderManager] ROLLBACK FAILED for {placed_sym} — MANUAL CLOSE REQUIRED")
                     self._send_alert(signal, "OPTIONS_PARTIAL_FILL", pending=False)
                 return
 
         portfolio_tracker.open_position(signal, fill_price=signal.entry)
+        try:
+            from data.fyers_stream import fyers_stream
+            fyers_stream.subscribe_extra([sym for sym, _, _ in placed_ids])
+        except Exception:
+            pass
         self._send_alert(signal, ",".join(oid for _, _, oid in placed_ids), pending=False)
-
-    @staticmethod
-    def _build_option_legs(
-        strategy_type: str,
-        meta: dict,
-        qty: int,
-    ) -> list[tuple[str, str]]:
-        """
-        Build the list of (nfo_symbol, direction) tuples for each leg.
-        direction "LONG" = buy, "SHORT" = sell.
-        Returns empty list if required NFO symbols are missing.
-        """
-        if strategy_type == "debit_spread":
-            nfo = meta.get("nfo_symbol")
-            if not nfo:
-                return []
-            return [(nfo, "LONG")]
-
-        if strategy_type == "short_strangle":
-            legs = []
-            if meta.get("nfo_call"):
-                legs.append((meta["nfo_call"], "SHORT"))
-            if meta.get("nfo_put"):
-                legs.append((meta["nfo_put"], "SHORT"))
-            return legs
-
-        if strategy_type == "iron_condor":
-            legs = []
-            # Sell short legs (income), buy long legs (risk cap)
-            if meta.get("nfo_short_call"):
-                legs.append((meta["nfo_short_call"], "SHORT"))
-            if meta.get("nfo_long_call"):
-                legs.append((meta["nfo_long_call"],  "LONG"))
-            if meta.get("nfo_short_put"):
-                legs.append((meta["nfo_short_put"],  "SHORT"))
-            if meta.get("nfo_long_put"):
-                legs.append((meta["nfo_long_put"],   "LONG"))
-            return legs
-
-        return []
 
     def _confirm_fill(
         self, broker, order_id: str, signal: Signal, max_wait: int = ORDER_POLL_MAX_WAIT
