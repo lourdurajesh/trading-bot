@@ -655,10 +655,13 @@ class OptionsExecutor:
         Build Fyers NFO symbol.
 
         Monthly format: NSE:NIFTY25JAN24500CE
-        Weekly format:  NSE:NIFTY2501234500CE  (YY + MMDD)
+        Weekly format:  NSE:NIFTY2562524750CE  (YY + M + DD)
 
-        Fyers uses monthly format for monthly expiry, weekly for weekly.
-        We detect by checking if expiry is the last Thursday of the month.
+        Fyers weekly format uses single-digit month (1-9 for Jan-Sep,
+        O/N/D for Oct/Nov/Dec) with 2-digit zero-padded day.
+        e.g. June 25 → "6" + "25" → "625", not "0625".
+        Using %m%d (zero-padded month) produces the WRONG symbol and
+        no WS tick data is received because the key never matches.
         """
         try:
             expiry_dt  = datetime.strptime(expiry_str, "%Y-%m-%d")
@@ -671,9 +674,12 @@ class OptionsExecutor:
                 # Monthly: NSE:NIFTY25JAN24500CE
                 return f"NSE:{short_name}{yy}{month_abbr}{strike_str}{suffix}"
             else:
-                # Weekly: NSE:NIFTY2501234500CE  (YYMMDD)
-                mmdd = expiry_dt.strftime("%m%d")  # "0123"
-                return f"NSE:{short_name}{yy}{mmdd}{strike_str}{suffix}"
+                # Weekly: NSE:NIFTY2562524750CE  (YY + M + DD)
+                # Month is single-digit (no leading zero); day is 2-digit zero-padded.
+                m = expiry_dt.month
+                month_code = str(m) if m <= 9 else ("O" if m == 10 else ("N" if m == 11 else "D"))
+                dd = expiry_dt.strftime("%d")  # "25" or "05"
+                return f"NSE:{short_name}{yy}{month_code}{dd}{strike_str}{suffix}"
 
         except Exception as e:
             logger.error(f"[OptionsExecutor] Symbol build failed: {e}")

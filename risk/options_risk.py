@@ -272,18 +272,19 @@ class OptionsRiskGate:
     def _parse_expiry_from_symbol(self, symbol: str) -> Optional[str]:
         """
         Parse expiry date from Fyers NFO symbol.
-        Monthly: NSE:NIFTY25JAN24500CE → 2025-01-last-thursday
-        Weekly:  NSE:NIFTY2501234500CE → 2025-01-23
+        Monthly:  NSE:NIFTY25JAN24500CE  → 2025-01-last-thursday
+        Weekly (new format): NSE:NIFTY2562524750CE → 2025-06-25  (M single-digit, no leading zero)
+        Weekly (old format): NSE:NIFTY2501234500CE → 2025-01-23  (MMDD with leading zero, legacy)
         """
         try:
-            # Strip prefix (NSE:) and underlying name (NIFTY / BANKNIFTY)
+            # Strip prefix (NSE:) and underlying name (NIFTY / BANKNIFTY etc.)
             raw = symbol.replace("NSE:", "")
             for name in ("BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTY", "SENSEX"):
                 if raw.startswith(name):
                     raw = raw[len(name):]
                     break
 
-            # Monthly pattern: 25JAN → 2-digit year + 3-letter month
+            # Monthly pattern: 25JAN → 2-digit year + 3-letter month abbr
             months = {
                 "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4,
                 "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8,
@@ -292,15 +293,29 @@ class OptionsRiskGate:
             if len(raw) >= 5 and raw[2:5].upper() in months:
                 year  = 2000 + int(raw[:2])
                 month = months[raw[2:5].upper()]
-                # Last Thursday of that month = monthly expiry
-                last_thurs = self._last_thursday(year, month)
-                return last_thurs.strftime("%Y-%m-%d")
+                return self._last_thursday(year, month).strftime("%Y-%m-%d")
 
-            # Weekly pattern: 250123 → year=25, month=01, day=23
-            if len(raw) >= 6 and raw[:6].isdigit():
-                year  = 2000 + int(raw[:2])
-                month = int(raw[2:4])
-                day   = int(raw[4:6])
+            year = 2000 + int(raw[:2])
+            code = raw[2:]  # date code + strike + suffix
+
+            # New weekly format — Oct/Nov/Dec use letter prefix (O/N/D)
+            if code and code[0] in ("O", "N", "D"):
+                month = {"O": 10, "N": 11, "D": 12}[code[0]]
+                day   = int(code[1:3])
+                return f"{year:04d}-{month:02d}-{day:02d}"
+
+            # New weekly format — months 1-9, single digit (no leading zero)
+            # e.g. "62524750CE" → month=6, day=25
+            if code and code[0].isdigit() and code[0] != "0":
+                month = int(code[0])
+                day   = int(code[1:3])
+                return f"{year:04d}-{month:02d}-{day:02d}"
+
+            # Old weekly format (legacy) — MMDD zero-padded month
+            # e.g. "062524750CE" → month=06, day=25
+            if len(code) >= 4 and code[:4].isdigit():
+                month = int(code[0:2])
+                day   = int(code[2:4])
                 return f"{year:04d}-{month:02d}-{day:02d}"
 
         except Exception:

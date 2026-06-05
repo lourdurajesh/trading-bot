@@ -437,7 +437,11 @@ class FyersStream:
         position_manager can read live option premium LTP from the data store.
         """
         if not self._running or self._ws_client is None:
+            logger.warning(f"[FyersStream] subscribe_extra: WS not ready, ticks unavailable for {symbols}")
             return
+        blacklisted = [s for s in symbols if s and s in self._invalid_symbols]
+        if blacklisted:
+            logger.warning(f"[FyersStream] subscribe_extra: these symbols are blacklisted (-300 error history) and won't receive ticks: {blacklisted}")
         clean = [s for s in symbols if s and s not in self._invalid_symbols]
         if not clean:
             return

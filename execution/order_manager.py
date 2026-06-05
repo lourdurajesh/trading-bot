@@ -394,8 +394,8 @@ class OrderManager:
             try:
                 from data.fyers_stream import fyers_stream
                 fyers_stream.subscribe_extra([leg["symbol"] for leg in entry_legs])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"[OrderManager] Failed to subscribe options ticks: {e}")
             return
 
         broker      = self._get_broker(signal.symbol)
@@ -439,8 +439,8 @@ class OrderManager:
         try:
             from data.fyers_stream import fyers_stream
             fyers_stream.subscribe_extra([sym for sym, _, _ in placed_ids])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"[OrderManager] Failed to subscribe options ticks for {signal.symbol}: {e}")
         self._send_alert(signal, ",".join(oid for _, _, oid in placed_ids), pending=False)
 
     def _confirm_fill(

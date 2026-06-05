@@ -319,19 +319,21 @@ class PositionManager:
             except Exception:
                 pass
 
-        # ── 2. Get current monitor LTP ────────────────────────────
-        option_ltp = self._get_monitor_ltp(pos_dict)
-        if option_ltp is None:
-            logger.debug(f"[PositionManager] {symbol}: monitor LTP unavailable — skipping")
-            return
-
-        # ── 3. EOD forced exit (3:15 PM) ─────────────────────────
+        # ── 2. EOD forced exit (3:15 PM) ─────────────────────────
+        # Must run BEFORE the LTP check so EOD exits fire even when tick data
+        # is temporarily unavailable (e.g. WS reconnect gap, subscription delay).
         if now.time() >= EOD_EXIT_TIME:
             opt_pos = portfolio_tracker.get_position(symbol)
             if opt_pos and opt_pos.hold_type == "swing":
                 return
             logger.info(f"[PositionManager] EOD OPTIONS exit: {symbol}")
             self._exit_options_position(symbol, size, "EOD_FORCED", options_meta)
+            return
+
+        # ── 3. Get current monitor LTP ────────────────────────────
+        option_ltp = self._get_monitor_ltp(pos_dict)
+        if option_ltp is None:
+            logger.warning(f"[PositionManager] {symbol}: monitor LTP unavailable — stop/target checks skipped (WS subscription may be pending)")
             return
 
         # ── 4. Time stop (optional — set in options_meta["time_stop"]) ───
