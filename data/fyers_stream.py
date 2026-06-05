@@ -113,6 +113,11 @@ class FyersStream:
         # is immediately visible everywhere (dashboard, add-instrument validation,
         # resubscription logic) without needing a reference to this instance.
         self._invalid_symbols: set[str] = KNOWN_INVALID_SYMBOLS
+        # Extra symbols (options NFO contracts) added via subscribe_extra().
+        # Persisted in-process so _subscribe() can re-include them on reconnect.
+        # Fyers WS subscribe() REPLACES the full list — calling subscribe_extra()
+        # without re-sending MCX/NSE would silently drop all other ticks.
+        self._extra_symbols: set[str] = set()
 
     # ─────────────────────────────────────────────────────────────
     # PUBLIC
@@ -398,7 +403,7 @@ class FyersStream:
         # evaluates symbols not in the production list (e.g. WIPRO, HCLTECH, ONGC)
         # and needs tick data for them to function.
         nse_symbols = list(set(_wl.ALL_NSE_SYMBOLS + LEARNING_NSE_EQUITIES))
-        all_symbols = list(set(nse_symbols + mcx_symbols))
+        all_symbols = list(set(nse_symbols + mcx_symbols) | self._extra_symbols)
         # Drop symbols already confirmed invalid by a prior -300 error
         if self._invalid_symbols:
             before = len(all_symbols)
@@ -408,7 +413,7 @@ class FyersStream:
         self._ws_client.subscribe(symbols=all_symbols, data_type="SymbolUpdate")
         logger.info(
             f"Subscribed to {len(all_symbols)} symbols — "
-            f"NSE: {len(nse_symbols)}, MCX: {len(mcx_symbols)} {mcx_symbols}"
+            f"NSE: {len(nse_symbols)}, MCX: {len(mcx_symbols)}, extras: {len(self._extra_symbols)} {mcx_symbols}"
         )
 
     def _resubscribe_clean(self) -> None:
@@ -422,7 +427,7 @@ class FyersStream:
             mcx_symbols = [_fyers_sym(s) for s in ALL_MCX_SHORTS]
             nse_symbols = set(_wl.ALL_NSE_SYMBOLS + LEARNING_NSE_EQUITIES)
             all_symbols = [
-                s for s in set(nse_symbols) | set(mcx_symbols)
+                s for s in set(nse_symbols) | set(mcx_symbols) | self._extra_symbols
                 if s not in self._invalid_symbols
             ]
             self._ws_client.subscribe(symbols=all_symbols, data_type="SymbolUpdate")
@@ -446,7 +451,11 @@ class FyersStream:
         if not clean:
             return
         try:
-            self._ws_client.subscribe(symbols=clean, data_type="SymbolUpdate")
+            # Persist so _subscribe() re-includes these on every reconnect.
+            self._extra_symbols.update(clean)
+            # Fyers WS subscribe() REPLACES the full list — must always send
+            # NSE + MCX + extras together or MCX ticks will be silently dropped.
+            self._subscribe()
             logger.info(f"[FyersStream] Extra subscribe (options NFO): {clean}")
         except Exception as e:
             logger.warning(f"[FyersStream] Extra subscribe failed: {e}")
