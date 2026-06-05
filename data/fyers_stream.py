@@ -477,6 +477,23 @@ class FyersStream:
                 for s in meta.get("monitor_symbols", []):
                     if s and s not in self._invalid_symbols:
                         nfo_syms.append(s)
+            # Also cover open options positions from the learning engine's own table
+            try:
+                from learning_engine import learning_engine
+                for trade in learning_engine._open_positions.values():
+                    lmeta = trade.get("metadata") or {}
+                    if lmeta.get("instrument_type") != "nse_options":
+                        continue
+                    nfo = lmeta.get("nfo_symbol")
+                    if nfo and nfo not in self._invalid_symbols:
+                        nfo_syms.append(nfo)
+                    for leg in lmeta.get("entry_legs", []):
+                        s = leg.get("symbol")
+                        if s and s not in self._invalid_symbols:
+                            nfo_syms.append(s)
+            except Exception:
+                pass  # learning engine may not be initialised yet at startup
+
             unique = list(dict.fromkeys(nfo_syms))  # deduplicate preserving order
             if unique:
                 self.subscribe_extra(unique)

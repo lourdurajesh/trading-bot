@@ -259,6 +259,23 @@ class LearningEngine:
         except Exception as exc:
             logger.debug(f"[Learning] Paper mirror open error: {exc}")
 
+        # Subscribe NFO option contract for live tick monitoring
+        if instrument_type == "nse_options":
+            syms = []
+            nfo = meta.get("nfo_symbol")
+            if nfo:
+                syms.append(nfo)
+            for leg in meta.get("entry_legs", []):
+                s = leg.get("symbol")
+                if s and s not in syms:
+                    syms.append(s)
+            if syms:
+                try:
+                    from data.fyers_stream import fyers_stream
+                    fyers_stream.subscribe_extra(syms)
+                except Exception as e:
+                    logger.error(f"[Learning] Failed to subscribe options ticks for {symbol}: {e}")
+
     def _check_exits(self, store) -> None:
         from datetime import time as dtime
         closed_keys = []
@@ -291,8 +308,11 @@ class LearningEngine:
             # (index at 25,000 against premium stop at ₹100 would never trigger)
             if instrument_type == "nse_options":
                 ltp = store.get_ltp(nfo_symbol)
+                _eod_now = datetime.now(tz=IST).time() >= dtime(15, 20)
+                if (not ltp or ltp <= 0) and not _eod_now:
+                    continue  # tick data unavailable — wait for next cycle
                 if not ltp or ltp <= 0:
-                    continue  # chain data unavailable this cycle — wait for next
+                    ltp = trade["entry_price"]  # EOD fallback: record exit at entry (P&L = fees)
             else:
                 ltp = store.get_ltp(symbol)
             if not ltp:
