@@ -55,6 +55,25 @@ MAX_BARS_INTRADAY    = 10    # 10 × 15min = 2.5hr max; RSI bounces resolve or f
 VOLATILITY_CONTRACTION = 0.50  # exit if current ATR < 50% of entry ATR (momentum gone)
 
 
+def _sanitize_for_json(obj):
+    """
+    Recursively replace NaN/Inf floats with 0.0 throughout a dict/list tree.
+
+    A shallow loop on the top-level trade dict misses floats nested inside the
+    'metadata' dict (e.g. rvol=nan, atr=inf from bad calculations).  orjson —
+    FastAPI's default serialiser — rejects NaN/Inf and raises a TypeError that
+    propagates as HTTP 500 because it happens *after* the endpoint returns, i.e.
+    outside the endpoint's try/except block.
+    """
+    if isinstance(obj, float):
+        return 0.0 if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_json(i) for i in obj]
+    return obj
+
+
 class LearningEngine:
 
     def __init__(self):
@@ -953,10 +972,10 @@ class LearningEngine:
             except Exception:
                 d["metadata"] = {}
             # SQLite can store NaN/Inf from edge-case calculations; JSON cannot.
-            # Replace them with 0 so the dashboard serialiser never blows up.
-            for k, v in d.items():
-                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                    d[k] = 0.0
+            # Apply recursively so nested metadata values (e.g. rvol=nan) are
+            # also sanitised — a shallow loop misses dict/list nesting and
+            # causes orjson / FastAPI to throw a 500 Internal Server Error.
+            d = _sanitize_for_json(d)
             result.append(d)
         return result
 

@@ -101,7 +101,10 @@ def _get_learning_payload(prev_hash: str) -> tuple[dict | None, str]:
         if h == prev_hash:
             return None, h
         return {"trades": trades, "stats": stats}, h
-    except Exception:
+    except Exception as e:
+        # Log so this doesn't silently black-hole the learning tab forever.
+        # With prev_hash unchanged the next tick retries automatically.
+        logger.warning(f"[Dashboard] _get_learning_payload error: {e}")
         return None, prev_hash
 
 
@@ -374,11 +377,19 @@ def learning_trades(status: str = None, limit: int = 200):
     Each trade includes full entry metadata (RSI, EMA, ATR etc.)
     for post-trade review and strategy refinement.
     """
+    import json as _json
+    from fastapi.responses import JSONResponse
     try:
         from learning_engine import learning_engine
-        return {"trades": learning_engine.get_trades(status=status, limit=limit)}
+        trades = learning_engine.get_trades(status=status, limit=limit)
+        # Explicitly serialise here so any remaining non-JSON-safe values
+        # are caught inside this try/except rather than propagating as a
+        # silent HTTP 500 from FastAPI's response serialiser (orjson).
+        payload = _json.dumps({"trades": trades}, allow_nan=False, default=str)
+        return JSONResponse(content=_json.loads(payload))
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"[Dashboard] /learning/trades error: {e}")
+        return {"error": str(e), "status": status, "limit": limit}
 
 
 @app.get("/learning/stats")
