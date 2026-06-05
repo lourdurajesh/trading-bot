@@ -20,6 +20,7 @@ Access results via:
 
 import json
 import logging
+import math
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
@@ -951,6 +952,11 @@ class LearningEngine:
                 d["metadata"] = json.loads(d.get("metadata") or "{}")
             except Exception:
                 d["metadata"] = {}
+            # SQLite can store NaN/Inf from edge-case calculations; JSON cannot.
+            # Replace them with 0 so the dashboard serialiser never blows up.
+            for k, v in d.items():
+                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                    d[k] = 0.0
             result.append(d)
         return result
 
