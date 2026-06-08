@@ -38,8 +38,11 @@ from config.settings import DB_PATH
 from execution.fyers_broker import fyers_broker
 
 if not fyers_broker._initialised:
-    print("ERROR: Fyers broker not initialised. Start the bot first, or ensure tokens are valid.")
-    sys.exit(1)
+    print("Initialising Fyers broker …")
+    if not fyers_broker.initialise():
+        print("ERROR: Fyers broker init failed. Check FYERS_ACCESS_TOKEN in .env.")
+        sys.exit(1)
+    print("Fyers broker ready.\n")
 
 # ── Load affected trades ──────────────────────────────────────────────────────
 # Trades are "affected" when they have nse_options instrument type and
