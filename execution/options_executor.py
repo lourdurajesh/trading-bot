@@ -321,7 +321,7 @@ class OptionsExecutor:
             })
 
             if resp.get("s") != "ok":
-                logger.debug(f"[OptionsExecutor] Chain fetch failed: {resp.get('message')}")
+                logger.warning(f"[OptionsExecutor] Chain fetch failed for {underlying}: {resp}")
                 return None
 
             chain_data = resp.get("data", {})
