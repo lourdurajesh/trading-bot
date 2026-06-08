@@ -614,10 +614,17 @@ class OptionsExecutor:
             greeks = options_engine.black_scholes(spot, strike, T, 0.065, iv, option_type)
             delta  = greeks.delta if option_type == "call" else abs(greeks.delta)
 
-            # Approximate expiry date
-            from datetime import timedelta
-            expiry_dt  = datetime.now(tz=IST) + timedelta(days=dte)
-            expiry_str = expiry_dt.strftime("%Y-%m-%d")
+            # Approximate expiry date — snap to the next Thursday (NSE expiry day)
+            from datetime import timedelta, date as _date
+            today      = datetime.now(tz=IST).date()
+            rough      = today + timedelta(days=dte)
+            days_ahead = (3 - rough.weekday()) % 7   # 3 = Thursday
+            expiry_date = rough + timedelta(days=days_ahead)
+            # Guarantee it still satisfies min_dte after the snap
+            if (expiry_date - today).days < min_dte:
+                expiry_date += timedelta(days=7)
+            expiry_dt  = datetime(expiry_date.year, expiry_date.month, expiry_date.day, tzinfo=IST)
+            expiry_str = expiry_date.strftime("%Y-%m-%d")
 
             fyers_symbol = self._build_nfo_symbol(short_name, expiry_str, strike, option_type)
             if not fyers_symbol:
