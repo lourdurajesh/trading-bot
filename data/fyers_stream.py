@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 # (update / clear) via KNOWN_INVALID_SYMBOLS is immediately visible to the stream.
 KNOWN_INVALID_SYMBOLS: set[str] = set()
 
+# Module-level singleton set by main.py after FyersStream() is constructed.
+# Import as: from data.fyers_stream import fyers_stream
+fyers_stream: "FyersStream | None" = None
+
 
 # ── Module-level DB helpers ────────────────────────────────────────────────────
 # Used by dashboard endpoints that don't have a reference to the stream instance.

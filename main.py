@@ -78,6 +78,8 @@ class TradingBot:
     def __init__(self):
         self._running       = False
         self._fyers_stream  = FyersStream()
+        import data.fyers_stream as _fs_mod
+        _fs_mod.fyers_stream = self._fyers_stream
         self._alpaca_stream = AlpacaStream()
 
     # ─────────────────────────────────────────────────────────────

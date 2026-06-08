@@ -292,7 +292,8 @@ class LearningEngine:
             if syms:
                 try:
                     from data.fyers_stream import fyers_stream
-                    fyers_stream.subscribe_extra(syms)
+                    if fyers_stream is not None:
+                        fyers_stream.subscribe_extra(syms)
                 except Exception as e:
                     logger.error(f"[Learning] Failed to subscribe options ticks for {symbol}: {e}")
 
