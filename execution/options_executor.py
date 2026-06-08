@@ -139,8 +139,9 @@ class OptionResult:
     ltp:        float     # live last traded price
     iv:         float     # implied volatility (annualised decimal)
     delta:      float
-    lot_size:   int
-    pcr:        float     # put-call ratio for this expiry (0 = unknown)
+    lot_size:      int
+    pcr:           float  # put-call ratio for this expiry (0 = unknown)
+    is_simulated:  bool = False  # True when price came from BS fallback, not live chain
 
 
 class OptionsExecutor:
@@ -221,10 +222,27 @@ class OptionsExecutor:
             )
             chain_next = self._get_chain_for_timestamp(underlying, target_epoch)
             if chain_next:
-                return self._select_from_chain(
+                result = self._select_from_chain(
                     chain_next, underlying, short_name, lot_size,
                     option_type, target_delta, min_dte, max_dte,
                 )
+                if result:
+                    return result
+
+            # Both chain fetches returned no match in the ideal DTE window.
+            # Fall back to the original chain with no DTE floor so we get a
+            # real market price (e.g. a 4-DTE expiry) rather than a BS estimate.
+            if chain_data:
+                result = self._select_from_chain(
+                    chain_data, underlying, short_name, lot_size,
+                    option_type, target_delta, min_dte=1, max_dte=max_dte,
+                )
+                if result:
+                    logger.info(
+                        f"[OptionsExecutor] {underlying}: using nearest available expiry "
+                        f"(DTE {result.dte}, below preferred {min_dte}) — real price ₹{result.ltp:.2f}"
+                    )
+                    return result
 
         logger.info(f"[OptionsExecutor] Chain unavailable for {underlying} — using BS estimate")
         return self._simulate_option(
@@ -631,17 +649,18 @@ class OptionsExecutor:
                 return None
 
             return OptionResult(
-                symbol      = fyers_symbol,
-                underlying  = underlying,
-                option_type = option_type,
-                strike      = strike,
-                expiry      = expiry_str,
-                dte         = dte,
-                ltp         = greeks.price,
-                iv          = iv,
-                delta       = delta,
-                lot_size    = lot_size,
-                pcr         = 0.0,
+                symbol        = fyers_symbol,
+                underlying    = underlying,
+                option_type   = option_type,
+                strike        = strike,
+                expiry        = expiry_str,
+                dte           = dte,
+                ltp           = greeks.price,
+                iv            = iv,
+                delta         = delta,
+                lot_size      = lot_size,
+                pcr           = 0.0,
+                is_simulated  = True,
             )
         except Exception as e:
             logger.error(f"[OptionsExecutor] Simulation fallback failed: {e}")

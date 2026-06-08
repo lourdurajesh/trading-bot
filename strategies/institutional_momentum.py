@@ -249,7 +249,7 @@ class InstitutionalMomentumStrategy(BaseStrategy):
                 min_dte      = _MIN_DTE,
                 max_dte      = _MAX_DTE,
             )
-            if opt:
+            if opt and not opt.is_simulated:
                 return opt.ltp, opt.lot_size, opt.dte, opt.symbol, opt.iv
         except Exception as e:
             logger.warning(f"[InstitutionalMomentum] options_executor error: {e}")
