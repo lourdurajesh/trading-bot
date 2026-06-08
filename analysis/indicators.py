@@ -214,9 +214,16 @@ def relative_volume(df: pd.DataFrame, period: int = 20) -> pd.Series:
     """
     Relative Volume (RVOL) — current volume vs average volume.
     > 1.5 = significantly above average (confirms breakouts).
+
+    When the last bar has zero volume (typical for a live-forming candle whose
+    WebSocket ticks carry no volume), the previous bar's RVOL is carried forward
+    so downstream callers see a meaningful value rather than always 0.
     """
-    avg_vol = df["volume"].rolling(period).mean()
-    return df["volume"] / avg_vol.replace(0, np.nan)
+    vol = df["volume"]
+    avg_vol = vol.rolling(period, min_periods=1).mean().clip(lower=1)
+    rvol = vol / avg_vol
+    # Carry forward when volume is absent (forming bar or exchange not reporting volume)
+    return rvol.where(vol > 0, other=rvol.shift(1)).fillna(1.0)
 
 
 def volume_sma(df: pd.DataFrame, period: int = 20) -> pd.Series:
