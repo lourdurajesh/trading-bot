@@ -9,6 +9,9 @@ read interface for strategy modules.
 Thread-safe: uses threading.Lock for all write operations.
 """
 
+import gzip
+import json
+import os
 import threading
 import logging
 from collections import defaultdict, deque
@@ -29,6 +32,11 @@ MAX_TICKS = 1000
 
 # Maximum candles kept per symbol per timeframe
 MAX_CANDLES = 500
+
+# Candle snapshot — persists across bot restarts so strategies have history immediately
+SNAPSHOT_PATH = "db/candle_snapshot.json.gz"
+_SNAPSHOT_TIMEFRAMES  = {"1H", "15m", "5m", "1D"}  # only timeframes strategies need
+_SNAPSHOT_MAX_CANDLES = 200                          # enough for any strategy
 
 # Timeframe → seconds mapping
 TF_SECONDS = {
@@ -243,6 +251,79 @@ class DataStore:
             open_candle["low"]    = min(open_candle["low"], price)
             open_candle["close"]  = price
             open_candle["volume"] += volume
+
+    # ─────────────────────────────────────────────────────────────
+    # PERSISTENCE — snapshot across restarts
+    # ─────────────────────────────────────────────────────────────
+
+    def save_snapshot(self, path: str = SNAPSHOT_PATH) -> int:
+        """
+        Write closed candles to a gzip-compressed JSON file.
+        Only stores timeframes in _SNAPSHOT_TIMEFRAMES to keep the file small.
+        Returns the number of bytes written.
+        """
+        data: dict = {}
+        with self._lock:
+            for sym, tfs in self._candles.items():
+                sym_data: dict = {}
+                for tf, candles in tfs.items():
+                    if tf not in _SNAPSHOT_TIMEFRAMES or not candles:
+                        continue
+                    slim = []
+                    for c in candles[-_SNAPSHOT_MAX_CANDLES:]:
+                        ts = c["timestamp"]
+                        if isinstance(ts, datetime):
+                            ts = ts.isoformat()
+                        slim.append([ts, c["open"], c["high"], c["low"], c["close"], c["volume"]])
+                    if slim:
+                        sym_data[tf] = slim
+                if sym_data:
+                    data[sym] = sym_data
+        raw = json.dumps(data, separators=(",", ":")).encode()
+        compressed = gzip.compress(raw, compresslevel=6)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(compressed)
+        logger.info(
+            f"[DataStore] Snapshot saved: {len(data)} symbols, "
+            f"{len(compressed) // 1024}KB → {path}"
+        )
+        return len(compressed)
+
+    def load_snapshot(self, path: str = SNAPSHOT_PATH) -> int:
+        """
+        Pre-seed the store from a previously saved snapshot.
+        Skips any (symbol, timeframe) pair already populated by a live broker seed.
+        Call this BEFORE fyers_stream.start() so strategies have data immediately.
+        Returns the number of symbols loaded.
+        """
+        if not os.path.exists(path):
+            logger.debug(f"[DataStore] No snapshot at {path} — starting cold")
+            return 0
+        try:
+            with gzip.open(path, "rb") as fh:
+                data = json.loads(fh.read())
+        except Exception as exc:
+            logger.warning(f"[DataStore] Failed to load snapshot {path}: {exc}")
+            return 0
+        loaded = 0
+        with self._lock:
+            for sym, tfs in data.items():
+                for tf, rows in tfs.items():
+                    existing = self._candles[sym].get(tf, [])
+                    if len(existing) >= len(rows):
+                        continue   # broker already seeded more data — don't overwrite
+                    candles = []
+                    for row in rows:
+                        ts_str, o, h, lo, c, v = row
+                        ts = datetime.fromisoformat(ts_str)
+                        candles.append({"timestamp": ts, "open": o, "high": h,
+                                        "low": lo, "close": c, "volume": v})
+                    self._candles[sym][tf] = candles[-MAX_CANDLES:]
+                    self._initialised.add(f"{sym}_{tf}")
+                loaded += 1
+        logger.info(f"[DataStore] Snapshot loaded: {loaded} symbols from {path}")
+        return loaded
 
     def summary(self) -> dict:
         """Returns a snapshot summary for logging/debugging."""

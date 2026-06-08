@@ -145,6 +145,7 @@ class TradingBot:
 
         # Step 2: Start data streams
         logger.info("Starting data streams...")
+        store.load_snapshot()   # pre-seed candles from last run before broker history arrives
         self._fyers_stream.start()
         self._alpaca_stream.start()
 
@@ -198,6 +199,11 @@ class TradingBot:
             audit_log.bot_event("BOT_STOP")
         except Exception:
             pass
+        # Persist candles so next restart has immediate history
+        try:
+            store.save_snapshot()
+        except Exception:
+            pass
         # Stop streams with timeout
         try:
             self._fyers_stream.stop()
@@ -237,7 +243,9 @@ class TradingBot:
         last_slow_run        = 0
         last_commodity_run   = 0
         last_token_check     = 0          # periodic token health check
+        last_snapshot_save   = 0
         TOKEN_CHECK_INTERVAL = 1800       # check token every 30 min
+        SNAPSHOT_INTERVAL    = 1200       # save candle snapshot every 20 min
         _conviction_scored_date  = None   # date when score was last computed
         _conviction_iep_date     = None   # date when IEP-refined score was computed
         _oi_snap_saved_date      = None   # date when OI close snapshot was saved
@@ -432,6 +440,14 @@ class TradingBot:
                         and now_time == _NSE_COLLECT_TIME):
                     logger.debug("[Main] FII collection skipped — trading holiday")
                     _nse_collected_date = today   # mark done so it doesn't retry
+
+                # ── Periodic candle snapshot (every 20 min) ───────────
+                if now - last_snapshot_save >= SNAPSHOT_INTERVAL:
+                    last_snapshot_save = now
+                    try:
+                        store.save_snapshot()
+                    except Exception as _se:
+                        logger.warning(f"[Main] Snapshot save error: {_se}")
 
                 # ── Periodic Fyers token health check (every 30 min) ───
                 if now - last_token_check >= TOKEN_CHECK_INTERVAL:

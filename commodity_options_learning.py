@@ -1278,7 +1278,24 @@ class CommodityOptionsLearning:
             if signal:
                 break
         if not signal:
-            logger.info(f"[CommOpts] {short} no strategy signal — spot={spot:.2f}")
+            try:
+                from analysis.indicators import rsi as _rsi, adx as _adx, relative_volume as _rvol, ema as _ema
+                _rsi_val     = _rsi(df["close"]).iloc[-1]
+                _adx_s, _, _ = _adx(df)
+                _adx_val     = _adx_s.iloc[-1]
+                _rvol_val    = _rvol(df).iloc[-1]
+                _ema5_val    = _ema(df["close"], 5).iloc[-1]
+                _ema20_val   = _ema(df["close"], 20).iloc[-1]
+                _ema_gap_pct = abs(_ema5_val - _ema20_val) / _ema20_val * 100 if _ema20_val else 0
+                logger.info(
+                    f"[CommOpts] {short} no signal — spot={spot:.2f} | "
+                    f"RSI={_rsi_val:.0f} (long 55-68 / short 32-45) | "
+                    f"ADX={_adx_val:.0f} (need >20) | "
+                    f"RVOL={_rvol_val:.2f} (need >1.3/1.5) | "
+                    f"EMA5={_ema5_val:.2f} EMA20={_ema20_val:.2f} gap={_ema_gap_pct:.2f}%"
+                )
+            except Exception as _de:
+                logger.info(f"[CommOpts] {short} no strategy signal — spot={spot:.2f}")
             return
 
         direction      = signal.direction
