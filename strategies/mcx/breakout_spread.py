@@ -120,6 +120,12 @@ class BreakoutSpreadStrategy(MCXStrategy):
         macd_h           = macd_hist.iloc[-1]
         rvol             = calc_rvol(df).iloc[-1]
 
+        # Fyers MCX data feed does not provide volume for commodity futures.
+        # When no volume data exists, skip the RVOL gate entirely.
+        volume_available = df["volume"].sum() > 0
+        rvol_ok          = (not volume_available) or (rvol >= cfg.min_rvol_breakout)
+        rvol_label       = f"RVOL={rvol:.1f}x" if volume_available else "RVOL=N/A(no feed)"
+
         # ── Consolidation range from wick highs/lows ──────────────
         # Use df["high"]/df["low"] — not closes — because resistance and
         # support live at the wicks, not candle bodies.
@@ -142,7 +148,7 @@ class BreakoutSpreadStrategy(MCXStrategy):
                 and ema5 > ema20                          # uptrend
                 and ema_gap_pct >= cfg.ema_gap_min_pct   # separation not noise
                 and adx_now >= cfg.min_adx_breakout      # directional, not ranging
-                and rvol >= cfg.min_rvol_breakout         # volume confirms
+                and rvol_ok                               # volume confirms (or N/A)
                 and macd_h > 0):                          # MACD bullish
             return MCXSignalResult(
                 direction      = "LONG",
@@ -151,7 +157,7 @@ class BreakoutSpreadStrategy(MCXStrategy):
                     f"Closed above {prev_high:.0f}+{buffer:.0f}buf "
                     f"(ATR×{cfg.atr_buffer_mult:.2f}), "
                     f"RSI={rsi_val:.1f}>{cfg.rsi_breakout_long:.0f}, "
-                    f"ADX={adx_now:.0f}, RVOL={rvol:.1f}x, "
+                    f"ADX={adx_now:.0f}, {rvol_label}, "
                     f"MACD-H={macd_h:.2f}, EMA5>EMA20(+{ema_gap_pct:.1f}%)"
                 ),
                 rsi_val        = round(rsi_val, 1),
@@ -166,7 +172,7 @@ class BreakoutSpreadStrategy(MCXStrategy):
                 and ema5 < ema20                          # downtrend
                 and ema_gap_pct >= cfg.ema_gap_min_pct   # separation not noise
                 and adx_now >= cfg.min_adx_breakout      # directional, not ranging
-                and rvol >= cfg.min_rvol_breakout         # volume confirms
+                and rvol_ok                               # volume confirms (or N/A)
                 and macd_h < 0):                          # MACD bearish
             return MCXSignalResult(
                 direction      = "SHORT",
@@ -175,7 +181,7 @@ class BreakoutSpreadStrategy(MCXStrategy):
                     f"Closed below {prev_low:.0f}-{buffer:.0f}buf "
                     f"(ATR×{cfg.atr_buffer_mult:.2f}), "
                     f"RSI={rsi_val:.1f}<{cfg.rsi_breakout_short:.0f}, "
-                    f"ADX={adx_now:.0f}, RVOL={rvol:.1f}x, "
+                    f"ADX={adx_now:.0f}, {rvol_label}, "
                     f"MACD-H={macd_h:.2f}, EMA5<EMA20(-{ema_gap_pct:.1f}%)"
                 ),
                 rsi_val        = round(rsi_val, 1),

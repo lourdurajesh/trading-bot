@@ -222,11 +222,9 @@ def relative_volume(df: pd.DataFrame, period: int = 20) -> pd.Series:
     vol = df["volume"]
     avg_vol = vol.rolling(period, min_periods=1).mean().clip(lower=1)
     rvol = vol / avg_vol
-    # Carry forward when volume is absent (forming bar or exchange not reporting volume).
-    # If the carried-forward value is also 0 (e.g. MCX where Fyers never sends volume),
-    # default to 1.0 (neutral) so RVOL filters don't permanently block those instruments.
-    fallback = rvol.shift(1).replace(0, float("nan")).fillna(1.0)
-    return rvol.where(vol > 0, other=fallback)
+    # Carry forward when the current bar has zero volume (live-forming bar, or
+    # exchange doesn't report real-time volume for this instrument).
+    return rvol.where(vol > 0, other=rvol.shift(1)).fillna(1.0)
 
 
 def volume_sma(df: pd.DataFrame, period: int = 20) -> pd.Series:

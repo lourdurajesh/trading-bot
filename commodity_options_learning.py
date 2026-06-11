@@ -1287,11 +1287,13 @@ class CommodityOptionsLearning:
                 _ema5_val    = _ema(df["close"], 5).iloc[-1]
                 _ema20_val   = _ema(df["close"], 20).iloc[-1]
                 _ema_gap_pct = abs(_ema5_val - _ema20_val) / _ema20_val * 100 if _ema20_val else 0
+                _vol_avail   = df["volume"].sum() > 0
+                _rvol_str    = f"RVOL={_rvol_val:.2f} (need >1.3/1.5)" if _vol_avail else "RVOL=N/A(no MCX feed)"
                 logger.info(
                     f"[CommOpts] {short} no signal — spot={spot:.2f} | "
                     f"RSI={_rsi_val:.0f} (long 55-68 / short 32-45) | "
                     f"ADX={_adx_val:.0f} (need >20) | "
-                    f"RVOL={_rvol_val:.2f} (need >1.3/1.5) | "
+                    f"{_rvol_str} | "
                     f"EMA5={_ema5_val:.2f} EMA20={_ema20_val:.2f} gap={_ema_gap_pct:.2f}%"
                 )
             except Exception as _de:

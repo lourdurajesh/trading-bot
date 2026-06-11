@@ -104,20 +104,28 @@ class TrendSpreadStrategy(MCXStrategy):
         adx_now          = adx_series.iloc[-1]
         rvol             = calc_rvol(df).iloc[-1]
 
+        # Fyers MCX data feed does not provide real-time volume for commodity
+        # futures (vol_traded_today=0 on every tick). When no volume data exists
+        # at all, skip the RVOL gate so RSI+EMA+ADX can still fire trades.
+        volume_available = df["volume"].sum() > 0
+        rvol_ok_long     = (not volume_available) or (rvol >= cfg.min_rvol_trend)
+        rvol_ok_short    = rvol_ok_long
+        rvol_label       = f"RVOL={rvol:.1f}x" if volume_available else "RVOL=N/A(no feed)"
+
         # ── LONG ────────────────────────────────────────────────────
         if (ema5 > ema20
                 and spot > ema20
                 and cfg.rsi_long_min < rsi_val < cfg.rsi_long_max
                 and ema_gap_pct >= cfg.ema_gap_min_pct
                 and adx_now >= cfg.min_adx_trend
-                and rvol >= cfg.min_rvol_trend):
+                and rvol_ok_long):
             return MCXSignalResult(
                 direction     = "LONG",
                 strategy_name = self.name,
                 signal_reason = (
                     f"EMA5={ema5:.0f}>EMA20={ema20:.0f}(+{ema_gap_pct:.1f}%), "
                     f"RSI={rsi_val:.1f} in [{cfg.rsi_long_min:.0f},{cfg.rsi_long_max:.0f}], "
-                    f"ADX={adx_now:.0f}, RVOL={rvol:.1f}x"
+                    f"ADX={adx_now:.0f}, {rvol_label}"
                 ),
                 rsi_val       = round(rsi_val, 1),
                 ema5_val      = round(ema5, 2),
@@ -130,14 +138,14 @@ class TrendSpreadStrategy(MCXStrategy):
                 and cfg.rsi_short_min < rsi_val < cfg.rsi_short_max
                 and ema_gap_pct >= cfg.ema_gap_min_pct
                 and adx_now >= cfg.min_adx_trend
-                and rvol >= cfg.min_rvol_trend):
+                and rvol_ok_short):
             return MCXSignalResult(
                 direction     = "SHORT",
                 strategy_name = self.name,
                 signal_reason = (
                     f"EMA5={ema5:.0f}<EMA20={ema20:.0f}(-{ema_gap_pct:.1f}%), "
                     f"RSI={rsi_val:.1f} in [{cfg.rsi_short_min:.0f},{cfg.rsi_short_max:.0f}], "
-                    f"ADX={adx_now:.0f}, RVOL={rvol:.1f}x"
+                    f"ADX={adx_now:.0f}, {rvol_label}"
                 ),
                 rsi_val       = round(rsi_val, 1),
                 ema5_val      = round(ema5, 2),
