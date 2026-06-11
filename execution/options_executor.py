@@ -244,6 +244,19 @@ class OptionsExecutor:
                     )
                     return result
 
+        # Log chain shape at WARNING so we can diagnose what Fyers returned.
+        if chain_data:
+            expiry_blocks = chain_data.get("expiryData", [])
+            top_level     = chain_data.get("optionsChain", [])
+            per_expiry    = sum(len(b.get("optionsChain", [])) for b in expiry_blocks)
+            first_expiry_keys = list(expiry_blocks[0].keys()) if expiry_blocks else []
+            first_strike_keys = list(top_level[0].keys())[:6] if top_level else []
+            logger.warning(
+                f"[OptionsExecutor] {underlying}: chain fetched but no tradeable strike found. "
+                f"expiries={len(expiry_blocks)} per_expiry_strikes={per_expiry} "
+                f"top_level_strikes={len(top_level)} "
+                f"first_expiry_keys={first_expiry_keys} first_strike_keys={first_strike_keys}"
+            )
         logger.info(f"[OptionsExecutor] Chain unavailable for {underlying} — using BS estimate")
         return self._simulate_option(
             underlying, short_name, lot_size, strike_step,
@@ -366,7 +379,7 @@ class OptionsExecutor:
             return chain_data
 
         except Exception as e:
-            logger.debug(f"[OptionsExecutor] Chain fetch exception: {e}")
+            logger.warning(f"[OptionsExecutor] Chain fetch exception for {underlying}: {e}")
             return None
 
     def _get_chain_for_timestamp(self, underlying: str, epoch: int) -> Optional[dict]:
@@ -394,7 +407,7 @@ class OptionsExecutor:
                 chain_data = self._normalise_layout_b(chain_data, underlying_val)
             return chain_data
         except Exception as e:
-            logger.debug(f"[OptionsExecutor] Chain fetch (ts={epoch}) exception: {e}")
+            logger.warning(f"[OptionsExecutor] Chain fetch (ts={epoch}) exception for {underlying}: {e}")
             return None
 
     def _normalise_layout_b(self, chain_data: dict, underlying_val) -> dict:
@@ -444,15 +457,31 @@ class OptionsExecutor:
             new_blk["optionsChain"] = expiry_map.get(expiry_key, [])
             new_expiry_data.append(new_blk)
 
-        # If expiryData was empty but strikes exist, synthesise expiry blocks
-        # from the unique expiry values found in the top-level strike list.
-        if not expiry_blocks and expiry_map:
+        # ── Synthesise when expiryData was empty OR key mismatch left 0 strikes ──
+        # Fyers sometimes uses different date formats in expiryData vs. top-level
+        # strike rows (e.g. expiryData has epoch int, strikes have "YYYY-MM-DD").
+        # In that case expiry_map.get(expiry_key, []) returns [] for every block.
+        # Detect the mismatch and rebuild directly from the strike-row keys.
+        total_placed = sum(len(b["optionsChain"]) for b in new_expiry_data)
+        if total_placed == 0 and expiry_map:
+            # Either expiryData was empty, or all keys mismatched.
+            logger.warning(
+                f"[OptionsExecutor] Layout B key mismatch for {len(expiry_blocks)} expiry "
+                f"blocks ({len(top_strikes)} strikes, map keys: "
+                f"{sorted(expiry_map.keys())[:3]}...) — synthesising from strike rows"
+            )
+            new_expiry_data = []
+            for expiry_key, rows in sorted(expiry_map.items()):
+                new_expiry_data.append({"expiry": expiry_key, "optionsChain": rows})
+            total_placed = sum(len(b["optionsChain"]) for b in new_expiry_data)
+        elif not expiry_blocks and expiry_map:
             logger.info(
-                f"[OptionsExecutor] Layout B: no expiryData blocks present — "
+                f"[OptionsExecutor] Layout B: no expiryData blocks — "
                 f"synthesising {len(expiry_map)} expiry blocks from strike list."
             )
             for expiry_key, rows in sorted(expiry_map.items()):
                 new_expiry_data.append({"expiry": expiry_key, "optionsChain": rows})
+            total_placed = sum(len(b["optionsChain"]) for b in new_expiry_data)
 
         result = dict(chain_data)
         result["expiryData"] = new_expiry_data
@@ -460,8 +489,7 @@ class OptionsExecutor:
         if underlying_val is not None:
             result["underlyingValue"] = underlying_val
 
-        total_placed = sum(len(b["optionsChain"]) for b in new_expiry_data)
-        logger.debug(
+        logger.info(
             f"[OptionsExecutor] Layout B normalised: "
             f"{len(top_strikes)} flat strikes → "
             f"{len(new_expiry_data)} expiry blocks ({total_placed} strikes placed)"
