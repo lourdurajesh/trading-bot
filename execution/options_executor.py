@@ -347,11 +347,24 @@ class OptionsExecutor:
             expiry_blocks      = chain_data.get("expiryData", [])
             top_level_strikes  = chain_data.get("optionsChain", [])
             per_expiry_strikes = sum(len(b.get("optionsChain", [])) for b in expiry_blocks)
-            underlying_val     = chain_data.get("underlyingValue")
+            underlying_val = chain_data.get("underlyingValue")
 
-            # Also check if underlyingValue lives inside the first expiry block
+            # Fyers sometimes moves underlyingValue between keys across versions.
+            # Check expiryData block, then top-level contract rows as fallbacks.
             if underlying_val is None and expiry_blocks:
                 underlying_val = expiry_blocks[0].get("underlyingValue")
+            if underlying_val is None and top_level_strikes:
+                # Layout B+C: spot may be embedded in each contract row
+                first_row = top_level_strikes[0]
+                for uv_key in ("underlyingValue", "underlying_value", "spot", "up", "underlying"):
+                    v = first_row.get(uv_key)
+                    if v is not None:
+                        try:
+                            underlying_val = float(v)
+                            if underlying_val > 0:
+                                break
+                        except (ValueError, TypeError):
+                            pass
 
             if expiry_blocks and per_expiry_strikes == 0 and not top_level_strikes:
                 logger.warning(
@@ -717,7 +730,14 @@ class OptionsExecutor:
                 except Exception:
                     pass
 
-            if not spot or not expiries:
+            if not spot:
+                logger.warning(
+                    f"[OptionsExecutor] {underlying}: spot=0 — "
+                    f"underlyingValue absent from chain AND store.get_ltp() returned 0. "
+                    f"Chain expiries={len(expiries)} per_expiry={sum(len(b.get('optionsChain',[])) for b in expiries)}"
+                )
+                return None
+            if not expiries:
                 return None
 
             # ── Step 1: pick expiry within DTE range ─────────────
@@ -735,12 +755,11 @@ class OptionsExecutor:
                     break
 
             if not chosen_expiry or not chosen_rows:
-                # Log all available expiries with their DTEs so we can diagnose DTE mismatches.
                 all_dtes = [(b.get("expiry", "?"), self._days_to_expiry(b.get("expiry", "")))
                             for b in expiries]
-                logger.debug(
-                    f"[OptionsExecutor] No expiry in {min_dte}-{max_dte} DTE range for {underlying}. "
-                    f"spot={spot:.0f} Available expiries+DTE: {all_dtes}"
+                logger.info(
+                    f"[OptionsExecutor] {underlying}: no expiry in {min_dte}-{max_dte} DTE. "
+                    f"spot={spot:.0f} expiry_keys_and_dte={all_dtes}"
                 )
                 return None
 
