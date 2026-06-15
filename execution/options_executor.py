@@ -354,17 +354,24 @@ class OptionsExecutor:
             if underlying_val is None and expiry_blocks:
                 underlying_val = expiry_blocks[0].get("underlyingValue")
             if underlying_val is None and top_level_strikes:
-                # Layout B+C: spot may be embedded in each contract row
-                first_row = top_level_strikes[0]
-                for uv_key in ("underlyingValue", "underlying_value", "spot", "up", "underlying"):
-                    v = first_row.get(uv_key)
-                    if v is not None:
-                        try:
-                            underlying_val = float(v)
-                            if underlying_val > 0:
-                                break
-                        except (ValueError, TypeError):
-                            pass
+                # Fyers v3+: first row in optionsChain is the underlying itself
+                # (option_type="", strike_price=-1) with spot in "ltp" or "fp".
+                for row in top_level_strikes[:3]:
+                    ot = str(row.get("option_type", "") or "").upper().strip()
+                    if ot in ("CE", "PE"):
+                        continue   # real option row — skip
+                    for uv_key in ("ltp", "fp", "underlyingValue", "underlying_value", "spot", "up"):
+                        v = row.get(uv_key)
+                        if v is not None:
+                            try:
+                                fval = float(v)
+                                if fval > 100:   # plausible spot price
+                                    underlying_val = fval
+                                    break
+                            except (ValueError, TypeError):
+                                pass
+                    if underlying_val:
+                        break
 
             if expiry_blocks and per_expiry_strikes == 0 and not top_level_strikes:
                 logger.warning(
@@ -505,9 +512,10 @@ class OptionsExecutor:
 
         # ── Group strikes by expiry key ───────────────────────────
         # Fyers has used "expiry", "expiryDate", and sometimes no key at all.
-        # When the key is absent, try to extract the date from the "description"
-        # field (format: "SYMBOL 2026JUN25 STRIKE CE") so we don't synthesise
-        # an expiry="" block that _days_to_expiry() can't parse.
+        # When the key is absent, try description[1] (date token), then fall back
+        # to parsing the expiry date out of the NFO symbol itself (ex_symbol).
+        # A "" key produces an expiry="" block that _days_to_expiry() returns 0 for,
+        # causing every DTE check to fail — so we must extract a real date here.
         expiry_map: dict[str, list[dict]] = defaultdict(list)
         for row in top_strikes:
             key = row.get("expiry") or row.get("expiryDate") or ""
@@ -515,6 +523,13 @@ class OptionsExecutor:
                 desc = (row.get("description") or "").strip().split()
                 if len(desc) >= 2:
                     key = desc[1]   # e.g. "2026JUN25" from "BANKNIFTY 2026JUN25 49000 CE"
+            if not key:
+                # description is empty or only 1 token — extract date from NFO symbol.
+                # "NSE:NIFTY2661724800CE" → "2026-06-17"
+                # Fyers puts short name in ex_symbol ("NIFTY") and full symbol in "symbol".
+                # Try both; the full symbol is the reliable one.
+                key = (self._expiry_from_ex_symbol(row.get("ex_symbol", "")) or
+                       self._expiry_from_ex_symbol(row.get("symbol", "")))
             expiry_map[key].append(row)
 
         # ── Rebuild expiryData with populated optionsChain ────────
@@ -550,6 +565,28 @@ class OptionsExecutor:
             for expiry_key, rows in sorted(expiry_map.items()):
                 new_expiry_data.append({"expiry": expiry_key, "optionsChain": rows})
             total_placed = sum(len(b["optionsChain"]) for b in new_expiry_data)
+
+        # ── Safety net: fix any blocks that still have expiry="" ────
+        # Happens when Fyers rows all hash to "" (no expiry field, short ex_symbol).
+        # Skip the embedded underlying row (option_type != CE/PE) and try both
+        # the full "symbol" field and the shorter "ex_symbol" field on actual options.
+        for blk in new_expiry_data:
+            if not blk.get("expiry") and blk.get("optionsChain"):
+                derived = ""
+                for row in blk["optionsChain"]:
+                    otype = str(row.get("option_type", "") or "").upper().strip()
+                    if otype not in ("CE", "PE"):
+                        continue   # skip embedded underlying row
+                    derived = (self._expiry_from_ex_symbol(row.get("symbol", "") or "") or
+                               self._expiry_from_ex_symbol(row.get("ex_symbol", "") or ""))
+                    if derived:
+                        break
+                if derived:
+                    blk["expiry"] = derived
+                    logger.info(
+                        f"[OptionsExecutor] Layout B: expiry was '' — "
+                        f"derived '{derived}' from option symbol"
+                    )
 
         result = dict(chain_data)
         result["expiryData"] = new_expiry_data
@@ -1013,6 +1050,53 @@ class OptionsExecutor:
             except ValueError:
                 pass
         return 0
+
+    @staticmethod
+    def _expiry_from_ex_symbol(sym: str) -> str:
+        """
+        Extract YYYY-MM-DD expiry from a Fyers NFO option symbol.
+
+        Handles both weekly (NSE:NIFTY2661724800CE) and monthly (NSE:NIFTY26JUN24500CE).
+        Weekly format: UNDERLYING + YY + M(1-9 / O=Oct / N=Nov / D=Dec) + DD + strike + CE/PE
+        Monthly format: UNDERLYING + YY + MON(3-letter) + strike + CE/PE
+
+        Returns "" if the symbol cannot be parsed.
+        """
+        import re
+        import calendar as _cal
+
+        sym_part = sym.split(":")[-1]   # strip NSE:/MCX: prefix
+
+        # Weekly: e.g. NIFTY2661724800CE  →  YY=26 M=6 DD=17 → 2026-06-17
+        m = re.match(r'^[A-Z]+(\d{2})([1-9OND])(\d{2})\d+(CE|PE)$', sym_part, re.IGNORECASE)
+        if m:
+            try:
+                yy = int(m.group(1))
+                mc = m.group(2).upper()
+                dd = int(m.group(3))
+                month_map = {"O": 10, "N": 11, "D": 12}
+                month = month_map.get(mc, int(mc) if mc.isdigit() else 0)
+                if month and 1 <= dd <= 31:
+                    return datetime(2000 + yy, month, dd).strftime("%Y-%m-%d")
+            except (ValueError, Exception):
+                pass
+
+        # Monthly: e.g. NIFTY26JUN24500CE → last Thursday of June 2026
+        m = re.match(r'^[A-Z]+(\d{2})([A-Z]{3})\d+(CE|PE)$', sym_part, re.IGNORECASE)
+        if m:
+            try:
+                yy  = int(m.group(1))
+                mon = m.group(2).upper()
+                dt_base = datetime.strptime(f"{2000 + yy}{mon}01", "%Y%b%d")
+                year, month = dt_base.year, dt_base.month
+                last_day = _cal.monthrange(year, month)[1]
+                for day in range(last_day, last_day - 7, -1):
+                    if datetime(year, month, day).weekday() == 3:   # last Thursday
+                        return datetime(year, month, day).strftime("%Y-%m-%d")
+            except (ValueError, Exception):
+                pass
+
+        return ""
 
     @staticmethod
     def _get_atm_iv(rows: list[dict], spot: float) -> float:
