@@ -458,10 +458,17 @@ class OptionsExecutor:
         expiry_blocks: list[dict] = chain_data.get("expiryData", [])
 
         # ── Group strikes by expiry key ───────────────────────────
-        # Fyers has used both "expiry" and "expiryDate" in different API versions.
+        # Fyers has used "expiry", "expiryDate", and sometimes no key at all.
+        # When the key is absent, try to extract the date from the "description"
+        # field (format: "SYMBOL 2026JUN25 STRIKE CE") so we don't synthesise
+        # an expiry="" block that _days_to_expiry() can't parse.
         expiry_map: dict[str, list[dict]] = defaultdict(list)
         for row in top_strikes:
             key = row.get("expiry") or row.get("expiryDate") or ""
+            if not key:
+                desc = (row.get("description") or "").strip().split()
+                if len(desc) >= 2:
+                    key = desc[1]   # e.g. "2026JUN25" from "BANKNIFTY 2026JUN25 49000 CE"
             expiry_map[key].append(row)
 
         # ── Rebuild expiryData with populated optionsChain ────────
@@ -862,17 +869,37 @@ class OptionsExecutor:
     # ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _days_to_expiry(expiry_str: str) -> int:
-        try:
-            expiry = datetime.strptime(expiry_str, "%Y-%m-%d").replace(tzinfo=IST)
-            now    = datetime.now(tz=IST)
-            delta  = expiry - now
-            # Ceil: if any partial day remains, count it as a full day.
-            # Without this, Tuesday 9:30 AM → Thursday expiry shows 2 DTE (not 3)
-            # because timedelta.days truncates the 14-hour remainder.
-            return max(0, delta.days + (1 if delta.seconds > 0 else 0))
-        except Exception:
+    def _days_to_expiry(expiry_str) -> int:
+        """
+        Parse an expiry value from a Fyers chain response and return days to expiry.
+
+        Fyers has returned expiry in multiple formats across API versions:
+          "2026-06-25"    ISO date (Layout A original)
+          "2026JUN25"     YYYY+abbr_month+DD (Layout C description-derived)
+          "25-Jun-2026"   DD-Mon-YYYY
+          1750601400      Unix epoch (int or string)
+        """
+        if not expiry_str:
             return 0
+        now = datetime.now(tz=IST)
+        # Unix epoch (integer or digit-only string)
+        try:
+            epoch = int(str(expiry_str))
+            expiry = datetime.fromtimestamp(epoch, tz=IST)
+            delta  = expiry - now
+            return max(0, delta.days + (1 if delta.seconds > 0 else 0))
+        except (ValueError, OSError):
+            pass
+        # Try known string formats
+        for fmt in ("%Y-%m-%d", "%Y%b%d", "%d-%b-%Y", "%d %b %Y", "%d/%m/%Y"):
+            try:
+                expiry = datetime.strptime(str(expiry_str), fmt).replace(tzinfo=IST)
+                delta  = expiry - now
+                # Ceil: if any partial day remains, count it as a full day.
+                return max(0, delta.days + (1 if delta.seconds > 0 else 0))
+            except ValueError:
+                pass
+        return 0
 
     @staticmethod
     def _get_atm_iv(rows: list[dict], spot: float) -> float:
