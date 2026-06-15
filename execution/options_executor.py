@@ -609,13 +609,18 @@ class OptionsExecutor:
             return None, None
 
         def _ltp_from_row(row: dict) -> float:
-            fp  = row.get("fp")
+            # Fyers uses different price field names across versions: ltp, lp, fp, last_price.
+            for price_key in ("ltp", "lp", "last_price", "fp"):
+                v = row.get(price_key)
+                if v is not None:
+                    try:
+                        fv = float(v)
+                        if fv > 0:
+                            return fv
+                    except (ValueError, TypeError):
+                        pass
             bid = float(row.get("bid", 0) or 0)
             ask = float(row.get("ask", 0) or 0)
-            if fp is not None:
-                v = float(fp or 0)
-                if v > 0:
-                    return v
             if bid > 0 and ask > 0:
                 return (bid + ask) / 2
             return max(bid, ask)
@@ -730,7 +735,13 @@ class OptionsExecutor:
                     break
 
             if not chosen_expiry or not chosen_rows:
-                logger.debug(f"[OptionsExecutor] No expiry in {min_dte}-{max_dte} DTE range for {underlying}")
+                # Log all available expiries with their DTEs so we can diagnose DTE mismatches.
+                all_dtes = [(b.get("expiry", "?"), self._days_to_expiry(b.get("expiry", "")))
+                            for b in expiries]
+                logger.debug(
+                    f"[OptionsExecutor] No expiry in {min_dte}-{max_dte} DTE range for {underlying}. "
+                    f"spot={spot:.0f} Available expiries+DTE: {all_dtes}"
+                )
                 return None
 
             # ── Step 2: pick strike nearest to target delta ───────
@@ -763,6 +774,17 @@ class OptionsExecutor:
                     }
 
             if not best_row or best_row["strike"] <= 0:
+                # All strikes were skipped (ltp=0). Log a sample to diagnose price field names.
+                if chosen_rows:
+                    s = chosen_rows[len(chosen_rows) // 2]   # mid-chain row (near ATM)
+                    logger.warning(
+                        f"[OptionsExecutor] {underlying}: {len(chosen_rows)} paired strikes "
+                        f"(expiry={chosen_expiry} DTE={chosen_dte}) all have ltp=0 "
+                        f"for option_type={option_type}. "
+                        f"Sample row keys={list(s.keys())} "
+                        f"call_ltp={s.get('call_ltp')} put_ltp={s.get('put_ltp')} "
+                        f"strikePrice={s.get('strikePrice')}"
+                    )
                 return None
 
             # ── Step 3: compute PCR for the chosen expiry ─────────
