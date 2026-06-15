@@ -126,6 +126,9 @@ class DirectionalOptionsStrategy(BaseStrategy):
             logger.info(f"[DirectionalOptions] {short} SKIP — no valid option in chain (DTE {MIN_DTE}-{MAX_DTE})")
             return None
 
+        logger.info(f"[DirectionalOptions] {short} Found option: {opt.symbol} | strike={opt.strike} DTE={opt.dte} "
+                    f"delta={opt.delta:.2f} iv={opt.iv:.2f} premium={opt.ltp:.2f}")
+
         if opt.is_simulated:
             logger.info(f"[DirectionalOptions] {short} SKIP — chain unavailable, BS estimate only (no real price to trade)")
             return None

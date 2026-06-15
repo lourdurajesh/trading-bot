@@ -541,6 +541,71 @@ def commodity_ltp_debug():
         return {"error": str(e)}
 
 
+@app.get("/chain/debug")
+def nse_chain_debug(symbol: str = "NSE:NIFTY50-INDEX"):
+    """
+    Debug: shows raw Fyers optionchain response + normalized form for an NSE index.
+    Call: /chain/debug?symbol=NSE:NIFTY50-INDEX  (or NIFTYBANK-INDEX, FINNIFTY-INDEX)
+    Returns raw field names, underlyingValue location, and first 3 normalized pairs with prices.
+    """
+    try:
+        from execution.fyers_broker import fyers_broker
+        from execution.options_executor import options_executor
+
+        raw_data = {}
+        raw_error = None
+        if fyers_broker._initialised:
+            try:
+                resp = fyers_broker._client.optionchain(data={
+                    "symbol": symbol, "strikecount": 5, "timestamp": "",
+                })
+                if resp.get("s") == "ok":
+                    d = resp.get("data", {})
+                    top_strikes = d.get("optionsChain", [])
+                    expiry_blocks = d.get("expiryData", [])
+                    raw_data = {
+                        "top_level_keys": list(d.keys()),
+                        "underlyingValue": d.get("underlyingValue"),
+                        "expiry_blocks": len(expiry_blocks),
+                        "top_level_strikes": len(top_strikes),
+                        "first_expiry_block_keys": list(expiry_blocks[0].keys()) if expiry_blocks else [],
+                        "first_expiry_block_expiry": expiry_blocks[0].get("expiry") if expiry_blocks else None,
+                        "first_expiry_block_per_expiry_strikes": len(expiry_blocks[0].get("optionsChain", [])) if expiry_blocks else 0,
+                        "first_strike_ALL_keys": list(top_strikes[0].keys()) if top_strikes else [],
+                        "first_strike_full": top_strikes[0] if top_strikes else {},
+                    }
+                else:
+                    raw_error = resp
+            except Exception as e:
+                raw_error = str(e)
+        else:
+            raw_error = "fyers_broker not initialised"
+
+        # Normalised view (uses 60s cache; pass force=True to bypass)
+        norm = options_executor._get_chain(symbol, force=True)
+        norm_info = {}
+        if norm:
+            expiries = norm.get("expiryData", [])
+            norm_info = {
+                "underlyingValue": norm.get("underlyingValue"),
+                "expiry_blocks": len(expiries),
+                "first_expiry_key": expiries[0].get("expiry") if expiries else None,
+                "per_expiry_strikes": sum(len(b.get("optionsChain", [])) for b in expiries),
+                "first_3_pairs": expiries[0].get("optionsChain", [])[:3] if expiries else [],
+            }
+
+        from data.data_store import store as _store
+        return {
+            "raw": raw_data,
+            "raw_error": raw_error,
+            "normalised": norm_info,
+            "store_ltp": _store.get_ltp(symbol),
+        }
+    except Exception as e:
+        logger.exception(f"[Dashboard] /chain/debug error: {e}")
+        return {"error": str(e)}
+
+
 @app.get("/commodity/instruments")
 def commodity_get_instruments():
     """List all MCX instruments with enabled/disabled status and full metadata."""
