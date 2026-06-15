@@ -407,15 +407,19 @@ class OptionsExecutor:
             if resp.get("s") != "ok":
                 logger.debug(f"[OptionsExecutor] Chain fetch (ts={epoch}) failed: {resp.get('message')}")
                 return None
-            chain_data       = resp.get("data", {})
-            expiry_blocks    = chain_data.get("expiryData", [])
-            top_level_strikes = chain_data.get("optionsChain", [])
-            underlying_val   = chain_data.get("underlyingValue")
+            chain_data         = resp.get("data", {})
+            expiry_blocks      = chain_data.get("expiryData", [])
+            top_level_strikes  = chain_data.get("optionsChain", [])
+            underlying_val     = chain_data.get("underlyingValue")
             if underlying_val is None and expiry_blocks:
                 underlying_val = expiry_blocks[0].get("underlyingValue")
             per_expiry_strikes = sum(len(b.get("optionsChain", [])) for b in expiry_blocks)
             if per_expiry_strikes == 0 and top_level_strikes:
                 chain_data = self._normalise_layout_b(chain_data, underlying_val)
+            elif per_expiry_strikes > 0 and expiry_blocks:
+                sample = expiry_blocks[0].get("optionsChain", [{}])[0]
+                if "fp" in sample and "call_ltp" not in sample:
+                    chain_data = self._normalise_layout_c(chain_data, float(underlying_val or 0))
             return chain_data
         except Exception as e:
             logger.warning(f"[OptionsExecutor] Chain fetch (ts={epoch}) exception for {underlying}: {e}")
