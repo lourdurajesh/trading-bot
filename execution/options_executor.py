@@ -367,6 +367,26 @@ class OptionsExecutor:
                     f"{len(top_level_strikes)} strikes at top level. Normalising to per-expiry layout."
                 )
                 chain_data = self._normalise_layout_b(chain_data, underlying_val)
+                # After B→A, check if the per-expiry strikes are still Layout C format
+                # (individual contract rows: fp/ex_symbol/bid/ask, no call_ltp/strikePrice).
+                # Fyers now sends flat individual CE/PE contracts at the top level — the two
+                # normalizations must run in sequence: B first (group by expiry), then C (pair CE/PE).
+                _new_expiries = chain_data.get("expiryData", [])
+                if _new_expiries:
+                    _sample = _new_expiries[0].get("optionsChain", [{}])[0]
+                    if "fp" in _sample and "call_ltp" not in _sample:
+                        _spot_val = float(chain_data.get("underlyingValue") or 0)
+                        if not _spot_val:
+                            try:
+                                from data.data_store import store as _ds
+                                _spot_val = float(_ds.get_ltp(underlying) or 0)
+                            except Exception:
+                                pass
+                        logger.info(
+                            f"[OptionsExecutor] {underlying}: Layout B+C detected "
+                            f"({len(top_level_strikes)} individual contract rows) — normalising to strike pairs."
+                        )
+                        chain_data = self._normalise_layout_c(chain_data, _spot_val)
             elif per_expiry_strikes > 0 and expiry_blocks:
                 # Layout C detection: rows have individual contract keys (fp/ex_symbol/bid/ask)
                 # instead of paired strike keys (call_ltp/put_ltp/strikePrice).
@@ -416,6 +436,19 @@ class OptionsExecutor:
             per_expiry_strikes = sum(len(b.get("optionsChain", [])) for b in expiry_blocks)
             if per_expiry_strikes == 0 and top_level_strikes:
                 chain_data = self._normalise_layout_b(chain_data, underlying_val)
+                # Layout B+C combo: after grouping strikes by expiry, pair CE/PE rows
+                _new_expiries = chain_data.get("expiryData", [])
+                if _new_expiries:
+                    _sample = _new_expiries[0].get("optionsChain", [{}])[0]
+                    if "fp" in _sample and "call_ltp" not in _sample:
+                        _spot_val = float(chain_data.get("underlyingValue") or 0)
+                        if not _spot_val:
+                            try:
+                                from data.data_store import store as _ds
+                                _spot_val = float(_ds.get_ltp(underlying) or 0)
+                            except Exception:
+                                pass
+                        chain_data = self._normalise_layout_c(chain_data, _spot_val)
             elif per_expiry_strikes > 0 and expiry_blocks:
                 sample = expiry_blocks[0].get("optionsChain", [{}])[0]
                 if "fp" in sample and "call_ltp" not in sample:
