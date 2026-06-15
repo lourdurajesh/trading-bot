@@ -367,6 +367,17 @@ class OptionsExecutor:
                     f"{len(top_level_strikes)} strikes at top level. Normalising to per-expiry layout."
                 )
                 chain_data = self._normalise_layout_b(chain_data, underlying_val)
+            elif per_expiry_strikes > 0 and expiry_blocks:
+                # Layout C detection: rows have individual contract keys (fp/ex_symbol/bid/ask)
+                # instead of paired strike keys (call_ltp/put_ltp/strikePrice).
+                sample = expiry_blocks[0].get("optionsChain", [{}])[0]
+                if "fp" in sample and "call_ltp" not in sample:
+                    spot_val = float(underlying_val or 0)
+                    logger.info(
+                        f"[OptionsExecutor] {underlying}: Layout C detected "
+                        f"({per_expiry_strikes} individual contract rows) — normalising to strike pairs."
+                    )
+                    chain_data = self._normalise_layout_c(chain_data, spot_val)
 
             # Log first expiry block keys at DEBUG to help trace future format changes
             if expiry_blocks:
@@ -493,6 +504,93 @@ class OptionsExecutor:
             f"[OptionsExecutor] Layout B normalised: "
             f"{len(top_strikes)} flat strikes → "
             f"{len(new_expiry_data)} expiry blocks ({total_placed} strikes placed)"
+        )
+        return result
+
+    def _normalise_layout_c(self, chain_data: dict, spot: float) -> dict:
+        """
+        Layout C (observed for FINNIFTY/MIDCPNIFTY): each row in expiryData[i]["optionsChain"]
+        is a single contract (one CE or PE) with keys: ask, bid, fp, ex_symbol, exchange, description.
+        There is no call_ltp/put_ltp/strikePrice/call_delta per row.
+
+        Normalise into Layout A: one row per strike with call_ltp, put_ltp, strikePrice, call_delta.
+        Strike is parsed from ex_symbol (e.g. NSE:FINNIFTY26JUN2525200CE → 25200).
+        Delta is estimated from moneyness since the chain does not provide greeks.
+        """
+        import re, math
+
+        def _parse_contract(sym: str, description: str = "") -> tuple:
+            # Prefer description which has unambiguous spaces: "FINNIFTY 2026JUN25 25200 CE"
+            # Fyers ex_symbol embeds year before strike (e.g. 26JUN2525200CE) making
+            # a pure digit regex ambiguous — description is always space-delimited.
+            if description:
+                parts = description.strip().split()
+                if len(parts) >= 2 and parts[-1] in ("CE", "PE"):
+                    try:
+                        return float(parts[-2]), parts[-1]
+                    except ValueError:
+                        pass
+            # Fallback: parse ex_symbol. Use a 4-6 digit strike (avoids year prefix).
+            m = re.search(r'(\d{4,6})(CE|PE)$', sym)
+            if not m:
+                return None, None
+            return float(m.group(1)), m.group(2)
+
+        def _ltp_from_row(row: dict) -> float:
+            fp  = row.get("fp")
+            bid = float(row.get("bid", 0) or 0)
+            ask = float(row.get("ask", 0) or 0)
+            if fp is not None:
+                v = float(fp or 0)
+                if v > 0:
+                    return v
+            if bid > 0 and ask > 0:
+                return (bid + ask) / 2
+            return max(bid, ask)
+
+        def _call_delta(strike: float, spot: float) -> float:
+            if spot <= 0:
+                return 0.5
+            # Simple moneyness-based delta proxy — no IV needed.
+            # ATM(strike==spot)→0.5, deep ITM(call)→~1, deep OTM→~0.
+            return max(0.01, min(0.99, 0.5 + 0.5 * math.tanh((spot - strike) / (spot * 0.05))))
+
+        new_expiry_data = []
+        for blk in chain_data.get("expiryData", []):
+            pairs: dict[float, dict] = {}
+            for row in blk.get("optionsChain", []):
+                strike, side = _parse_contract(row.get("ex_symbol", ""), row.get("description", ""))
+                if strike is None:
+                    continue
+                ltp = _ltp_from_row(row)
+                if strike not in pairs:
+                    cd = _call_delta(strike, spot)
+                    pairs[strike] = {
+                        "strikePrice": strike,
+                        "call_ltp":    0.0,
+                        "put_ltp":     0.0,
+                        "call_delta":  cd,
+                        "put_delta":   round(1.0 - cd, 4),
+                        "call_iv":     0.0,
+                        "put_iv":      0.0,
+                        "call_oi":     0,
+                        "put_oi":      0,
+                    }
+                if side == "CE":
+                    pairs[strike]["call_ltp"] = ltp
+                else:
+                    pairs[strike]["put_ltp"] = ltp
+
+            new_blk = dict(blk)
+            new_blk["optionsChain"] = sorted(pairs.values(), key=lambda r: r["strikePrice"])
+            new_expiry_data.append(new_blk)
+
+        result = dict(chain_data)
+        result["expiryData"] = new_expiry_data
+        total = sum(len(b["optionsChain"]) for b in new_expiry_data)
+        logger.info(
+            f"[OptionsExecutor] Layout C normalised: "
+            f"individual contracts → {total} strike pairs across {len(new_expiry_data)} expiry blocks"
         )
         return result
 
