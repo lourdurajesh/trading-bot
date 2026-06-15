@@ -553,32 +553,60 @@ class OptionsExecutor:
 
     def _normalise_layout_c(self, chain_data: dict, spot: float) -> dict:
         """
-        Layout C (observed for FINNIFTY/MIDCPNIFTY): each row in expiryData[i]["optionsChain"]
-        is a single contract (one CE or PE) with keys: ask, bid, fp, ex_symbol, exchange, description.
-        There is no call_ltp/put_ltp/strikePrice/call_delta per row.
-
-        Normalise into Layout A: one row per strike with call_ltp, put_ltp, strikePrice, call_delta.
-        Strike is parsed from ex_symbol (e.g. NSE:FINNIFTY26JUN2525200CE → 25200).
-        Delta is estimated from moneyness since the chain does not provide greeks.
+        Layout C: each row in expiryData[i]["optionsChain"] is a single CE or PE contract.
+        Keys observed: ask, bid, fp, ex_symbol, exchange, description (may have more).
+        Normalise into Layout A: one row per strike pair with call_ltp, put_ltp, strikePrice.
         """
         import re, math
 
-        def _parse_contract(sym: str, description: str = "") -> tuple:
-            # Prefer description which has unambiguous spaces: "FINNIFTY 2026JUN25 25200 CE"
-            # Fyers ex_symbol embeds year before strike (e.g. 26JUN2525200CE) making
-            # a pure digit regex ambiguous — description is always space-delimited.
+        def _parse_contract(row: dict) -> tuple:
+            sym         = row.get("ex_symbol", "") or ""
+            description = row.get("description", "") or ""
+
+            # 1. Direct keys on the row — most reliable if Fyers adds them.
+            strike_val = None
+            for k in ("strike_price", "strikePrice", "strike"):
+                v = row.get(k)
+                if v is not None:
+                    try:
+                        strike_val = float(v)
+                        break
+                    except (ValueError, TypeError):
+                        pass
+            side_val = None
+            for k in ("option_type", "optionType", "type", "side", "cp_type"):
+                tv = str(row.get(k, "") or "").upper().strip()
+                if tv in ("CE", "CALL", "C"):
+                    side_val = "CE"
+                    break
+                if tv in ("PE", "PUT", "P"):
+                    side_val = "PE"
+                    break
+            if strike_val and side_val:
+                return strike_val, side_val
+
+            # 2. Description (space-delimited): last token = CE/PE/CALL/PUT, second-last = strike.
             if description:
                 parts = description.strip().split()
-                if len(parts) >= 2 and parts[-1] in ("CE", "PE"):
-                    try:
-                        return float(parts[-2]), parts[-1]
-                    except ValueError:
-                        pass
-            # Fallback: parse ex_symbol. Use a 4-6 digit strike (avoids year prefix).
-            m = re.search(r'(\d{4,6})(CE|PE)$', sym)
-            if not m:
-                return None, None
-            return float(m.group(1)), m.group(2)
+                if parts:
+                    last = parts[-1].upper()
+                    if last in ("CE", "PE", "CALL", "PUT"):
+                        side_val = "CE" if last in ("CE", "CALL") else "PE"
+                        try:
+                            strike_val = float(parts[-2])
+                            return strike_val, side_val
+                        except (ValueError, IndexError):
+                            pass
+
+            # 3. ex_symbol regex: digits (possibly decimal) followed by CE/PE at end.
+            m = re.search(r'(\d+(?:\.\d+)?)(CE|PE)$', sym, re.IGNORECASE)
+            if m:
+                try:
+                    return float(m.group(1)), m.group(2).upper()
+                except ValueError:
+                    pass
+
+            return None, None
 
         def _ltp_from_row(row: dict) -> float:
             fp  = row.get("fp")
@@ -595,15 +623,14 @@ class OptionsExecutor:
         def _call_delta(strike: float, spot: float) -> float:
             if spot <= 0:
                 return 0.5
-            # Simple moneyness-based delta proxy — no IV needed.
-            # ATM(strike==spot)→0.5, deep ITM(call)→~1, deep OTM→~0.
             return max(0.01, min(0.99, 0.5 + 0.5 * math.tanh((spot - strike) / (spot * 0.05))))
 
         new_expiry_data = []
         for blk in chain_data.get("expiryData", []):
             pairs: dict[float, dict] = {}
-            for row in blk.get("optionsChain", []):
-                strike, side = _parse_contract(row.get("ex_symbol", ""), row.get("description", ""))
+            rows = blk.get("optionsChain", [])
+            for row in rows:
+                strike, side = _parse_contract(row)
                 if strike is None:
                     continue
                 ltp = _ltp_from_row(row)
@@ -624,6 +651,18 @@ class OptionsExecutor:
                     pairs[strike]["call_ltp"] = ltp
                 else:
                     pairs[strike]["put_ltp"] = ltp
+
+            if not pairs and rows:
+                # Log the first row so we can diagnose any future format changes.
+                sample = rows[0]
+                logger.warning(
+                    f"[OptionsExecutor] Layout C: 0 pairs from {len(rows)} rows — "
+                    f"_parse_contract failed for all. "
+                    f"Row keys={list(sample.keys())} "
+                    f"ex_symbol={sample.get('ex_symbol', 'N/A')!r} "
+                    f"description={sample.get('description', 'N/A')!r} "
+                    f"full_row={sample}"
+                )
 
             new_blk = dict(blk)
             new_blk["optionsChain"] = sorted(pairs.values(), key=lambda r: r["strikePrice"])
