@@ -1778,9 +1778,16 @@ class CommodityOptionsLearning:
             if exit_reason:
                 lot_size   = trade.get("lot_size", 1)
                 lots       = trade.get("lots", 1)
+                # Estimated P&L (spot-move × delta) — the historical behaviour.
                 pnl_r      = round(pnl_approx / net_debit, 2) if net_debit > 0 else 0
-                # Scale PnL by actual lots traded
                 pnl_approx = round(pnl_approx * lot_size * lots, 2)
+                pnl_source = "ESTIMATE"
+
+                # ── Honest P&L: mark to the REAL option spread when the live chain
+                #    is available. Falls back to the labeled estimate otherwise. ──
+                real_pnl, real_r, real_src = self._realized_pnl_from_chain(trade, lot_size, lots)
+                if real_pnl is not None:
+                    pnl_approx, pnl_r, pnl_source = real_pnl, real_r, real_src
 
                 # ── Real exit: place broker close orders ──────────
                 if self._is_real():
@@ -1790,7 +1797,7 @@ class CommodityOptionsLearning:
                         f"spot={spot:.2f} pnl=₹{pnl_approx:+.0f} ({pnl_r:+.1f}R)"
                     )
 
-                self._db_close(trade["id"], spot, exit_reason, pnl_approx, pnl_r)
+                self._db_close(trade["id"], spot, exit_reason, pnl_approx, pnl_r, pnl_source)
                 closed.append(key)
                 logger.info(
                     f"[CommOpts] {'REAL' if self._is_real() else 'PAPER'} CLOSE "
@@ -2040,6 +2047,53 @@ class CommodityOptionsLearning:
             logger.debug(f"[CommOpts] Chain lookup error: {exc}")
         return None, None, None
 
+    def _realized_pnl_from_chain(self, trade: dict, lot_size: int, lots: int):
+        """
+        Honest P&L: mark the debit spread to its REAL current value from the live
+        option chain at close, instead of the spot×delta estimate.
+
+        Realized P&L per unit = (current_spread_value − entry_net_debit), where
+        current_spread_value = current_ATM_premium − current_OTM_premium.
+
+        Returns (pnl_inr, pnl_r, 'CHAIN_MARK') when the live chain prices both legs,
+        else (None, None, None) so the caller falls back to the labeled ESTIMATE.
+        """
+        try:
+            instrument = trade["instrument"]
+            opt_type   = trade.get("opt_type") or ("call" if trade["direction"] == "LONG" else "put")
+            atm_strike = trade.get("atm_strike")
+            otm_strike = trade.get("otm_strike")
+            net_debit  = trade.get("net_debit", 0) or 0
+            if atm_strike is None or otm_strike is None or net_debit <= 0:
+                return None, None, None
+
+            # Remaining DTE of the trade's original expiry (entry DTE minus days held).
+            entry_dte = int(trade.get("dte", 0) or 0)
+            try:
+                held = (datetime.now(tz=IST)
+                        - datetime.fromisoformat(trade["entry_time"]).replace(tzinfo=IST)).days
+            except Exception:
+                held = 0
+            rem_dte = max(0, entry_dte - held)
+
+            chain = self._get_chain(_fyers_sym(instrument))
+            if not chain:
+                return None, None, None
+
+            cur_atm, _, _ = self._chain_lookup(chain, atm_strike, opt_type, rem_dte)
+            cur_otm, _, _ = self._chain_lookup(chain, otm_strike, opt_type, rem_dte)
+            if cur_atm is None or cur_otm is None:
+                return None, None, None
+
+            cur_spread        = cur_atm - cur_otm
+            realized_per_unit = cur_spread - net_debit
+            pnl_inr           = round(realized_per_unit * lot_size * lots, 2)
+            pnl_r             = round(realized_per_unit / net_debit, 2)
+            return pnl_inr, pnl_r, "CHAIN_MARK"
+        except Exception as exc:
+            logger.debug(f"[CommOpts] real-mark error: {exc}")
+            return None, None, None
+
     # ─────────────────────────────────────────────────────────────
     # DATABASE
     # ─────────────────────────────────────────────────────────────
@@ -2073,6 +2127,8 @@ class CommodityOptionsLearning:
                     status          TEXT DEFAULT 'OPEN',
                     exit_reason     TEXT DEFAULT '',
                     data_source     TEXT DEFAULT 'bs_estimate',
+                    pnl_source      TEXT DEFAULT 'ESTIMATE',
+                    fees            REAL DEFAULT 0,
                     entry_time      TEXT,
                     exit_time       TEXT DEFAULT '',
                     metadata        TEXT DEFAULT '{}'
@@ -2081,6 +2137,12 @@ class CommodityOptionsLearning:
             for col_sql in [
                 "ALTER TABLE commodity_learning_trades ADD COLUMN lots       INTEGER DEFAULT 1",
                 "ALTER TABLE commodity_learning_trades ADD COLUMN trade_mode TEXT    DEFAULT 'PAPER'",
+                # pnl_source: how the recorded P&L was derived — REAL vs estimated.
+                #   CHAIN_MARK = marked to the live option spread at close (real)
+                #   ESTIMATE   = spot-move × delta heuristic (NOT a real fill)
+                # Existing closed rows used the spot×delta estimate → default ESTIMATE is correct.
+                "ALTER TABLE commodity_learning_trades ADD COLUMN pnl_source TEXT DEFAULT 'ESTIMATE'",
+                "ALTER TABLE commodity_learning_trades ADD COLUMN fees       REAL DEFAULT 0",
             ]:
                 try:
                     conn.execute(col_sql)
@@ -2161,17 +2223,17 @@ class CommodityOptionsLearning:
 
     def _db_close(
         self, trade_id: str, exit_spot: float,
-        reason: str, pnl: float, pnl_r: float,
+        reason: str, pnl: float, pnl_r: float, pnl_source: str = "ESTIMATE",
     ) -> None:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
                 UPDATE commodity_learning_trades
                 SET spot_at_exit=?, exit_reason=?, pnl_approx=?, pnl_r=?,
-                    status='CLOSED', exit_time=?
+                    pnl_source=?, status='CLOSED', exit_time=?
                 WHERE id=?
             """, (
                 exit_spot, reason,
-                round(pnl, 2), round(pnl_r, 2),
+                round(pnl, 2), round(pnl_r, 2), pnl_source,
                 datetime.now(tz=IST).isoformat(),
                 trade_id,
             ))
@@ -2269,6 +2331,7 @@ class CommodityOptionsLearning:
             "by_instrument":  by_instrument,
             "by_strategy":    by_strategy,
             "data_sources":   _count_field(trades, "data_source"),
+            "pnl_sources":    _count_field(trades, "pnl_source"),
             "exit_reasons":   _count_field(trades, "exit_reason"),
             "open_positions": [
                 {k: v for k, v in t.items() if k != "metadata"}

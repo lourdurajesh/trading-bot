@@ -843,7 +843,10 @@ function CommodityTradesTable({trades: tds, ltps: lps, onManualClose, mcxConfig}
                     : !isOpen && t.pnl_approx != null
                       ? <>
                           <span className={t.pnl_approx>=0?"good":"bad"}>{t.pnl_approx>=0?"+":""}₹{Math.abs(t.pnl_approx).toFixed(0)}</span>
-                          <div style={{fontSize:9,color:"#64748b",marginTop:1}}>× {lot} lot</div>
+                          <div style={{fontSize:9,color: t.pnl_source==="CHAIN_MARK" ? "#64748b" : "#d97706",marginTop:1}}
+                               title={t.pnl_source==="CHAIN_MARK" ? "Marked to real option spread at close" : "Estimated from spot move × delta — NOT a real fill"}>
+                            {t.pnl_source==="CHAIN_MARK" ? "real" : "est*"} · × {lot} lot
+                          </div>
                         </>
                       : "—"}
                 </td>
@@ -1600,8 +1603,16 @@ function CommodityTabContent({trades, ltps, commStats, onManualClose, mcxConfig,
       {/* data source note */}
       {commStats?.data_sources && !isFiltered && (
         <div style={{display:"flex",gap:16,marginBottom:12,fontSize:11}}>
-          {commStats.data_sources.live_chain && <span><span className="source-live">●</span> Live chain: {commStats.data_sources.live_chain} trades</span>}
-          {commStats.data_sources.black_scholes && <span><span className="source-sim">◌</span> Black-Scholes sim: {commStats.data_sources.black_scholes} trades</span>}
+          {commStats.data_sources.live_chain && <span><span className="source-live">●</span> Entry priced from live chain: {commStats.data_sources.live_chain} trades</span>}
+          {commStats.data_sources.black_scholes && <span><span className="source-sim">◌</span> Entry Black-Scholes sim: {commStats.data_sources.black_scholes} trades</span>}
+        </div>
+      )}
+
+      {/* P&L honesty note — how the recorded P&L was derived */}
+      {commStats?.pnl_sources && !isFiltered && (
+        <div style={{display:"flex",gap:16,marginBottom:12,fontSize:11}}>
+          {commStats.pnl_sources.CHAIN_MARK && <span style={{color:"#94a3b8"}}><span className="source-live">●</span> P&L marked to real spread: {commStats.pnl_sources.CHAIN_MARK}</span>}
+          {commStats.pnl_sources.ESTIMATE && <span style={{color:"#d97706"}}>⚠ P&L estimated (spot×delta, not a real fill): {commStats.pnl_sources.ESTIMATE}</span>}
         </div>
       )}
 

@@ -135,17 +135,23 @@ before measuring is guessing.
 
 ## B1. Measurement foundation (you cannot optimize what you can't measure)
 
-- `[ ]` **B1.1 Real P&L only.** Stop reporting `pnl_approx`/Black-Scholes as results. Mark every
-  trade to real LTP/fill; label any estimate explicitly as simulated in UI + DB.
-  Files: `commodity_options_learning.py`, `learning_engine.py`, `dashboard/index.html`.
+- `[x]` **B1.1 Real P&L. DONE.** Commodity P&L was `spot_move × delta` (estimate) even for
+  live-chain trades. Now at close the engine marks the spread to its **real** current value from
+  the live chain (`CHAIN_MARK`), falling back to a **labeled** `ESTIMATE` only when the chain is
+  unavailable — recorded in a new `pnl_source` column and surfaced honestly in the dashboard.
+  NSE `learning_trades` options P&L was already real (option LTP at entry & exit). Historical
+  commodity trades are now correctly labeled `ESTIMATE`. See `docs/DATA_MODEL.md`.
 - `[x]` **B1.2 Verify lot sizes. DONE.** Found every index lot wrong (NIFTY 25→65, BANKNIFTY
   15→30, FINNIFTY 25→60, MIDCPNIFTY 75→120) plus several equities. Pulled authoritative
   nearest-expiry lots from the Fyers public symbol master and corrected
   `config/nse_instruments.json`. Built `scripts/fetch_lot_sizes.py` so lots auto-refresh from
   source (run after each quarterly NSE revision) — no more static guesses.
-- `[ ]` **B1.3 Trade journal schema.** Ensure every closed trade stores: entry/exit fill, fees,
-  R-multiple, strategy, regime, signals/day. This is the raw material for B3/B6.
-- **Exit criteria:** dashboard P&L equals a hand-computed P&L for 5 sample trades.
+- `[x]` **B1.3 Trade journal schema. DONE.** Documented all three trade tables and their fields
+  in `docs/DATA_MODEL.md`; confirmed they capture strategy, fills, R-multiple, DTE, lots, exit
+  reason, and timestamps for backtesting. Added `fees` (column ready; populated in B2.2 cost
+  model) and `pnl_source`. Aggregates (signals/day, win rate) are computed at analysis time.
+- **Exit criteria:** dashboard P&L equals a hand-computed P&L for 5 sample trades — *verify after
+  deploy, on the next CHAIN_MARK closes (current session is paper/off-hours).*
 
 ## B2. Execution correctness (place the right trade at the right size)
 
