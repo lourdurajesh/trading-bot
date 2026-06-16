@@ -89,8 +89,8 @@ Result: **85 production modules · 9 manual/CLI tools · ~6 genuinely removable 
 
 | # | File | Why | Verify before delete | Status |
 |---|------|-----|----------------------|--------|
-| D1 | `fix_entry_prices.py` | One-shot migration (BS→real entry prices). Job done; no `__main__`, imported by nothing. | Confirm no learning trades still need backfill. | `[ ]` |
-| D2 | `validate_edges.py` | Superseded by `validate_edges_v2.py` (v2 docstring states v1's model is wrong). | Diff v1 vs v2; confirm v2 covers all 3 edges. | `[ ]` |
+| D1 | `fix_entry_prices.py` | One-shot migration (BS→real entry prices). Job done; no `__main__`, imported by nothing. | Confirm no learning trades still need backfill. | `[x]` deleted |
+| D2 | `validate_edges.py` | Superseded by `validate_edges_v2.py` (v2 docstring states v1's model is wrong). | Diff v1 vs v2; confirm v2 covers all 3 edges. | `[x]` deleted |
 | D3 | `/tmp/depscan*.py`, `scripts/diag_chain.py` | Throwaway diagnostics (diag already removed). | — (already deleted) | `[x]` |
 | D4 | `.claude/worktrees/modest-gauss-007baa/` | Stale git worktree (full duplicate tree) from an earlier spawned task. | `git worktree remove` once branch `claude/modest-gauss-007baa` is merged/abandoned. | `[ ]` |
 
@@ -100,10 +100,10 @@ One-time migrations already applied (their tables exist in prod). Keep for disas
 
 | # | File | Status |
 |---|------|--------|
-| R1 | `scripts/migrate_audit_tables.py` | `[ ]` |
-| R2 | `scripts/migrate_commodity_instruments.py` | `[ ]` |
-| R3 | `scripts/cleanup_index_trades.py` | `[ ]` |
-| R4 | `scripts/seed_fii_history.py` | `[ ]` |
+| R1 | `scripts/migrate_audit_tables.py` → `scripts/_archive/` | `[x]` |
+| R2 | `scripts/migrate_commodity_instruments.py` → `scripts/_archive/` | `[x]` |
+| R3 | `scripts/cleanup_index_trades.py` → `scripts/_archive/` | `[x]` |
+| R4 | `scripts/seed_fii_history.py` → `scripts/_archive/` | `[x]` |
 
 ## A4. Consolidation candidates (review, not urgent)
 
@@ -117,8 +117,8 @@ One-time migrations already applied (their tables exist in prod). Keep for disas
 
 ## A5. Cleanup execution steps
 
-- `[ ]` **A5.1** Verify & delete D1, D2 (local). Commit: `chore: remove dead one-shot scripts`.
-- `[ ]` **A5.2** Create `scripts/_archive/`, move R1–R4 there. Commit: `chore: archive applied migrations`.
+- `[x]` **A5.1** Verify & delete D1, D2 (local). Done.
+- `[x]` **A5.2** Create `scripts/_archive/`, move R1–R4 there. Done.
 - `[ ]` **A5.3** `git worktree remove` D4 after branch disposition decided.
 - `[ ]` **A5.4** Resolve C1–C5 (separate small PRs; defer if not blocking).
 - `[ ]` **A5.5** Add a top-level `ARCHITECTURE.md` mapping each package → role (so this never rots again).
