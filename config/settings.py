@@ -156,6 +156,23 @@ OPTIONS_STRATEGY_CONFIG: dict = {
 MIN_SIGNAL_CONFIDENCE = float(os.getenv("MIN_SIGNAL_CONFIDENCE", "0.65"))
 
 # ─────────────────────────────────────────
+# AI ANALYST (intelligence layer)
+# ─────────────────────────────────────────
+# Master switch for the Claude analyst layer.
+#   true  → call the Anthropic API for a real per-trade verdict
+#   false → skip the API entirely and use deterministic simulation heuristics
+#           (no API key needed, no network call). Set false to run "AI off".
+AI_ANALYST_ENABLED  = os.getenv("AI_ANALYST_ENABLED", "true").lower() == "true"
+
+# What to do when the analyst cannot produce a real verdict (disabled, no/invalid
+# key, network error, rate limit, or malformed response):
+#   false → FAIL OPEN: fall back to simulation heuristics so a good technical
+#           setup is NOT blocked just because the AI is unavailable.
+#   true  → FAIL CLOSED: block the trade until the analyst can confirm.
+# Default false — the AI being down must never silently halt the whole pipeline.
+AI_ANALYST_REQUIRED = os.getenv("AI_ANALYST_REQUIRED", "false").lower() == "true"
+
+# ─────────────────────────────────────────
 # INSTITUTIONAL F&O — conviction-scored ATM options
 # ─────────────────────────────────────────
 

@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-from config.settings import TOTAL_CAPITAL
+from config.settings import TOTAL_CAPITAL, AI_ANALYST_ENABLED, AI_ANALYST_REQUIRED
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +63,16 @@ class AnalystAgent:
     """
 
     def __init__(self):
-        self._enabled = bool(ANTHROPIC_API_KEY)
+        # Master switch (AI_ANALYST_ENABLED) AND a key must both be present to
+        # make real API calls. Either off → deterministic simulation heuristics.
+        self._enabled = bool(ANTHROPIC_API_KEY) and AI_ANALYST_ENABLED
         self._client  = None
-        if self._enabled:
+        if not AI_ANALYST_ENABLED:
+            logger.info(
+                "[Analyst] AI_ANALYST_ENABLED=false — analyst running in simulation mode "
+                "(no API calls). Set AI_ANALYST_ENABLED=true to activate real analysis."
+            )
+        elif self._enabled:
             try:
                 from anthropic import Anthropic
                 self._client = Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -114,13 +121,22 @@ class AnalystAgent:
             return verdict
 
         except Exception as e:
-            # SAFETY: never approve on API failure — prefer missing a trade over a bad one
-            logger.error(f"[Analyst] API call failed: {e} — defaulting to REJECT (safe fallback)")
-            return AnalystVerdict(
-                conviction    = 0.0,
-                verdict       = "REJECT",
-                analyst_notes = f"API unavailable — trade blocked until analyst can confirm: {e}",
+            # The AI is unreachable (bad key, network, rate limit, etc.).
+            # FAIL CLOSED only if the analyst is explicitly required; otherwise
+            # FAIL OPEN by falling back to simulation heuristics so a single AI
+            # outage can never silently halt the entire pipeline (it did for ~2 months).
+            if AI_ANALYST_REQUIRED:
+                logger.error(f"[Analyst] API call failed: {e} — AI_ANALYST_REQUIRED=true, blocking trade.")
+                return AnalystVerdict(
+                    conviction    = 0.0,
+                    verdict       = "REJECT",
+                    analyst_notes = f"API unavailable — trade blocked until analyst can confirm: {e}",
+                )
+            logger.warning(
+                f"[Analyst] API call failed: {e} — AI_ANALYST_REQUIRED=false, "
+                f"falling back to simulation heuristics (fail-open)."
             )
+            return self._simulate(signal, news_items, macro, fundamental)
 
     # ─────────────────────────────────────────────────────────────
     # PROMPT BUILDING
@@ -229,12 +245,15 @@ Respond ONLY with the JSON verdict."""
             )
         except Exception as e:
             logger.error(f"[Analyst] Failed to parse response: {e}\nContent: {content[:200]}")
-            # SAFETY: reject on parse failure — malformed response is not a buy signal
-            return AnalystVerdict(
-                conviction    = 0.0,
-                verdict       = "REJECT",
-                analyst_notes = "Response parse error — trade blocked",
-            )
+            # Malformed AI response. Fail closed only if the analyst is required;
+            # otherwise signal a parse failure so the caller can fall back to simulation.
+            if AI_ANALYST_REQUIRED:
+                return AnalystVerdict(
+                    conviction    = 0.0,
+                    verdict       = "REJECT",
+                    analyst_notes = "Response parse error — trade blocked (AI_ANALYST_REQUIRED=true)",
+                )
+            raise ValueError(f"analyst response parse error: {e}")
 
     # ─────────────────────────────────────────────────────────────
     # SIMULATION MODE
