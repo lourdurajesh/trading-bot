@@ -182,23 +182,27 @@ class OptionsExecutor:
             if result:
                 return result
 
-            # No expiry in DTE range from the default (nearest) chain.
-            # Fyers timestamp="" always returns the nearest expiry only.
-            # Re-fetch targeting min_dte+3 days out to get the next weekly expiry.
-            target_date  = datetime.now(tz=IST) + timedelta(days=min_dte + 3)
-            target_epoch = int(target_date.timestamp())
-            logger.info(
-                f"[OptionsExecutor] {underlying}: nearest expiry outside DTE {min_dte}-{max_dte} "
-                f"— retrying chain for ~{target_date.strftime('%Y-%m-%d')} expiry"
-            )
-            chain_next = self._get_chain_for_timestamp(underlying, target_epoch)
-            if chain_next:
-                result = self._select_from_chain(
-                    chain_next, underlying, short_name, lot_size,
-                    option_type, target_delta, min_dte, max_dte,
+            # No strikes in DTE range from the default (nearest) chain.
+            # Fyers ships strikes for the NEAREST expiry only, but expiryData lists
+            # the full expiry calendar. Pick the nearest expiry within the DTE window
+            # and re-request the chain with its EXACT epoch (an arbitrary/computed
+            # epoch is rejected: "Please provide valid expiry").
+            picked = self._pick_expiry_epoch(chain_data, min_dte, max_dte)
+            if picked:
+                target_epoch, target_date_str, target_dte = picked
+                logger.info(
+                    f"[OptionsExecutor] {underlying}: nearest expiry outside DTE "
+                    f"{min_dte}-{max_dte} — re-requesting chain for {target_date_str} "
+                    f"(DTE {target_dte}, epoch {target_epoch})"
                 )
-                if result:
-                    return result
+                chain_next = self._get_chain_for_timestamp(underlying, target_epoch)
+                if chain_next:
+                    result = self._select_from_chain(
+                        chain_next, underlying, short_name, lot_size,
+                        option_type, target_delta, min_dte, max_dte,
+                    )
+                    if result:
+                        return result
 
             # Both chain fetches returned no match in the ideal DTE window.
             # Fall back to the original chain with no DTE floor so we get a
@@ -365,7 +369,7 @@ class OptionsExecutor:
                 _new_expiries = chain_data.get("expiryData", [])
                 if _new_expiries:
                     _sample = _new_expiries[0].get("optionsChain", [{}])[0]
-                    if "fp" in _sample and "call_ltp" not in _sample:
+                    if "call_ltp" not in _sample and "strikePrice" not in _sample:
                         _spot_val = float(chain_data.get("underlyingValue") or 0)
                         if not _spot_val:
                             try:
@@ -382,7 +386,7 @@ class OptionsExecutor:
                 # Layout C detection: rows have individual contract keys (fp/ex_symbol/bid/ask)
                 # instead of paired strike keys (call_ltp/put_ltp/strikePrice).
                 sample = expiry_blocks[0].get("optionsChain", [{}])[0]
-                if "fp" in sample and "call_ltp" not in sample:
+                if "call_ltp" not in sample and "strikePrice" not in sample:
                     spot_val = float(underlying_val or 0)
                     logger.info(
                         f"[OptionsExecutor] {underlying}: Layout C detected "
@@ -396,6 +400,13 @@ class OptionsExecutor:
                     f"[OptionsExecutor] {underlying} expiryData[0] keys: "
                     f"{list(expiry_blocks[0].keys())}"
                 )
+
+            # Preserve the full raw expiry calendar (epoch + DD-MM-YYYY date for every
+            # listed expiry). Normalization above can collapse expiryData down to only
+            # the nearest expiry's strikes; _pick_expiry_epoch needs the complete
+            # calendar to re-request a valid future expiry by its exact epoch.
+            if expiry_blocks:
+                chain_data["_fyers_expiry_calendar"] = expiry_blocks
 
             self._chain_cache[underlying] = (chain_data, now)
             return chain_data
@@ -424,6 +435,12 @@ class OptionsExecutor:
             underlying_val     = chain_data.get("underlyingValue")
             if underlying_val is None and expiry_blocks:
                 underlying_val = expiry_blocks[0].get("underlyingValue")
+            if underlying_val is None:
+                # Fyers omits underlyingValue on future-expiry fetches — pull spot
+                # from the embedded underlying row so _select_from_chain has a spot.
+                underlying_val = self._underlying_from_rows(top_level_strikes)
+            if underlying_val is not None:
+                chain_data["underlyingValue"] = underlying_val
             per_expiry_strikes = sum(len(b.get("optionsChain", [])) for b in expiry_blocks)
             if per_expiry_strikes == 0 and top_level_strikes:
                 chain_data = self._normalise_layout_b(chain_data, underlying_val)
@@ -431,7 +448,7 @@ class OptionsExecutor:
                 _new_expiries = chain_data.get("expiryData", [])
                 if _new_expiries:
                     _sample = _new_expiries[0].get("optionsChain", [{}])[0]
-                    if "fp" in _sample and "call_ltp" not in _sample:
+                    if "call_ltp" not in _sample and "strikePrice" not in _sample:
                         _spot_val = float(chain_data.get("underlyingValue") or 0)
                         if not _spot_val:
                             try:
@@ -442,12 +459,75 @@ class OptionsExecutor:
                         chain_data = self._normalise_layout_c(chain_data, _spot_val)
             elif per_expiry_strikes > 0 and expiry_blocks:
                 sample = expiry_blocks[0].get("optionsChain", [{}])[0]
-                if "fp" in sample and "call_ltp" not in sample:
+                if "call_ltp" not in sample and "strikePrice" not in sample:
                     chain_data = self._normalise_layout_c(chain_data, float(underlying_val or 0))
             return chain_data
         except Exception as e:
             logger.warning(f"[OptionsExecutor] Chain fetch (ts={epoch}) exception for {underlying}: {e}")
             return None
+
+    @staticmethod
+    def _underlying_from_rows(rows: list):
+        """
+        Extract spot from the embedded underlying/spot row Fyers includes in the
+        top-level optionsChain (option_type="", strike_price=-1, spot in ltp/fp).
+        Returns float spot or None.
+        """
+        for row in (rows or [])[:3]:
+            ot = str(row.get("option_type", "") or "").upper().strip()
+            if ot in ("CE", "PE"):
+                continue   # real option row — skip
+            for uv_key in ("ltp", "fp", "underlyingValue", "underlying_value", "spot", "up"):
+                v = row.get(uv_key)
+                if v is not None:
+                    try:
+                        fval = float(v)
+                        if fval > 100:   # plausible index spot
+                            return fval
+                    except (ValueError, TypeError):
+                        pass
+        return None
+
+    def _pick_expiry_epoch(self, chain_data: dict, min_dte: int, max_dte: int):
+        """
+        From a chain's expiryData calendar, return (epoch:int, date_str, dte:int) of the
+        NEAREST expiry whose DTE falls within [min_dte, max_dte], or None if none qualify.
+
+        Fyers ships the full expiry calendar in expiryData (each block: an epoch 'expiry'
+        and a 'date' DD-MM-YYYY) but only includes strikes for the NEAREST expiry in the
+        top-level optionsChain. To trade a further-out expiry we must re-request the chain
+        passing that expiry's EXACT epoch as 'timestamp' — an arbitrary/computed epoch is
+        rejected by Fyers with "Please provide valid expiry".
+        """
+        today = datetime.now(tz=IST).date()
+        candidates = []
+        # Prefer the preserved raw calendar — normalization may have collapsed expiryData.
+        calendar = chain_data.get("_fyers_expiry_calendar") or chain_data.get("expiryData", [])
+        for blk in calendar:
+            epoch_raw = blk.get("expiry")
+            if epoch_raw is None:
+                continue
+            try:
+                epoch_int = int(str(epoch_raw))
+            except (ValueError, TypeError):
+                continue
+            # DTE from the reliable DD-MM-YYYY 'date' field; fall back to epoch math.
+            date_str = blk.get("date", "") or ""
+            dte = None
+            if date_str:
+                try:
+                    d = datetime.strptime(date_str, "%d-%m-%Y").date()
+                    dte = (d - today).days
+                except ValueError:
+                    dte = None
+            if dte is None:
+                dte = self._days_to_expiry(epoch_raw)
+            if min_dte <= dte <= max_dte:
+                candidates.append((epoch_int, date_str, dte))
+        if not candidates:
+            return None
+        # Nearest qualifying expiry (smallest DTE) — most liquid, least time-decay risk.
+        return min(candidates, key=lambda x: x[2])
 
     def _normalise_layout_b(self, chain_data: dict, underlying_val) -> dict:
         """
@@ -489,6 +569,11 @@ class OptionsExecutor:
         # causing every DTE check to fail — so we must extract a real date here.
         expiry_map: dict[str, list[dict]] = defaultdict(list)
         for row in top_strikes:
+            # Skip the embedded underlying/spot row (option_type="", strike_price=-1).
+            # It carries no expiry and otherwise creates a junk "" expiry block.
+            otype = str(row.get("option_type", "") or "").upper().strip()
+            if otype not in ("CE", "PE"):
+                continue
             key = row.get("expiry") or row.get("expiryDate") or ""
             if not key:
                 desc = (row.get("description") or "").strip().split()
