@@ -436,7 +436,26 @@ class OrderManager:
                     self._send_alert(signal, "OPTIONS_PARTIAL_FILL", pending=False)
                 return
 
-        portfolio_tracker.open_position(signal, fill_price=signal.entry)
+        # Confirm the first leg's actual fill price from the broker.
+        # Market orders for NFO options fill near the current LTP; recording the
+        # actual fill keeps P&L, SL, and target levels accurate.
+        actual_fill = signal.entry
+        if placed_ids:
+            first_sym, _, first_oid = placed_ids[0]
+            confirmed_price, _ = self._confirm_fill(broker, first_oid, signal)
+            if confirmed_price and confirmed_price > 0:
+                actual_fill = confirmed_price
+                logger.info(
+                    f"[OrderManager] OPTIONS fill confirmed: {first_sym} @ ₹{actual_fill:.2f} "
+                    f"(signal entry was ₹{signal.entry:.2f})"
+                )
+            else:
+                logger.warning(
+                    f"[OrderManager] OPTIONS fill not confirmed for {first_sym} — "
+                    f"using signal.entry ₹{signal.entry:.2f} as fallback"
+                )
+
+        portfolio_tracker.open_position(signal, fill_price=actual_fill)
         try:
             from data.fyers_stream import fyers_stream
             if fyers_stream is not None:

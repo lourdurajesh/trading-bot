@@ -10,7 +10,7 @@ Rules enforced:
   3. Target 2 hit         → exit remaining 50% (skipped if dynamic target active)
   4. Trailing stop        → after 1R profit, trail by 1×ATR
   5. Breakeven move       → after T1 hit, SL moves to entry price
-  6. EOD forced exit      → close all intraday positions at 3:15 PM IST
+  6. EOD forced exit      → close all intraday positions at 3:25 PM IST (configurable via EOD_EXIT_TIME env)
   7. Max holding period   → force exit after 20 trading days
   8. Catastrophic gap     → if price gaps past SL by >3%, exit immediately
   9. Dynamic target       → after T1 hit, target extends by 1R at each milestone;
@@ -26,7 +26,7 @@ from datetime import date, datetime, time, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from config.settings import OPTIONS_DTE_FORCE_EXIT, PAPER_TRADING   # Bug 16: consistent source
+from config.settings import OPTIONS_DTE_FORCE_EXIT, PAPER_TRADING, EOD_EXIT_TIME   # Bug 16: consistent source
 from data.data_store import store
 from risk.portfolio_tracker import portfolio_tracker, Position
 from notifications.alert_service import alert_service
@@ -35,8 +35,7 @@ logger = logging.getLogger(__name__)
 
 IST = ZoneInfo("Asia/Kolkata")
 
-# Exit rules configuration
-EOD_EXIT_TIME      = time(15, 15)    # 3:15 PM IST — close intraday positions
+# Exit rules configuration — EOD_EXIT_TIME now sourced from config.settings (env: EOD_EXIT_TIME)
 MAX_HOLDING_DAYS   = 20              # force exit after this many calendar days
 BREAKEVEN_TRIGGER       = 1.0   # move SL to BE after 1R profit
 TRAIL_TRIGGER           = 1.5   # start trailing after 1.5R profit

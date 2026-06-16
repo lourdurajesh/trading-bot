@@ -11,11 +11,8 @@ Responsibilities:
   5. Update daily IV history in options_engine for IV rank
   6. Compute PCR (put-call ratio) for market sentiment
 
-Lot sizes (NSE as of 2025):
-  NIFTY:       75 lots
-  BANKNIFTY:   35 lots
-  FINNIFTY:    65 lots
-  MIDCPNIFTY: 120 lots
+Lot sizes are loaded from config/nse_instruments.json at startup.
+  Update that file when NSE revises lot sizes (quarterly: Mar/Jun/Sep/Dec).
 
 Usage:
     result = options_executor.get_best_option(
@@ -36,7 +33,9 @@ Usage:
         # result.dte        → 14
 """
 
+import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
@@ -46,23 +45,32 @@ IST = ZoneInfo("Asia/Kolkata")
 
 logger = logging.getLogger(__name__)
 
-# ── Lot sizes (NSE NFO as of Jan 2025) ───────────────────────────
-LOT_SIZES: dict[str, int] = {
-    "NIFTY":       75,
-    "BANKNIFTY":   35,
-    "FINNIFTY":    65,
-    "MIDCPNIFTY": 120,
-    "SENSEX":      20,
-}
+# ── Lot sizes and strike steps loaded from config/nse_instruments.json ─────
+# Edit that file (or use the dashboard config UI) — no code change needed.
+_INSTRUMENTS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "config", "nse_instruments.json"
+)
 
-# Strike rounding step per underlying
-STRIKE_STEPS: dict[str, int] = {
-    "NIFTY":       50,
-    "BANKNIFTY":  100,
-    "FINNIFTY":    50,
-    "MIDCPNIFTY":  25,
-    "SENSEX":     100,
-}
+def _load_instruments() -> dict:
+    try:
+        with open(_INSTRUMENTS_PATH, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"[OptionsExecutor] Could not load {_INSTRUMENTS_PATH}: {e} — using defaults")
+        return {}
+
+_inst = _load_instruments()
+
+LOT_SIZES: dict[str, int]      = _inst.get("index_lot_sizes",   {"NIFTY": 25, "BANKNIFTY": 15, "FINNIFTY": 25, "MIDCPNIFTY": 75, "SENSEX": 20})
+STRIKE_STEPS: dict[str, int]   = _inst.get("index_strike_steps",{"NIFTY": 50, "BANKNIFTY": 100,"FINNIFTY": 50, "MIDCPNIFTY": 25, "SENSEX": 100})
+EQUITY_LOT_SIZES: dict[str,int]= _inst.get("equity_lot_sizes",  {})
+EQUITY_STRIKE_STEPS: dict[str,int]=_inst.get("equity_strike_steps",{})
+
+logger.info(
+    f"[OptionsExecutor] Lot sizes loaded: "
+    f"NIFTY={LOT_SIZES.get('NIFTY')} BANKNIFTY={LOT_SIZES.get('BANKNIFTY')} "
+    f"FINNIFTY={LOT_SIZES.get('FINNIFTY')}"
+)
 
 # Map index symbols → short name used in NFO
 INDEX_SHORT: dict[str, str] = {
@@ -72,7 +80,6 @@ INDEX_SHORT: dict[str, str] = {
 }
 
 # Map equity symbols → short name used in NFO symbol construction
-# TODO: verify lot sizes on each quarterly NSE rollover (typically Mar/Jun/Sep/Dec)
 EQUITY_SHORT: dict[str, str] = {
     "NSE:RELIANCE-EQ":    "RELIANCE",
     "NSE:TCS-EQ":         "TCS",
@@ -88,42 +95,6 @@ EQUITY_SHORT: dict[str, str] = {
     "NSE:HCLTECH-EQ":     "HCLTECH",
     "NSE:BAJFINANCE-EQ":  "BAJFINANCE",
     "NSE:MARUTI-EQ":      "MARUTI",
-}
-
-# Equity options lot sizes (NSE NFO as of 2025)
-EQUITY_LOT_SIZES: dict[str, int] = {
-    "RELIANCE":    250,
-    "TCS":         150,
-    "HDFCBANK":    550,
-    "INFY":        300,
-    "ICICIBANK":   700,
-    "SBIN":       1500,
-    "AXISBANK":    625,
-    "KOTAKBANK":   400,
-    "BHARTIARTL":  950,
-    "LT":          175,
-    "WIPRO":       800,
-    "HCLTECH":     350,
-    "BAJFINANCE":  125,
-    "MARUTI":       75,
-}
-
-# Strike step per equity (₹ increments)
-EQUITY_STRIKE_STEPS: dict[str, int] = {
-    "RELIANCE":   20,
-    "TCS":        50,
-    "HDFCBANK":   20,
-    "INFY":       20,
-    "ICICIBANK":  10,
-    "SBIN":        5,
-    "AXISBANK":   10,
-    "KOTAKBANK":  20,
-    "BHARTIARTL": 10,
-    "LT":         20,
-    "WIPRO":       5,
-    "HCLTECH":    20,
-    "BAJFINANCE": 50,
-    "MARUTI":    100,
 }
 
 

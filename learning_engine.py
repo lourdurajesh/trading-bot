@@ -90,16 +90,13 @@ class LearningEngine:
     def run_cycle(self) -> None:
         """Evaluate all strategies and manage open positions."""
         from config.learning_watchlist import (
-            LEARNING_NSE_EQUITIES, LEARNING_NSE_INDICES, get_mcx_learning_symbols,
+            LEARNING_NSE_EQUITIES, LEARNING_NSE_INDICES,
         )
         from strategies.trend_follow    import TrendFollowStrategy
         from strategies.mean_reversion  import MeanReversionStrategy
         from strategies.simple_momentum import SimpleMomentumStrategy
         from strategies.simple_rsi      import SimpleRSIStrategy
         from data.data_store            import store
-
-        # Compute current front-month contract codes each cycle — auto-rolls on expiry
-        mcx_symbols = get_mcx_learning_symbols()
 
         equity_strategies = [
             TrendFollowStrategy(),
@@ -111,8 +108,10 @@ class LearningEngine:
         # ── 1. Monitor existing open positions ───────────────────
         self._check_exits(store)
 
-        # ── 2. Equity + commodity entries — 1 trade per symbol per strategy ──
-        for symbol in LEARNING_NSE_EQUITIES + mcx_symbols:
+        # ── 2. Equity entries — 1 trade per symbol per strategy ──
+        # MCX commodities are NOT traded here — they trade exclusively as
+        # options via commodity_options_learning.py (the MCX tab).
+        for symbol in LEARNING_NSE_EQUITIES:
             if "-INDEX" in symbol:
                 continue  # safety: indices must never go through equity strategies
             if self._is_on_cooldown(symbol):
@@ -456,9 +455,10 @@ class LearningEngine:
                     eff_exit = round(exit_price * (1 + slip), 2)  # buy back at ask
 
                 if instrument_type == "nse_options":
-                    # pnl_pts is in ₹ (premium diff × lot_size) — fees deduct directly
+                    # pnl_pts = premium move per unit (same units as entry_price)
+                    # monetary P&L = pnl_pts × lot_size − fees (computed at read time in get_trades)
                     fees    = FEES_OPTIONS_FLAT
-                    pnl_pts = round((eff_exit - entry) * lot_size - fees, 2)
+                    pnl_pts = round(eff_exit - entry, 2)
                     pnl_r   = round((eff_exit - entry) / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
                 else:
                     fees = FEES_EQUITY_FLAT
@@ -972,6 +972,13 @@ class LearningEngine:
                 d["metadata"] = json.loads(d.get("metadata") or "{}")
             except Exception:
                 d["metadata"] = {}
+            # Compute monetary P&L for options: pnl_pts (per-unit premium move) × lot_size − fees
+            if d.get("metadata", {}).get("instrument_type") == "nse_options":
+                lot_size = int(d["metadata"].get("lot_size") or 1)
+                fees     = float(d.get("fees") or 0)
+                d["pnl_inr"] = round((d.get("pnl_pts") or 0) * lot_size - fees, 2)
+            else:
+                d["pnl_inr"] = None
             # SQLite can store NaN/Inf from edge-case calculations; JSON cannot.
             # Apply recursively so nested metadata values (e.g. rvol=nan) are
             # also sanitised — a shallow loop misses dict/list nesting and

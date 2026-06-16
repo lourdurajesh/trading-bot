@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+from datetime import time as _time
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -65,6 +66,28 @@ MIN_OPTION_OI                = int(os.getenv("MIN_OPTION_OI", "500"))
 
 # Force-close options positions when DTE drops below this (expiry risk)
 OPTIONS_DTE_FORCE_EXIT       = int(os.getenv("OPTIONS_DTE_FORCE_EXIT", "3"))
+
+# EOD square-off: close all intraday positions at this time (default 15:25 — 5 min before market close)
+_eod_raw   = os.getenv("EOD_EXIT_TIME", "15:25").split(":")
+EOD_EXIT_TIME = _time(int(_eod_raw[0]), int(_eod_raw[1]))
+
+# No new options entries after this time (default 15:10 — 20 min before market close)
+_noentry_raw = os.getenv("NO_NEW_OPTIONS_ENTRY_TIME", "15:10").split(":")
+NO_NEW_OPTIONS_ENTRY_AFTER = _time(int(_noentry_raw[0]), int(_noentry_raw[1]))
+
+# Opening blackout: no new NSE options entries before this time (default 09:45 — first 30 min)
+_nse_open_raw = os.getenv("NSE_NO_ENTRY_BEFORE", "09:45").split(":")
+NSE_NO_ENTRY_BEFORE = _time(int(_nse_open_raw[0]), int(_nse_open_raw[1]))
+
+# SL and Target as % of premium for single long call/put strategy
+# SL: how much of premium to lose before stopping out (default 30%)
+# Target: how much to gain before taking profit (default 50%)
+OPTIONS_LONG_SL_PCT     = float(os.getenv("OPTIONS_LONG_SL_PCT",     "0.30"))
+OPTIONS_LONG_TARGET_PCT = float(os.getenv("OPTIONS_LONG_TARGET_PCT",  "0.50"))
+
+# RSI bounds for directional options entries — filter overbought longs and oversold shorts
+OPTIONS_LONG_RSI_MAX  = float(os.getenv("OPTIONS_LONG_RSI_MAX",  "72"))   # don't chase overbought
+OPTIONS_SHORT_RSI_MIN = float(os.getenv("OPTIONS_SHORT_RSI_MIN", "28"))   # don't chase oversold
 
 # VIX ceiling for SHORT premium strategies (short strangle) — above this is too dangerous
 # Set at 27 to give a small buffer above the EXTREME risk threshold (25)

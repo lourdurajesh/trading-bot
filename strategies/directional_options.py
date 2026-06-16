@@ -14,7 +14,15 @@ from zoneinfo import ZoneInfo
 from analysis.indicators import ema_alignment, rsi
 from analysis.options_engine import options_engine
 from analysis.regime_detector import Regime, regime_detector
-from config.settings import MIN_SIGNAL_CONFIDENCE
+from config.settings import (
+    MIN_SIGNAL_CONFIDENCE,
+    NO_NEW_OPTIONS_ENTRY_AFTER,
+    NSE_NO_ENTRY_BEFORE,
+    OPTIONS_LONG_SL_PCT,
+    OPTIONS_LONG_TARGET_PCT,
+    OPTIONS_LONG_RSI_MAX,
+    OPTIONS_SHORT_RSI_MIN,
+)
 from strategies.base_strategy import BaseStrategy, Direction, Signal, SignalType
 
 logger = logging.getLogger(__name__)
@@ -38,6 +46,12 @@ class DirectionalOptionsStrategy(BaseStrategy):
     def evaluate(self, symbol: str) -> Optional[Signal]:
         now = datetime.now(tz=_IST).time()
         if not (_MARKET_OPEN <= now <= _MARKET_CLOSE):
+            return None
+        # Opening blackout — first 30 min use stale 1H data from prior session (env: NSE_NO_ENTRY_BEFORE)
+        if now < NSE_NO_ENTRY_BEFORE:
+            return None
+        # Closing blackout — not enough time for trade to develop (env: NO_NEW_OPTIONS_ENTRY_TIME)
+        if now >= NO_NEW_OPTIONS_ENTRY_AFTER:
             return None
 
         # Only trade indices, not equity symbols
@@ -98,17 +112,21 @@ class DirectionalOptionsStrategy(BaseStrategy):
             f"RSI={rsi_val:.0f} | bull3={bullish_3} bear3={bearish_3}"
         )
 
-        # Determine direction
-        if bullish_3 and rsi_val > 50:
+        # Determine direction — RSI must be in momentum range, not overbought/oversold extreme
+        if bullish_3 and 50 < rsi_val < OPTIONS_LONG_RSI_MAX:
             direction    = Direction.LONG
             option_type  = "call"
-            reason = f"Bullish EMA alignment | RSI {rsi_val:.0f} | Buy call debit spread"
-        elif bearish_3 and rsi_val < 50:
+            reason = f"Bullish EMA alignment | RSI {rsi_val:.0f} | Buy call long call"
+        elif bearish_3 and OPTIONS_SHORT_RSI_MIN < rsi_val < 50:
             direction    = Direction.SHORT
             option_type  = "put"
-            reason = f"Bearish EMA alignment | RSI {rsi_val:.0f} | Buy put debit spread"
+            reason = f"Bearish EMA alignment | RSI {rsi_val:.0f} | Buy put long call"
         else:
-            logger.info(f"[DirectionalOptions] {short} SKIP — no clean EMA stack or RSI not aligned")
+            logger.info(
+                f"[DirectionalOptions] {short} SKIP — "
+                f"RSI {rsi_val:.0f} out of range or no clean EMA stack "
+                f"(long needs 50–{OPTIONS_LONG_RSI_MAX:.0f}, short needs {OPTIONS_SHORT_RSI_MIN:.0f}–50)"
+            )
             return None
 
         # ── Fetch live option from chain ──────────────────────────
@@ -133,28 +151,23 @@ class DirectionalOptionsStrategy(BaseStrategy):
             logger.info(f"[DirectionalOptions] {short} SKIP — chain unavailable, BS estimate only (no real price to trade)")
             return None
 
-        # Live data — use real premium and contract symbol
-        iv         = opt.iv if opt.iv > 0 else 0.15
-        atm_strike = opt.strike
-        otm_strike = options_engine.get_otm_strike(spot, option_type, 0.5, iv, opt.dte)
-        debit_cost = round(opt.ltp * 0.65, 2)
-        max_profit = round(abs(atm_strike - otm_strike) * 0.35, 2)
+        # Single long call/put — entry at full live premium (market order fills near LTP).
+        # SL/Target read from settings (env: OPTIONS_LONG_SL_PCT, OPTIONS_LONG_TARGET_PCT).
+        entry_prem = round(opt.ltp, 2)
         lot_size   = opt.lot_size
         nfo_symbol = opt.symbol
 
-        logger.debug(f"[DirectionalOptions] spot={spot}, iv={iv:.2f}, debit={debit_cost:.2f}")
-        if debit_cost <= 0 or debit_cost > spot * 0.05:
-            self.log_skip(symbol, f"Debit cost {debit_cost:.2f} invalid for spot {spot:.2f}")
+        if entry_prem <= 0 or entry_prem > spot * 0.10:
+            self.log_skip(symbol, f"Premium {entry_prem:.2f} out of valid range for spot {spot:.2f}")
             return None
 
-        confidence  = min(regime.confidence * 0.9, 0.85)
-
+        confidence = min(regime.confidence * 0.9, 0.85)
         if confidence < MIN_SIGNAL_CONFIDENCE:
             return None
 
-        # stop_loss = absolute NFO premium at 50% loss
-        # target_1  = absolute NFO premium at full profit (debit + max_profit)
-        # Both are absolute price levels for direct LTP comparison.
+        sl_price     = round(entry_prem * (1 - OPTIONS_LONG_SL_PCT), 2)
+        target_price = round(entry_prem * (1 + OPTIONS_LONG_TARGET_PCT), 2)
+
         entry_legs = [{"symbol": nfo_symbol, "direction": "LONG"}]
         exit_legs  = [{"symbol": nfo_symbol, "direction": "SHORT"}]
 
@@ -163,21 +176,20 @@ class DirectionalOptionsStrategy(BaseStrategy):
             strategy       = self.name,
             direction      = direction,
             signal_type    = SignalType.OPTIONS,
-            entry          = round(debit_cost, 2),
-            stop_loss      = round(debit_cost * 0.5, 2),
-            target_1       = round(debit_cost + max_profit, 2),
+            entry          = entry_prem,
+            stop_loss      = sl_price,     # configurable % of premium (default -30%)
+            target_1       = target_price, # configurable % gain (default +50%)
             confidence     = round(confidence, 2),
             timeframe      = self.timeframe,
             regime         = regime.regime.value,
             reason         = reason,
             monitor_symbol = nfo_symbol,
             options_meta   = {
-                "strategy":    "debit_spread",
+                "strategy":    "long_call",
                 "option_type": option_type,
-                "atm_strike":  atm_strike,
-                "otm_strike":  otm_strike,
+                "atm_strike":  opt.strike,
                 "iv_rank":     iv_rank,
-                "iv":          round(iv, 4),
+                "iv":          round(opt.iv if opt.iv > 0 else 0.15, 4),
                 "lot_size":    lot_size,
                 "nfo_symbol":  nfo_symbol,
                 "entry_legs":  entry_legs,

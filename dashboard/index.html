@@ -343,8 +343,9 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
               <SortTh col="exit_price"  label="Exit"/>
               <SortTh col="stop_loss"   label="SL"/>
               <SortTh col="target"      label="Target"/>
-              <SortTh col="pnl_pts"     label="Pts"/>
-              <SortTh col="pnl_r"       label="P&L (R)"/>
+              <SortTh col="pnl_pts"     label="Pts (Δ)"/>
+              <SortTh col="pnl_inr"     label="P&L (₹)"/>
+              <SortTh col="pnl_r"       label="R"/>
               <SortTh col="mae_pts"     label="MAE"/>
               <SortTh col="mfe_pts"     label="MFE"/>
               <SortTh col="exit_reason" label="Reason"/>
@@ -355,6 +356,7 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
             {rows.map(t=>{
               const r        = t.pnl_r||0;
               const pts      = t.pnl_pts||0;
+              const inr      = t.pnl_inr != null ? t.pnl_inr : null;
               const open     = t.status==="OPEN";
               const dateStr  = (t.entry_time||"").slice(0,10);
               const meta     = t.metadata || {};
@@ -365,6 +367,9 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
               const livePts  = ltp != null
                 ? (isOpts || t.direction==="LONG" ? ltp - t.entry_price : t.entry_price - ltp)
                 : null;
+              const lotSize  = isOpts ? (meta.lot_size || 1) : 1;
+              const liveFees = isOpts ? (meta.fees_flat || 40) : 0;
+              const liveInr  = livePts != null ? (isOpts ? livePts * lotSize - liveFees : null) : null;
               const ltpColor = ltp == null ? "#64748b"
                 : livePts > 0 ? "#22c55e"
                 : livePts < 0 ? "#ef4444"
@@ -398,7 +403,12 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
                       ? (livePts != null ? `${livePts>=0?"+":""}${livePts.toFixed(2)}` : "—")
                       : `${pts>=0?"+":""}${pts.toFixed(2)}`}
                   </td>
-                  <td className={open?"neutral-cell":r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>{open?"open":fmtR(r)}</td>
+                  <td className={open?(liveInr==null?"neutral-cell":liveInr>0?"good":liveInr<0?"bad":"neutral-cell"):inr==null?"neutral-cell":inr>0?"good":inr<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontWeight:600}}>
+                    {open
+                      ? (liveInr != null ? `${liveInr>=0?"₹+":"₹"}${liveInr.toFixed(0)}` : "—")
+                      : (inr != null ? `${inr>=0?"₹+":"₹"}${inr.toFixed(0)}` : "—")}
+                  </td>
+                  <td className={open?"neutral-cell":r>0?"good":r<0?"bad":"neutral-cell"} style={{fontFamily:"monospace",fontSize:10}}>{open?"open":fmtR(r)}</td>
                   <td style={{fontFamily:"monospace",color:"#fca5a5",fontSize:10}}>{(t.mae_pts||0)>0?`-${(t.mae_pts||0).toFixed(2)}`:"—"}</td>
                   <td style={{fontFamily:"monospace",color:"#86efac",fontSize:10}}>{(t.mfe_pts||0)>0?`+${(t.mfe_pts||0).toFixed(2)}`:"—"}</td>
                   <td style={{color:"#94a3b8",fontSize:10}}>{t.exit_reason||"—"}</td>

@@ -423,8 +423,7 @@ class CommodityOptionsLearning:
                 "price_unit":  r["price_unit"],
                 "min_price":   r["min_price"],
                 "max_price":   r["max_price"],
-                # Store enabled flag — ALL_MCX_SHORTS and get_mcx_learning_symbols
-                # filter on this so disabled instruments are never subscribed.
+                # Store enabled flag — disabled instruments are never subscribed.
                 "enabled":     bool(r["enabled"]),
             }
             # Per-instrument SL/target overrides — None means "inherit strategy default"
