@@ -121,7 +121,10 @@ One-time migrations already applied (their tables exist in prod). Keep for disas
 - `[x]` **A5.2** Create `scripts/_archive/`, move R1–R4 there. Done.
 - `[ ]` **A5.3** `git worktree remove` D4 after branch disposition decided.
 - `[ ]` **A5.4** Resolve C1–C5 (separate small PRs; defer if not blocking).
-- `[ ]` **A5.5** Add a top-level `ARCHITECTURE.md` mapping each package → role (so this never rots again).
+- `[x]` **A5.5** Documentation added: `docs/FILE_INDEX.md` (every module + role + proposed target
+  structure) and `docs/STRATEGIES.md` (all strategies + status/performance for review).
+- `[ ]` **A5.6** Execute the physical root-folder restructure per `docs/FILE_INDEX.md` proposal
+  (dedicated PR, coordinate with server cron/systemd path updates). Not mixed with functional work.
 
 ---
 
@@ -135,9 +138,11 @@ before measuring is guessing.
 - `[ ]` **B1.1 Real P&L only.** Stop reporting `pnl_approx`/Black-Scholes as results. Mark every
   trade to real LTP/fill; label any estimate explicitly as simulated in UI + DB.
   Files: `commodity_options_learning.py`, `learning_engine.py`, `dashboard/index.html`.
-- `[ ]` **B1.2 Verify lot sizes.** `config/nse_instruments.json` shows BANKNIFTY=15 (real 35),
-  NIFTY mismatch (25 vs 75). Wrong lot = wrong sizing **and** wrong P&L. Correct all against
-  current NSE; keep them in the JSON (no hard-coding).
+- `[x]` **B1.2 Verify lot sizes. DONE.** Found every index lot wrong (NIFTY 25→65, BANKNIFTY
+  15→30, FINNIFTY 25→60, MIDCPNIFTY 75→120) plus several equities. Pulled authoritative
+  nearest-expiry lots from the Fyers public symbol master and corrected
+  `config/nse_instruments.json`. Built `scripts/fetch_lot_sizes.py` so lots auto-refresh from
+  source (run after each quarterly NSE revision) — no more static guesses.
 - `[ ]` **B1.3 Trade journal schema.** Ensure every closed trade stores: entry/exit fill, fees,
   R-multiple, strategy, regime, signals/day. This is the raw material for B3/B6.
 - **Exit criteria:** dashboard P&L equals a hand-computed P&L for 5 sample trades.
