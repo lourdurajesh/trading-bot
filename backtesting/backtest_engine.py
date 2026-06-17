@@ -144,16 +144,25 @@ class BacktestEngine:
             extra_tfs.add(strategy.confirm_tf)
         extra_tfs.discard(timeframe)   # already populated below
 
+        # Build the records list ONCE and feed only the last LOOKBACK bars per bar.
+        # Strategies recompute indicators over the whole window each evaluate(); feeding
+        # the full growing history made that O(n²) (intraday backtests timed out). Since
+        # the longest indicator (EMA200) needs ≤200 bars, a 300-bar window is exact AND
+        # makes each evaluate constant-time → linear overall.
+        all_records = df.to_dict("records")
+        close_vals  = df["close"].tolist()
+        LOOKBACK    = 300
+
         for i in range(warmup_bars, len(df)):
-            # Feed history up to bar i into isolated store (no lookahead)
-            window = df.iloc[:i+1].copy()
-            records = window.to_dict("records")
+            # Feed last LOOKBACK bars up to bar i into isolated store (no lookahead)
+            lo      = max(0, i + 1 - LOOKBACK)
+            records = all_records[lo:i + 1]          # bounded window, no deep copy
             bt_store._candles[symbol][timeframe] = records
             # Also populate any extra timeframes the strategy requests so
             # regime_detector / get_ohlcv don't abort with missing data.
             for tf in extra_tfs:
                 bt_store._candles[symbol][tf] = records
-            bt_store._ltp[symbol] = float(window["close"].iloc[-1])
+            bt_store._ltp[symbol] = float(close_vals[i])
 
             bar        = df.iloc[i]
             bar_high   = float(bar["high"])

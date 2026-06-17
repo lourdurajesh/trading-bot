@@ -25,9 +25,18 @@ def main():
     parser = argparse.ArgumentParser(description="Run backtests on NSE watchlist")
     parser.add_argument(
         "--strategy",
-        choices=["mean_reversion", "trend_follow", "all"],
+        choices=["mean_reversion", "trend_follow", "short_trend",
+                 "momentum_reversal", "all"],
         default="all",
         help="Strategy to test (default: all)",
+    )
+    parser.add_argument(
+        "--timeframe",
+        choices=["1D", "1H", "15m"],
+        default="1H",
+        help="Bar timeframe to backtest on (default: 1H — strategies are intraday; "
+             "daily bars under-sample intraday signals). NOTE: 15m history is "
+             "capped ~57 days by Fyers until chunked fetching is added.",
     )
     parser.add_argument(
         "--symbols",
@@ -48,17 +57,24 @@ def main():
     from config.watchlist import ALL_NSE_SYMBOLS
     from strategies.mean_reversion import MeanReversionStrategy
     from strategies.trend_follow import TrendFollowStrategy
+    from strategies.short_trend import ShortTrendStrategy
+    from strategies.momentum_reversal import MomentumReversalStrategy
 
     symbols = args.symbols or ALL_NSE_SYMBOLS
+    tf      = args.timeframe
 
     strategies = {}
     if args.strategy in ("mean_reversion", "all"):
         strategies["MeanReversion"] = MeanReversionStrategy()
     if args.strategy in ("trend_follow", "all"):
         strategies["TrendFollow"] = TrendFollowStrategy()
+    if args.strategy in ("short_trend", "all"):
+        strategies["ShortTrend"] = ShortTrendStrategy()
+    if args.strategy in ("momentum_reversal", "all"):
+        strategies["MomentumReversal"] = MomentumReversalStrategy()
 
-    logger.info(f"Fetching {args.years}y daily data for {len(symbols)} symbols...")
-    all_data = fetch_all(symbols, "1D", years_back=args.years)
+    logger.info(f"Fetching {args.years}y {tf} data for {len(symbols)} symbols...")
+    all_data = fetch_all(symbols, tf, years_back=args.years)
     logger.info(f"  Got data for {len(all_data)} symbols.")
 
     engine = BacktestEngine()
@@ -71,7 +87,7 @@ def main():
         results = []
         for symbol, df in all_data.items():
             try:
-                r = engine.run(symbol, df, strategy, "1D")
+                r = engine.run(symbol, df, strategy, tf)
                 r = compute_metrics(r)
                 results.append(r)
                 logger.info(f"  {r.summary()}")
