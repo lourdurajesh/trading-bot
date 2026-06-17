@@ -190,17 +190,27 @@ before measuring is guessing.
 
 ## B3. Edge discovery — BACKTEST (the decisive phase)
 
-- `[ ]` **B3.1** Make `run_backtest.py` the canonical entry; ensure it pulls ≥ 1–2 yrs history
-  per strategy (`backtesting/data_fetcher.py`).
-- `[ ]` **B3.2** Wire **walk-forward** validation (`backtesting/walk_forward.py`) — train/test
-  splits so results are out-of-sample, not curve-fit.
-- `[ ]` **B3.3** Wire **Monte Carlo** (`backtesting/monte_carlo.py`) for risk-of-ruin & drawdown
-  distribution per strategy.
-- `[ ]` **B3.4** Produce a per-strategy report: **win rate, avg win/loss, expectancy,
-  trades/day, max drawdown, risk-of-ruin.** Plug each into the §2 table → know exactly how many
-  trades/day ₹1,000 needs, or that a strategy has no edge and must be cut.
-- **Exit criteria:** a ranked table of strategies by out-of-sample expectancy. **This is the
-  go/no-go gate for the whole goal.**
+**Findings (2026-06-17):** substantial infra already exists (`backtest_engine` computes
+win-rate/Sharpe/DD/expectancy; `walk_forward` + `monte_carlo` present). Key issues uncovered:
+1. It ran on **daily** bars while strategies are intraday (1H/15m) → meaningless samples. Fixed.
+2. **1H history** is plentiful (~3 yrs); **15m** is Fyers-capped (~57 days) — needs chunked fetch.
+3. The bar-replay was **O(n²)** (fed the whole growing history each bar) → intraday timed out.
+   Capped to a 300-bar window → linear, now completes (~1m48s per symbol-strategy on 2yr/1H).
+4. Options/MCX can't use historical chains → use the **signal-simulation** path
+   (`run_full_backtest.simulate_directional_options`).
+
+- `[~]` **B3.1** Canonical runner done: `run_backtest.py --timeframe` (default 1H) + all 1H equity
+  strategies; engine made tractable. **Remaining:** per-eval DataFrame rebuild still slow for the
+  full 42-symbol watchlist (~hrs) — vectorising indicators is the next speed lever; 15m chunked
+  fetch for MeanReversion/GapFade. First real run (10 symbols, 2yr, 1H) in progress.
+- `[ ]` **B3.2** Wire **walk-forward** (`backtesting/walk_forward.py`) — out-of-sample splits.
+- `[ ]` **B3.3** Wire **Monte Carlo** (`backtesting/monte_carlo.py`) — risk-of-ruin & DD dist.
+- `[ ]` **B3.4** Per-strategy report: **win rate, avg win/loss, expectancy, trades/day, max DD,
+  risk-of-ruin** → plug into the §2 table.
+- `[ ]` **B3.5** Equity backtest is a *proxy* — the ₹1,000/day engine is index OPTIONS + MCX
+  spreads. Wire `simulate_directional_options` + an MCX-spread simulation into the report.
+- **Exit criteria:** a ranked table of strategies by out-of-sample expectancy. **Go/no-go gate.**
+- **First datapoint:** RELIANCE MeanReversion 1H = 4 trades, PF 0.89 (losing) — tiny sample.
 
 ## B4. Edge improvement (raise expectancy on the survivors)
 
