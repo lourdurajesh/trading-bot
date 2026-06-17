@@ -155,10 +155,16 @@ before measuring is guessing.
 
 ## B2. Execution correctness (place the right trade at the right size)
 
-- `[ ]` **B2.1 Position sizing fits the budget.** Today ~9,000 `risk_budget` rejections because
-  size overshoots caps. Change: size **down** to the max that fits per-trade & daily risk,
-  instead of rejecting. Files: `risk/daily_risk_budget.py`, `risk/options_risk.py`,
-  `risk/portfolio_tracker.py`.
+- `[x]` **B2.1 Position sizing fits the budget. DONE.** Root cause: a *single* lot of a high-value
+  commodity (e.g. SILVER ≈ ₹43k max-loss = 8.7% of ₹5L) exceeds the risk caps → ~9,000 rejections,
+  zero learning data on those instruments. Fix (per decision: *micros + advisory-paper*):
+  (1) **paper mode** treats the risk-budget cap as **advisory** — records the trade so we still
+  learn the edge (measured by R-multiple, not rupees); (2) **real mode** sizes lots **down** to fit
+  the per-strategy budget and **skips** if even 1 lot is too big (use the mini/micro contract).
+  Also set server `RISK_PER_TRADE_PCT 10.0 → 1.5` (was above the 3% hard limit).
+  Files: `commodity_options_learning.py` (`_compute_lots`, risk-gate call site), server `.env`.
+  *Follow-up:* enable mini/micro contracts (SILVERMIC, GOLDM) in the instruments table so real
+  mode has a fitting alternative when fulls are skipped.
 - `[ ]` **B2.2 Real cost model.** Brokerage + STT + exchange + spread per round trip, configurable
   in `.env`/JSON, applied to expectancy and to exit math.
 - `[ ]` **B2.3 Fill realism.** Use bid/ask, reject illiquid strikes (fixes the OI=0 false

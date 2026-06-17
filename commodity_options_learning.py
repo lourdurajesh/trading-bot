@@ -678,10 +678,29 @@ class CommodityOptionsLearning:
         max_cap   = engine_settings.max_capital_pct()
         lot_cap   = engine_settings.max_lots_per_trade()
         max_lots  = int((available * max_cap) / cost_per_lot)
-        lots      = max(1, min(max_lots, lot_cap))
+
+        # Size to fit the per-strategy risk budget: one trade's max loss
+        # (cost_per_lot × lots, i.e. the debit paid) must stay within
+        # MAX_STRATEGY_LOSS_PCT of capital. Skip if even 1 lot is too big —
+        # the instrument's mini/micro variant should be traded instead.
+        import os as _os
+        from config.settings import TOTAL_CAPITAL as _CAP
+        risk_pct = float(_os.getenv("MAX_STRATEGY_LOSS_PCT", "1.5")) / 100.0
+        risk_inr = _CAP * risk_pct
+        max_by_risk = int(risk_inr / cost_per_lot)
+
+        lots = min(max_lots, lot_cap, max_by_risk)
+        if lots < 1:
+            logger.info(
+                f"[CommOpts] {instrument} SKIP (real) — 1 lot max-loss ₹{cost_per_lot:,.0f} "
+                f"exceeds per-strategy budget ₹{risk_inr:,.0f} ({risk_pct:.1%} of capital). "
+                f"Prefer a mini/micro contract for this instrument."
+            )
+            return 0
         logger.info(
             f"[CommOpts] {instrument} lots={lots} "
-            f"(₹{available:,.0f} free, ₹{cost_per_lot:,.0f}/lot, cap={max_cap:.0%})"
+            f"(₹{available:,.0f} free, ₹{cost_per_lot:,.0f}/lot, cap={max_cap:.0%}, "
+            f"risk-fit≤{max_by_risk})"
         )
         return lots
 
@@ -1325,15 +1344,24 @@ class CommodityOptionsLearning:
                     risk_est = trade.get("risk_per_lot", 0) * trade.get("lots", 1)
                     ok, reason = daily_risk_budget.check(strategy_name, risk_est, symbol=symbol)
                     if not ok:
-                        logger.info(f"[CommOpts] {short} blocked by risk budget: {reason}")
-                        if _AUDIT_AVAILABLE:
-                            trade_decision_audit.log(AuditEntry(
-                                symbol=short, strategy=strategy_name,
-                                decision=Decision.REJECTED_BY_FILTER,
-                                rejection_reason=f"risk_budget: {reason}",
-                                data_snapshot={"risk_est": risk_est},
-                            ))
-                        return
+                        if self._is_real():
+                            # REAL money: the cap is a hard stop — block the trade.
+                            logger.info(f"[CommOpts] {short} blocked by risk budget: {reason}")
+                            if _AUDIT_AVAILABLE:
+                                trade_decision_audit.log(AuditEntry(
+                                    symbol=short, strategy=strategy_name,
+                                    decision=Decision.REJECTED_BY_FILTER,
+                                    rejection_reason=f"risk_budget: {reason}",
+                                    data_snapshot={"risk_est": risk_est},
+                                ))
+                            return
+                        # PAPER/learning: cap is ADVISORY — record the trade anyway so we
+                        # still learn the strategy's edge on high-value commodities (e.g.
+                        # SILVER) whose 1-lot size would exceed real-capital limits.
+                        # Edge is measured by R-multiple, not absolute rupees.
+                        logger.info(
+                            f"[CommOpts] {short} risk-budget ADVISORY (paper, not blocking): {reason}"
+                        )
                     daily_risk_budget.register_open(symbol, strategy_name)
                 except Exception as _rbe:
                     logger.debug(f"[CommOpts] risk budget check error (skipped): {_rbe}")
