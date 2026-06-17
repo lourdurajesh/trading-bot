@@ -4,9 +4,14 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>AlphaLens Trading Bot</title>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Versions are PINNED on purpose. Unpinned @babel/standalone began defaulting
+       preset-react to the automatic JSX runtime, which injects
+       `import {jsx} from "react/jsx-runtime"` into the output — breaking this classic
+       (non-module) text/babel script with "Cannot use import statement outside a module".
+       7.23.6 uses the classic runtime. Do not revert to unpinned URLs. -->
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.23.6/babel.min.js"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;font-size:14px}
