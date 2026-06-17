@@ -104,24 +104,27 @@ def main():
             logger.info("  No trades generated.")
             continue
 
-        avg_wr  = sum(r.win_rate for r in traded) / len(traded)
-        avg_pf  = sum(r.profit_factor for r in traded) / len(traded)
-        avg_sh  = sum(r.sharpe_ratio for r in traded) / len(traded)
-        avg_dd  = sum(r.max_drawdown_pct for r in traded) / len(traded)
-        avg_ret = sum(r.total_return_pct for r in traded) / len(traded)
-        total_t = sum(r.total_trades for r in traded)
-        avg_exp = sum(r.expectancy for r in traded) / len(traded)
+        # POOLED aggregate — combine every trade across symbols and compute one set
+        # of metrics. Averaging per-symbol ratios (PF, Sharpe) is statistically invalid:
+        # one symbol with PF 8 on 3 trades masks nine losers. Pooling is the truth.
+        from backtesting.backtest_engine import BacktestResult
+        pooled = BacktestResult(symbol="ALL", strategy=strat_name, timeframe=tf,
+                                start_date="", end_date="")
+        pooled.trades = [t for r in traded for t in r.trades]
+        pooled = compute_metrics(pooled)
+        total_pnl = sum(t.pnl for t in pooled.trades)
 
         top3 = sorted(traded, key=lambda r: r.profit_factor, reverse=True)[:3]
         bot3 = sorted(traded, key=lambda r: r.profit_factor)[:3]
 
-        logger.info(f"\n  ── {strat_name} aggregate ({len(traded)} symbols, {total_t} trades) ──")
-        logger.info(f"  Avg Win Rate   : {avg_wr:.0%}")
-        logger.info(f"  Avg PF         : {avg_pf:.2f}")
-        logger.info(f"  Avg Sharpe     : {avg_sh:.2f}")
-        logger.info(f"  Avg MaxDD      : {avg_dd:.1f}%")
-        logger.info(f"  Avg Return     : {avg_ret:+.1f}%")
-        logger.info(f"  Avg Expectancy : ₹{avg_exp:+.0f} per trade")
+        logger.info(f"\n  ── {strat_name} POOLED ({len(traded)} symbols, {pooled.total_trades} trades) ──")
+        logger.info(f"  Win Rate       : {pooled.win_rate:.0%}")
+        logger.info(f"  Profit Factor  : {pooled.profit_factor:.2f}   (gross profit / gross loss, all trades)")
+        logger.info(f"  Expectancy     : ₹{pooled.expectancy:+.0f} per trade")
+        logger.info(f"  Total P&L      : ₹{total_pnl:+,.0f}")
+        logger.info(f"  Avg winner/loser: ₹{pooled.avg_winner:,.0f} / ₹{pooled.avg_loser:,.0f}")
+        logger.info(f"  Max DD         : {pooled.max_drawdown_pct:.1f}%")
+        logger.info(f"  Sharpe (approx): {pooled.sharpe_ratio:.2f}")
         logger.info(f"  Top 3 by PF    : {[r.symbol for r in top3]}")
         logger.info(f"  Bottom 3 by PF : {[r.symbol for r in bot3]}")
 
