@@ -457,7 +457,14 @@ class LearningEngine:
                 if instrument_type == "nse_options":
                     # pnl_pts = premium move per unit (same units as entry_price)
                     # monetary P&L = pnl_pts × lot_size − fees (computed at read time in get_trades)
-                    fees    = FEES_OPTIONS_FLAT
+                    # Real round-trip cost (B2.2): brokerage + STT + exchange + GST on the
+                    # actual premium × lot quantity. Replaces the old flat ₹40 assumption.
+                    _lot = int(metadata.get("lot_size") or 1)
+                    try:
+                        from analysis.cost_model import single_option_cost
+                        fees = single_option_cost("NSE_OPT", entry, eff_exit, _lot)
+                    except Exception:
+                        fees = FEES_OPTIONS_FLAT
                     pnl_pts = round(eff_exit - entry, 2)
                     pnl_r   = round((eff_exit - entry) / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
                 else:

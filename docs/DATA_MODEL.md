@@ -42,8 +42,11 @@ Every closed `commodity_learning_trades` row now records **how its P&L was deriv
 `stop_loss`, `target`, `rr_planned`, `pnl_pts` (per-unit move), `pnl_r`, `fees`, `mae_pts`/`mfe_pts`,
 `exit_reason`, `entry_time`/`exit_time`, `metadata` (instrument_type, lot_size, regime context).
 
-**Still to populate (B2.2 cost model):** `fees` is captured as a column but defaults to 0 for
-commodity trades until the real cost model lands. Net-of-cost P&L is a B2 task.
+**Transaction costs (B2.2 — done):** P&L is now reported **net of real round-trip costs**
+(brokerage + STT/CTT + exchange + SEBI + stamp + GST), computed by `analysis/cost_model.py` with
+rates in `config/cost_rates.json` (editable; no hard-coding). Commodity `fees` column now stores the
+computed cost and `pnl_approx` is net; NSE options replaced the old flat ₹40 with the real model.
+Typical: ~₹58 for a 1-lot NIFTY option round trip, ~₹200 for a 1-lot high-value MCX spread.
 
 **Aggregates (not columns):** signals/day and win-rate/expectancy are computed at analysis time
 from `entry_time` counts and `pnl_r` — no per-trade field needed.

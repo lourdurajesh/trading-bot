@@ -1,0 +1,28 @@
+{
+  "_comment": "F&O transaction-cost rates (Indian discount broker + statutory charges). Rates as of 2024-25; update when broker tariff or govt/exchange charges change. All *_pct values are fractions (0.001 = 0.10%). Edit here — no hard-coding in code.",
+  "_updated": "2026-06-17",
+  "NSE_OPT": {
+    "brokerage_per_order": 20.0,
+    "stt_pct_sell":        0.001000,
+    "exchange_txn_pct":    0.00035030,
+    "sebi_pct":            0.00000100,
+    "stamp_pct_buy":       0.00003000,
+    "gst_pct":             0.18
+  },
+  "MCX_OPT": {
+    "brokerage_per_order": 20.0,
+    "ctt_pct_sell":        0.000500,
+    "exchange_txn_pct":    0.00041800,
+    "sebi_pct":            0.00000100,
+    "stamp_pct_buy":       0.00003000,
+    "gst_pct":             0.18
+  },
+  "NSE_EQ_INTRADAY": {
+    "brokerage_per_order": 20.0,
+    "stt_pct_sell":        0.000250,
+    "exchange_txn_pct":    0.00002970,
+    "sebi_pct":            0.00000100,
+    "stamp_pct_buy":       0.00003000,
+    "gst_pct":             0.18
+  }
+}

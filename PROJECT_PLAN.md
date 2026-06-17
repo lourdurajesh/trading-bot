@@ -165,8 +165,12 @@ before measuring is guessing.
   Files: `commodity_options_learning.py` (`_compute_lots`, risk-gate call site), server `.env`.
   *Follow-up:* enable mini/micro contracts (SILVERMIC, GOLDM) in the instruments table so real
   mode has a fitting alternative when fulls are skipped.
-- `[ ]` **B2.2 Real cost model.** Brokerage + STT + exchange + spread per round trip, configurable
-  in `.env`/JSON, applied to expectancy and to exit math.
+- `[x]` **B2.2 Real cost model. DONE.** Built `analysis/cost_model.py` (brokerage + STT/CTT +
+  exchange + SEBI + stamp + GST) with rates in `config/cost_rates.json` (editable; no hard-coding).
+  Commodity P&L is now **net** of costs with `fees` stored per trade; NSE-options learning replaced
+  the flat ₹40 with the real model (~₹58/1-lot NIFTY round trip, ~₹200/1-lot high-value MCX spread).
+  Files: `analysis/cost_model.py`, `config/cost_rates.json`, `commodity_options_learning.py`,
+  `learning_engine.py`.
 - `[ ]` **B2.3 Fill realism.** Use bid/ask, reject illiquid strikes (fixes the OI=0 false
   rejects — same chain-data root we just touched). File: `execution/options_executor.py`,
   `analysis/spread_quality.py`.

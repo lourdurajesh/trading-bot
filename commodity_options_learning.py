@@ -1813,9 +1813,28 @@ class CommodityOptionsLearning:
 
                 # ── Honest P&L: mark to the REAL option spread when the live chain
                 #    is available. Falls back to the labeled estimate otherwise. ──
-                real_pnl, real_r, real_src = self._realized_pnl_from_chain(trade, lot_size, lots)
+                real_pnl, real_r, real_src, cur_atm, cur_otm = \
+                    self._realized_pnl_from_chain(trade, lot_size, lots)
                 if real_pnl is not None:
                     pnl_approx, pnl_r, pnl_source = real_pnl, real_r, real_src
+
+                # ── Cost model (B2.2): subtract real round-trip transaction costs ──
+                # so the recorded P&L is NET. Uses entry leg premiums (metadata) and
+                # current leg premiums (chain mark) when available, else approximates
+                # the exit turnover with the entry premiums.
+                fees = 0.0
+                try:
+                    from analysis.cost_model import debit_spread_cost
+                    e_atm = float(trade_meta.get("atm_prem", 0) or 0)
+                    e_otm = float(trade_meta.get("otm_prem", 0) or 0)
+                    x_atm = float(cur_atm) if cur_atm is not None else e_atm
+                    x_otm = float(cur_otm) if cur_otm is not None else e_otm
+                    qty   = lot_size * lots
+                    if e_atm > 0:
+                        fees = debit_spread_cost("MCX_OPT", e_atm, e_otm, x_atm, x_otm, qty)
+                        pnl_approx = round(pnl_approx - fees, 2)   # NET of costs
+                except Exception as _fe:
+                    logger.debug(f"[CommOpts] cost-model error (fees=0): {_fe}")
 
                 # ── Real exit: place broker close orders ──────────
                 if self._is_real():
@@ -1825,7 +1844,7 @@ class CommodityOptionsLearning:
                         f"spot={spot:.2f} pnl=₹{pnl_approx:+.0f} ({pnl_r:+.1f}R)"
                     )
 
-                self._db_close(trade["id"], spot, exit_reason, pnl_approx, pnl_r, pnl_source)
+                self._db_close(trade["id"], spot, exit_reason, pnl_approx, pnl_r, pnl_source, fees)
                 closed.append(key)
                 logger.info(
                     f"[CommOpts] {'REAL' if self._is_real() else 'PAPER'} CLOSE "
@@ -2083,8 +2102,9 @@ class CommodityOptionsLearning:
         Realized P&L per unit = (current_spread_value − entry_net_debit), where
         current_spread_value = current_ATM_premium − current_OTM_premium.
 
-        Returns (pnl_inr, pnl_r, 'CHAIN_MARK') when the live chain prices both legs,
-        else (None, None, None) so the caller falls back to the labeled ESTIMATE.
+        Returns (pnl_inr, pnl_r, 'CHAIN_MARK', cur_atm, cur_otm) when the live chain
+        prices both legs (cur_* are the current leg premiums, for the cost model),
+        else (None, None, None, None, None) so the caller falls back to the labeled ESTIMATE.
         """
         try:
             instrument = trade["instrument"]
@@ -2093,7 +2113,7 @@ class CommodityOptionsLearning:
             otm_strike = trade.get("otm_strike")
             net_debit  = trade.get("net_debit", 0) or 0
             if atm_strike is None or otm_strike is None or net_debit <= 0:
-                return None, None, None
+                return None, None, None, None, None
 
             # Remaining DTE of the trade's original expiry (entry DTE minus days held).
             entry_dte = int(trade.get("dte", 0) or 0)
@@ -2106,21 +2126,21 @@ class CommodityOptionsLearning:
 
             chain = self._get_chain(_fyers_sym(instrument))
             if not chain:
-                return None, None, None
+                return None, None, None, None, None
 
             cur_atm, _, _ = self._chain_lookup(chain, atm_strike, opt_type, rem_dte)
             cur_otm, _, _ = self._chain_lookup(chain, otm_strike, opt_type, rem_dte)
             if cur_atm is None or cur_otm is None:
-                return None, None, None
+                return None, None, None, None, None
 
             cur_spread        = cur_atm - cur_otm
             realized_per_unit = cur_spread - net_debit
             pnl_inr           = round(realized_per_unit * lot_size * lots, 2)
             pnl_r             = round(realized_per_unit / net_debit, 2)
-            return pnl_inr, pnl_r, "CHAIN_MARK"
+            return pnl_inr, pnl_r, "CHAIN_MARK", cur_atm, cur_otm
         except Exception as exc:
             logger.debug(f"[CommOpts] real-mark error: {exc}")
-            return None, None, None
+            return None, None, None, None, None
 
     # ─────────────────────────────────────────────────────────────
     # DATABASE
@@ -2252,16 +2272,17 @@ class CommodityOptionsLearning:
     def _db_close(
         self, trade_id: str, exit_spot: float,
         reason: str, pnl: float, pnl_r: float, pnl_source: str = "ESTIMATE",
+        fees: float = 0.0,
     ) -> None:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
                 UPDATE commodity_learning_trades
                 SET spot_at_exit=?, exit_reason=?, pnl_approx=?, pnl_r=?,
-                    pnl_source=?, status='CLOSED', exit_time=?
+                    pnl_source=?, fees=?, status='CLOSED', exit_time=?
                 WHERE id=?
             """, (
                 exit_spot, reason,
-                round(pnl, 2), round(pnl_r, 2), pnl_source,
+                round(pnl, 2), round(pnl_r, 2), pnl_source, round(fees, 2),
                 datetime.now(tz=IST).isoformat(),
                 trade_id,
             ))
