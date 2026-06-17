@@ -1431,29 +1431,43 @@ class CommodityOptionsLearning:
         # OTM leg is 2 strikes away (defines spread width)
         otm  = (atm + 2 * step) if opt_type == "call" else (atm - 2 * step)
 
-        # Try to read real prices from chain; fall back to BS
+        # Try to read real prices from chain; fall back to BS.
+        # Capture bid/ask/OI per leg for fill realism + liquidity (B2.3).
         atm_premium = otm_premium = None
-
+        atm_bid = atm_ask = otm_bid = otm_ask = 0.0
+        atm_oi  = otm_oi  = 0
         atm_sym = otm_sym = ""
+        priced_from_chain = False
         if chain:
-            atm_premium, real_iv, nfo_sym = self._chain_lookup(
-                chain, atm, opt_type, dte
-            )
-            if real_iv and real_iv > 0:
-                iv = real_iv
-            if nfo_sym:
-                atm_sym = nfo_sym
-            otm_premium, _, otm_nfo = self._chain_lookup(chain, otm, opt_type, dte)
-            if otm_nfo:
-                otm_sym = otm_nfo
+            atm_q = self._leg_data(chain, atm, opt_type)
+            otm_q = self._leg_data(chain, otm, opt_type)
+            if atm_q:
+                atm_premium = atm_q["ltp"]
+                atm_bid, atm_ask, atm_oi = atm_q["bid"], atm_q["ask"], atm_q["oi"]
+                if atm_q["iv"] > 0:
+                    iv = atm_q["iv"]
+                if atm_q["symbol"]:
+                    atm_sym = atm_q["symbol"]
+                priced_from_chain = True
+            if otm_q:
+                otm_premium = otm_q["ltp"]
+                otm_bid, otm_ask, otm_oi = otm_q["bid"], otm_q["ask"], otm_q["oi"]
+                if otm_q["symbol"]:
+                    otm_sym = otm_q["symbol"]
 
         if atm_premium is None or atm_premium <= 0:
             atm_premium = _bs_price(spot, atm, iv, dte, opt_type)
+            priced_from_chain = False
         if otm_premium is None or otm_premium <= 0:
             otm_premium = _bs_price(spot, otm, iv, dte, opt_type)
+            priced_from_chain = False
 
-        # Net debit = buy ATM − sell OTM credit
-        net_debit  = round(atm_premium - otm_premium, 2)
+        # Net debit with FILL REALISM (B2.3): you BUY the ATM (pay the ask) and
+        # SELL the OTM (receive the bid), so the true debit is wider than mid/LTP.
+        # Fall back to LTP when bid/ask are missing.
+        buy_atm  = atm_ask if atm_ask > 0 else atm_premium
+        sell_otm = otm_bid if otm_bid > 0 else otm_premium
+        net_debit  = round(buy_atm - sell_otm, 2)
         spread_width = abs(atm - otm)
         max_profit   = round(spread_width - net_debit, 2)
 
@@ -1470,24 +1484,17 @@ class CommodityOptionsLearning:
         sq_score = 5.0   # default if engine unavailable
         if _SPREAD_QUALITY_AVAILABLE:
             try:
-                # Build leg data from chain or BS estimates
-                # OI from chain if available; else use conservative estimate
-                long_oi  = 1000 if chain else 0
-                short_oi = 800  if chain else 0
-                if chain:
-                    for exp in chain.get("expiryData", []):
-                        for opt in exp.get("optionData", []):
-                            if opt.get("strikePrice") == atm:
-                                long_oi  = opt.get(f"{opt_type}OI", long_oi)
-                            if opt.get("strikePrice") == otm:
-                                short_oi = opt.get(f"{opt_type}OI", short_oi)
-                            if long_oi != 1000 and short_oi != 800:
-                                break
-
-                long_leg  = LegData(bid=atm_premium * 0.97, ask=atm_premium * 1.03,
-                                    oi=long_oi, theta=-0.02 * atm_premium)
-                short_leg = LegData(bid=otm_premium * 0.97, ask=otm_premium * 1.03,
-                                    oi=short_oi, theta=-0.02 * otm_premium)
+                # Real OI + bid/ask from the chain (B2.3). When a leg isn't priced
+                # from the chain, bid/ask fall back to a synthetic ±3% and OI to 0
+                # (0 OI on a real chain correctly fails the liquidity gate).
+                long_leg  = LegData(
+                    bid=atm_bid if atm_bid > 0 else atm_premium * 0.97,
+                    ask=atm_ask if atm_ask > 0 else atm_premium * 1.03,
+                    oi=atm_oi, theta=-0.02 * atm_premium)
+                short_leg = LegData(
+                    bid=otm_bid if otm_bid > 0 else otm_premium * 0.97,
+                    ask=otm_ask if otm_ask > 0 else otm_premium * 1.03,
+                    oi=otm_oi, theta=-0.02 * otm_premium)
                 sq = spread_quality_engine.evaluate(long_leg, short_leg, net_debit, max_profit)
                 sq_score = sq.quality_score
 
@@ -1533,7 +1540,7 @@ class CommodityOptionsLearning:
             "lot_size":     lot,
             "risk_per_lot": risk_per_lot,
             "dte":          dte,
-            "data_source":  "live_chain" if chain else "bs_estimate",
+            "data_source":  "live_chain" if priced_from_chain else "bs_estimate",
             "metadata": {
                 "rsi":           rsi_val,
                 "ema5":          ema5_val,
@@ -2050,48 +2057,64 @@ class CommodityOptionsLearning:
             logger.debug(f"[CommOpts] Chain exception for {symbol}: {e}")
             return None
 
+    def _leg_data(self, chain: dict, strike: float, opt_type: str) -> Optional[dict]:
+        """
+        Return a strike's CE/PE quote {ltp, bid, ask, oi, volume, iv, symbol} from the
+        MCX option chain, or None. Handles both Fyers layouts:
+          - FLAT (current): top-level optionsChain = individual CE/PE rows with
+            option_type / strike_price / ltp / bid / ask / oi / volume / symbol.
+          - PAIRED (legacy): expiryData[i].optionsChain rows with CE/PE sub-dicts.
+        The fetched FUT symbol already pins the expiry, so no DTE search is needed.
+        """
+        field = "CE" if opt_type == "call" else "PE"
+        try:
+            # ── FLAT format (primary) ──────────────────────────────
+            for r in (chain.get("optionsChain", []) or []):
+                if str(r.get("option_type", "")).upper() != field:
+                    continue
+                if abs(float(r.get("strike_price", 0) or 0) - strike) < 1:
+                    ltp = float(r.get("ltp") or r.get("close_price") or 0)
+                    if ltp > 0:
+                        return {
+                            "ltp": ltp,
+                            "bid": float(r.get("bid") or 0),
+                            "ask": float(r.get("ask") or 0),
+                            "oi":  int(r.get("oi") or 0),
+                            "volume": int(r.get("volume") or 0),
+                            "iv":  float(r.get("iv") or 0),
+                            "symbol": r.get("symbol", ""),
+                        }
+            # ── PAIRED format (legacy fallback) ────────────────────
+            for exp in (chain.get("expiryData", []) or []):
+                for row in (exp.get("optionsChain", []) or []):
+                    if abs(float(row.get("strikePrice", 0) or 0) - strike) < 1:
+                        leg = row.get(field, {}) or {}
+                        ltp = float(leg.get("ltp") or leg.get("close_price") or 0)
+                        if ltp > 0:
+                            return {
+                                "ltp": ltp,
+                                "bid": float(leg.get("bid") or 0),
+                                "ask": float(leg.get("ask") or 0),
+                                "oi":  int(leg.get("oi") or leg.get("openInterest") or 0),
+                                "volume": int(leg.get("volume") or 0),
+                                "iv":  float(leg.get("iv") or 0),
+                                "symbol": leg.get("symbol", ""),
+                            }
+        except Exception as exc:
+            logger.debug(f"[CommOpts] leg-data error: {exc}")
+        return None
+
     def _chain_lookup(
-        self, chain: dict, strike: int, opt_type: str, target_dte: int
+        self, chain: dict, strike: int, opt_type: str, target_dte: int = 0
     ) -> tuple[Optional[float], Optional[float], Optional[str]]:
         """
-        Find a specific strike/type in chain data.
-        Returns (ltp, iv, nfo_symbol) or (None, None, None).
+        Find a specific strike/type in chain data (thin wrapper over _leg_data).
+        Returns (ltp, iv, nfo_symbol) or (None, None, None). target_dte is accepted
+        for backward compatibility but unused — the FUT symbol pins the expiry.
         """
-        try:
-            expiries = chain.get("expiryData", [])
-            if not expiries:
-                return None, None, None
-
-            # Pick expiry closest to target_dte
-            from datetime import datetime as dt
-            today = dt.now(tz=IST).date()
-            best_expiry = None
-            best_diff   = 9999
-
-            for exp in expiries:
-                expiry_str = exp.get("expiry", "")
-                try:
-                    exp_date = dt.strptime(expiry_str, "%Y-%m-%d").date()
-                    diff = abs((exp_date - today).days - target_dte)
-                    if diff < best_diff:
-                        best_diff, best_expiry = diff, exp
-                except Exception:
-                    continue
-
-            if not best_expiry:
-                return None, None, None
-
-            field = "CE" if opt_type == "call" else "PE"
-            for row in best_expiry.get("optionsChain", []):
-                if abs(row.get("strikePrice", 0) - strike) < 1:
-                    leg = row.get(field, {})
-                    ltp = leg.get("ltp") or leg.get("close_price")
-                    iv  = leg.get("iv", 0)
-                    sym = leg.get("symbol", "")
-                    if ltp and ltp > 0:
-                        return float(ltp), float(iv) if iv else None, sym
-        except Exception as exc:
-            logger.debug(f"[CommOpts] Chain lookup error: {exc}")
+        q = self._leg_data(chain, strike, opt_type)
+        if q:
+            return q["ltp"], (q["iv"] or None), q["symbol"]
         return None, None, None
 
     def _realized_pnl_from_chain(self, trade: dict, lot_size: int, lots: int):

@@ -171,10 +171,22 @@ before measuring is guessing.
   the flat ₹40 with the real model (~₹58/1-lot NIFTY round trip, ~₹200/1-lot high-value MCX spread).
   Files: `analysis/cost_model.py`, `config/cost_rates.json`, `commodity_options_learning.py`,
   `learning_engine.py`.
-- `[ ]` **B2.3 Fill realism.** Use bid/ask, reject illiquid strikes (fixes the OI=0 false
-  rejects — same chain-data root we just touched). File: `execution/options_executor.py`,
-  `analysis/spread_quality.py`.
+- `[x]` **B2.3 Fill realism + MCX chain parser. DONE.** Investigation found the MCX chain is in
+  the same **flat format** that broke NIFTY — so the commodity engine's `_chain_lookup` (which
+  expected the paired format) silently fell back to Black-Scholes and **mislabeled** trades
+  `live_chain`. This also meant B1.1's `CHAIN_MARK` could never fire. Rewrote `_chain_lookup` +
+  added `_leg_data` to parse the flat rows (real ltp/bid/ask/OI; no DTE refetch needed — the FUT
+  symbol pins the expiry). Now: real prices verified live (CRUDEOIL ATM 395 @ 1808 OI, etc.),
+  `CHAIN_MARK` fires, net_debit uses **fill realism** (buy ATM at ask, sell OTM at bid), the
+  liquidity gate uses **real OI**, and `data_source` is truthful (`live_chain` only when actually
+  priced from chain). File: `commodity_options_learning.py`.
+  *Tuning note:* `MIN_OI_LONG`/`MIN_OI_SHORT` (500/300) may be high for some commodity strikes
+  (e.g. COPPER ATM ≈ 303 OI) — env-configurable; revisit during B4 tuning.
+- ~~`execution/options_executor.py`~~ (NIFTY path already fixed earlier); `analysis/spread_quality.py`
+  now receives real OI/bid/ask.
 - **Exit criteria:** a signal that should fire is placed at a sane size; rejection log near-zero.
+- **B2 COMPLETE** — execution is now correct: sizing fits the budget, P&L is net of real costs,
+  and prices/liquidity come from the real chain.
 
 ## B3. Edge discovery — BACKTEST (the decisive phase)
 
