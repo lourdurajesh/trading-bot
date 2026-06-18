@@ -256,7 +256,12 @@ control flow. Full map: `docs/ARCHITECTURE_AUDIT.md`. Guardrail: `trading-archit
       moved to the flat layout. **Improves NSE**: PCR is now real (was hardcoded 0). Verified
       live — NIFTY/BANKNIFTY/FINNIFTY selections byte-identical to pre-change (sim=False), and
       identical to the old code on the DTE-refetch fallback path too.
-- `[ ]` **U2** Unify the signal type — all strategies → `Signal` (retire `dict` / `MCXSignalResult`).
+- `[~]` **U2** Unify the signal type — all strategies → `Signal` (retire `dict` / `MCXSignalResult`).
+  - `[x]` **slice-A** Learning equity strategies (`simple_rsi`, `simple_momentum`) now return
+    `Signal`; added generic `Signal.meta`; retired the `_sig_to_learning_dict` dict branch. (db25c01)
+  - `[ ]` **slice-B** MCX: retire `MCXSignalResult` — `MCXStrategy.generate_signal(df,spot,now)`
+    returns a `Signal` (indicator fields → `Signal.meta`); `commodity_options._evaluate` reads
+    `Signal`. Keep the `(df,spot,now)` call signature as the MCX adapter (full data-access unify is U6).
 - `[ ]` **U3** Unify exit management — one `PositionManager` (SL/target/trail/EOD/DTE) + adapter
   for spot-vs-LTP stop semantics.
 - `[ ]` **U4** Unify sizing/risk — one `RiskSizer` (B2.1 size-to-fit) for all asset classes.
