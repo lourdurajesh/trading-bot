@@ -333,7 +333,7 @@ class CommodityOptionsLearning:
 
     def __init__(self):
         self._open_positions: dict[str, dict] = {}  # key → trade
-        self._chain_cache:    dict[str, tuple] = {}  # symbol → (data, fetched_at)
+        # Chain caching now lives in analysis/options_chain.chain_service (U1)
         # Cooldown after a bad exit — blocks all re-entry on that instrument
         self._entry_cooldown: dict[str, datetime] = {}  # instrument → resume_at
         self._cooldown_cleared: set[str] = set()        # instruments manually force-cleared via API
@@ -2025,94 +2025,24 @@ class CommodityOptionsLearning:
     # FYERS CHAIN FETCH
     # ─────────────────────────────────────────────────────────────
 
+    # U1: chain fetch + parse now live in analysis/options_chain.py (ONE parser for
+    # NSE and MCX). These are thin delegations — do NOT reintroduce a local parser.
     def _get_chain(self, symbol: str) -> Optional[dict]:
-        """Try to fetch MCX options chain from Fyers. Returns None on failure."""
-        now = datetime.now(tz=IST)
-        if symbol in self._chain_cache:
-            cached, fetched_at = self._chain_cache[symbol]
-            if (now - fetched_at).total_seconds() < 120:
-                return cached
-
-        try:
-            from execution.fyers_broker import fyers_broker
-            if not fyers_broker._initialised or not fyers_broker._client:
-                return None
-
-            resp = fyers_broker._client.optionchain(data={
-                "symbol":      symbol,
-                "strikecount": 10,
-                "timestamp":   "",
-            })
-
-            if resp.get("s") != "ok":
-                logger.debug(f"[CommOpts] Chain fetch failed for {symbol}: {resp.get('message')}")
-                return None
-
-            data = resp.get("data", {})
-            self._chain_cache[symbol] = (data, now)
-            logger.info(f"[CommOpts] Live chain fetched for {symbol}")
-            return data
-
-        except Exception as e:
-            logger.debug(f"[CommOpts] Chain exception for {symbol}: {e}")
-            return None
+        """Fetch the MCX option chain via the shared chain service."""
+        from analysis.options_chain import chain_service
+        return chain_service.get_chain(symbol)
 
     def _leg_data(self, chain: dict, strike: float, opt_type: str) -> Optional[dict]:
-        """
-        Return a strike's CE/PE quote {ltp, bid, ask, oi, volume, iv, symbol} from the
-        MCX option chain, or None. Handles both Fyers layouts:
-          - FLAT (current): top-level optionsChain = individual CE/PE rows with
-            option_type / strike_price / ltp / bid / ask / oi / volume / symbol.
-          - PAIRED (legacy): expiryData[i].optionsChain rows with CE/PE sub-dicts.
-        The fetched FUT symbol already pins the expiry, so no DTE search is needed.
-        """
-        field = "CE" if opt_type == "call" else "PE"
-        try:
-            # ── FLAT format (primary) ──────────────────────────────
-            for r in (chain.get("optionsChain", []) or []):
-                if str(r.get("option_type", "")).upper() != field:
-                    continue
-                if abs(float(r.get("strike_price", 0) or 0) - strike) < 1:
-                    ltp = float(r.get("ltp") or r.get("close_price") or 0)
-                    if ltp > 0:
-                        return {
-                            "ltp": ltp,
-                            "bid": float(r.get("bid") or 0),
-                            "ask": float(r.get("ask") or 0),
-                            "oi":  int(r.get("oi") or 0),
-                            "volume": int(r.get("volume") or 0),
-                            "iv":  float(r.get("iv") or 0),
-                            "symbol": r.get("symbol", ""),
-                        }
-            # ── PAIRED format (legacy fallback) ────────────────────
-            for exp in (chain.get("expiryData", []) or []):
-                for row in (exp.get("optionsChain", []) or []):
-                    if abs(float(row.get("strikePrice", 0) or 0) - strike) < 1:
-                        leg = row.get(field, {}) or {}
-                        ltp = float(leg.get("ltp") or leg.get("close_price") or 0)
-                        if ltp > 0:
-                            return {
-                                "ltp": ltp,
-                                "bid": float(leg.get("bid") or 0),
-                                "ask": float(leg.get("ask") or 0),
-                                "oi":  int(leg.get("oi") or leg.get("openInterest") or 0),
-                                "volume": int(leg.get("volume") or 0),
-                                "iv":  float(leg.get("iv") or 0),
-                                "symbol": leg.get("symbol", ""),
-                            }
-        except Exception as exc:
-            logger.debug(f"[CommOpts] leg-data error: {exc}")
-        return None
+        """Strike CE/PE quote {ltp,bid,ask,oi,volume,iv,symbol} via the shared service."""
+        from analysis.options_chain import chain_service
+        return chain_service.leg_quote(chain, strike, opt_type)
 
     def _chain_lookup(
         self, chain: dict, strike: int, opt_type: str, target_dte: int = 0
     ) -> tuple[Optional[float], Optional[float], Optional[str]]:
-        """
-        Find a specific strike/type in chain data (thin wrapper over _leg_data).
-        Returns (ltp, iv, nfo_symbol) or (None, None, None). target_dte is accepted
-        for backward compatibility but unused — the FUT symbol pins the expiry.
-        """
-        q = self._leg_data(chain, strike, opt_type)
+        """Thin (ltp, iv, symbol) lookup over the shared chain service."""
+        from analysis.options_chain import chain_service
+        q = chain_service.leg_quote(chain, strike, opt_type)
         if q:
             return q["ltp"], (q["iv"] or None), q["symbol"]
         return None, None, None
