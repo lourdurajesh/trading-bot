@@ -210,7 +210,16 @@ win-rate/Sharpe/DD/expectancy; `walk_forward` + `monte_carlo` present). Key issu
 - `[ ]` **B3.5** Equity backtest is a *proxy* — the ₹1,000/day engine is index OPTIONS + MCX
   spreads. Wire `simulate_directional_options` + an MCX-spread simulation into the report.
 - **Exit criteria:** a ranked table of strategies by out-of-sample expectancy. **Go/no-go gate.**
-- **First datapoint:** RELIANCE MeanReversion 1H = 4 trades, PF 0.89 (losing) — tiny sample.
+- **POOLED results (2yr, 1H, trade-weighted — trustworthy):**
+  | Strategy | Trades | Win% | PF | Expectancy | Total P&L |
+  |---|---|---|---|---|---|
+  | MeanReversion | 54 | 43% | 0.58 | −₹1,035 | −₹55,898 |
+  | TrendFollow | 169 | 44% | 0.79 | −₹705 | −₹119,136 |
+  | ShortTrend | 43 | 49% | 0.96 | −₹70 | −₹3,016 |
+  | MomentumReversal | 4 | 0% | 0.00 | −₹7,074 | −₹28,296 |
+  **All four equity strategies have negative expectancy & PF < 1** — none has an edge as
+  configured. (Earlier "Avg PF 2.24" was the averaging bug; pooled PF 0.58 is the truth.)
+  These are the equity PROXY — the ₹1,000/day engine is index options + MCX (B3.5). Feeds B4.
 
 ## B4. Edge improvement (raise expectancy on the survivors)
 
@@ -228,6 +237,24 @@ win-rate/Sharpe/DD/expectancy; `walk_forward` + `monte_carlo` present). Key issu
 - `[ ]` **B5.2** Fixed fractional per-trade risk cap so a normal losing streak can't blow the
   runway (risk-of-ruin from B3.3 sets the fraction).
 - **Exit criteria:** governor enforces the daily ceiling/floor in a simulated multi-trade day.
+
+## Phase U — Unify execution architecture (MUST precede go-live)
+
+One pipeline for Equity / Index-Options / MCX; asset differences in adapters, not duplicated
+control flow. Full map: `docs/ARCHITECTURE_AUDIT.md`. Guardrail: `trading-architecture` skill.
+
+- `[~]` **U1 Unify the option-chain layer.**
+  - `[x]` **U1a** Shared `analysis/options_chain.py` (one fetch + parser, flat+paired); **MCX
+    migrated** onto it (deleted its duplicate parser). Verified live + unit-tested.
+  - `[ ]` **U1b** Migrate `execution/options_executor.py` (NSE) onto `chain_service` →
+    exactly one parser. Higher risk (just-fixed NSE path) — do with NIFTY/BANKNIFTY/FINNIFTY
+    live verification.
+- `[ ]` **U2** Unify the signal type — all strategies → `Signal` (retire `dict` / `MCXSignalResult`).
+- `[ ]` **U3** Unify exit management — one `PositionManager` (SL/target/trail/EOD/DTE) + adapter
+  for spot-vs-LTP stop semantics.
+- `[ ]` **U4** Unify sizing/risk — one `RiskSizer` (B2.1 size-to-fit) for all asset classes.
+- `[ ]` **U5** Unify order placement + ledger — one `OrderRouter` + one trades store (segment column).
+- `[ ]` **U6** Collapse the three `run_cycle`s into one orchestrator over instrument+adapter list.
 
 ## B6. Honest paper validation → go live small
 
