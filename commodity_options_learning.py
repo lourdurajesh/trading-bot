@@ -124,6 +124,16 @@ _INSTRUMENT_SEEDS = [
     ("MENTHAOIL",   "Mentha Oil",     360,     10, 0.40, "INR/kg",       300,   3000,  5, []),
 ]
 
+# Roots MCX lists as FUTURES-ONLY — no options exist (verified 2026-06-18 against the
+# Fyers MCX symbol master, public.fyers.in/sym_details/MCX_COM.csv). For these,
+# chain_service.get_chain() always returns None, so the engine would silently degrade
+# every trade to the BS ESTIMATE fallback (pnl_source=ESTIMATE) instead of CHAIN_MARK.
+# They must never be enabled for the options engine. SILVERMIC is the one that slipped
+# through as enabled; the others (GOLDGUINEA, GOLDPETAL, COPPERM, ALUMINIUM, ALUMINI,
+# LEAD, LEADMINI, NICKEL, NICKELM, COTTON, MENTHAOIL) are already disabled in the DB.
+# Real silver options are traded via SILVER and SILVERM, which DO have chains.
+_NO_MCX_OPTIONS = {"SILVERMIC"}
+
 _STRATEGY_CONFIG_PATH = "config/commodity_strategy_config.json"
 
 _MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
@@ -2193,11 +2203,23 @@ class CommodityOptionsLearning:
                 INSERT OR IGNORE INTO commodity_instruments
                 (name, display_name, lot_size, strike_step, typical_iv, price_unit,
                  min_price, max_price, rollover_buffer, valid_months, enabled)
-                VALUES (?,?,?,?,?,?,?,?,?,?,1)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
             """, [
-                (n, dn, ls, ss, iv, pu, mn, mx, rb, json.dumps(vm))
+                (n, dn, ls, ss, iv, pu, mn, mx, rb, json.dumps(vm),
+                 0 if n in _NO_MCX_OPTIONS else 1)
                 for n, dn, ls, ss, iv, pu, mn, mx, rb, vm in _INSTRUMENT_SEEDS
             ])
+
+            # INSERT OR IGNORE above cannot fix a row that already exists as enabled=1
+            # (SILVERMIC slipped through that way once). Force-disable the futures-only
+            # instruments explicitly — they have no option chain, so the options engine
+            # must never trade them regardless of prior DB state. Idempotent + safe to
+            # re-run on every startup.
+            if _NO_MCX_OPTIONS:
+                conn.executemany(
+                    "UPDATE commodity_instruments SET enabled=0 WHERE name=?",
+                    [(n,) for n in _NO_MCX_OPTIONS],
+                )
 
         self._load_contracts_from_db()
         logger.info(f"[CommOpts] DB ready — {len(MCX_CONTRACTS)} instruments loaded")
