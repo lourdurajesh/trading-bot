@@ -104,6 +104,55 @@ class OptionsChainService:
             logger.debug(f"[OptionsChain] leg_quote error: {exc}")
         return None
 
+    # ── Available strikes for a side ─────────────────────────────
+    def strikes(self, chain: dict, opt_type: str) -> list:
+        """
+        Sorted unique strike prices that carry a quote for `opt_type` (call|put).
+        Handles flat (primary) and paired (legacy) layouts. The NSE strike-selection
+        loop iterates these and asks leg_quote() for each — one parser, one lookup.
+        """
+        if not chain:
+            return []
+        field = "CE" if opt_type == "call" else "PE"
+        out: set = set()
+        try:
+            # FLAT: individual CE/PE rows at the top level
+            for r in (chain.get("optionsChain", []) or []):
+                if str(r.get("option_type", "")).upper() != field:
+                    continue
+                try:
+                    s = float(r.get("strike_price", 0) or 0)
+                except (ValueError, TypeError):
+                    continue
+                if s > 0:
+                    out.add(s)
+            # PAIRED (legacy): expiryData[i].optionsChain rows with CE/PE sub-dicts
+            for exp in (chain.get("expiryData", []) or []):
+                for row in (exp.get("optionsChain", []) or []):
+                    try:
+                        s = float(row.get("strikePrice", 0) or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if s > 0:
+                        out.add(s)
+        except Exception as exc:
+            logger.debug(f"[OptionsChain] strikes error: {exc}")
+        return sorted(out)
+
+    @staticmethod
+    def synthetic_delta(strike: float, spot: float, opt_type: str) -> float:
+        """
+        Approximate option delta magnitude from moneyness when the chain omits greeks.
+        Call delta via a tanh moneyness curve (~0.5 ATM, →1 deep ITM, →0 deep OTM);
+        put delta magnitude = 1 − call_delta. Lifted from the old Layout-C normaliser
+        so there is a single synthetic-delta definition for every caller.
+        """
+        import math
+        if spot <= 0:
+            return 0.5
+        call_delta = max(0.01, min(0.99, 0.5 + 0.5 * math.tanh((spot - strike) / (spot * 0.05))))
+        return call_delta if opt_type == "call" else round(1.0 - call_delta, 4)
+
     # ── Underlying spot (embedded row) ───────────────────────────
     def underlying_spot(self, chain: dict) -> Optional[float]:
         """Spot from the embedded underlying row (option_type='', strike=-1, spot in ltp/fp)."""

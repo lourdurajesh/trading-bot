@@ -243,12 +243,19 @@ win-rate/Sharpe/DD/expectancy; `walk_forward` + `monte_carlo` present). Key issu
 One pipeline for Equity / Index-Options / MCX; asset differences in adapters, not duplicated
 control flow. Full map: `docs/ARCHITECTURE_AUDIT.md`. Guardrail: `trading-architecture` skill.
 
-- `[~]` **U1 Unify the option-chain layer.**
+- `[x]` **U1 Unify the option-chain layer.** (U1a + U1b done — ONE parser for NSE + MCX.)
   - `[x]` **U1a** Shared `analysis/options_chain.py` (one fetch + parser, flat+paired); **MCX
     migrated** onto it (deleted its duplicate parser). Verified live + unit-tested.
-  - `[ ]` **U1b** Migrate `execution/options_executor.py` (NSE) onto `chain_service` →
-    exactly one parser. Higher risk (just-fixed NSE path) — do with NIFTY/BANKNIFTY/FINNIFTY
+  - `[x]` **U1b** Migrate `execution/options_executor.py` (NSE) onto `chain_service` →
+    exactly one parser. Higher risk (just-fixed NSE path) — done with NIFTY/BANKNIFTY/FINNIFTY
     live verification.
+    - `[x]` **slice-1** NSE *fetch* routed through `chain_service` (commit `be03e3e`).
+    - `[x]` **slice-2** NSE *parser* retired: `_select_from_chain` rewritten on
+      `chain_service.strikes`/`leg_quote`/`synthetic_delta`; deleted `_normalise_layout_b/_c`,
+      `_underlying_from_rows`, `_pick_expiry_epoch`, `_get_atm_iv`. Dashboard chain endpoints
+      moved to the flat layout. **Improves NSE**: PCR is now real (was hardcoded 0). Verified
+      live — NIFTY/BANKNIFTY/FINNIFTY selections byte-identical to pre-change (sim=False), and
+      identical to the old code on the DTE-refetch fallback path too.
 - `[ ]` **U2** Unify the signal type — all strategies → `Signal` (retire `dict` / `MCXSignalResult`).
 - `[ ]` **U3** Unify exit management — one `PositionManager` (SL/target/trail/EOD/DTE) + adapter
   for spot-vs-LTP stop semantics.

@@ -332,16 +332,20 @@ def get_options_chain(symbol: str):
     """Return live options chain for a symbol."""
     try:
         from execution.options_executor import options_executor
+        from analysis.options_chain import chain_service
         chain = options_executor._get_chain(symbol)
         if not chain:
             return {"available": False, "message": "Chain unavailable (Fyers not connected or symbol not supported)"}
-        expiries = chain.get("expiryData", [])
+        # Flat layout (U1b-slice-2): strikes live at the top level; expiryData is the
+        # expiry calendar. Read everything through the shared chain_service.
+        expiries     = chain_service.expiries(chain)   # [(epoch, date_str, dte), ...]
+        call_strikes = chain_service.strikes(chain, "call")
         return {
             "available":        True,
-            "underlying_value": chain.get("underlyingValue"),
+            "underlying_value": chain_service.underlying_spot(chain),
             "expiry_count":     len(expiries),
-            "nearest_expiry":   expiries[0].get("expiry") if expiries else None,
-            "strikes_count":    len(expiries[0].get("optionsChain", [])) if expiries else 0,
+            "nearest_expiry":   expiries[0][1] if expiries else None,
+            "strikes_count":    len(call_strikes),
         }
     except Exception as e:
         return {"available": False, "error": str(e)}
@@ -581,17 +585,21 @@ def nse_chain_debug(symbol: str = "NSE:NIFTY50-INDEX"):
         else:
             raw_error = "fyers_broker not initialised"
 
-        # Normalised view (uses 60s cache; pass force=True to bypass)
+        # Parsed view via the shared chain_service (force=True bypasses the 60s cache).
+        # Post-U1b-slice-2 there is no local normalisation — this shows what the ONE
+        # parser sees in the flat chain (real strikes / leg quotes).
+        from analysis.options_chain import chain_service
         norm = options_executor._get_chain(symbol, force=True)
         norm_info = {}
         if norm:
-            expiries = norm.get("expiryData", [])
+            call_strikes = chain_service.strikes(norm, "call")
+            put_strikes  = chain_service.strikes(norm, "put")
             norm_info = {
-                "underlyingValue": norm.get("underlyingValue"),
-                "expiry_blocks": len(expiries),
-                "first_expiry_key": expiries[0].get("expiry") if expiries else None,
-                "per_expiry_strikes": sum(len(b.get("optionsChain", [])) for b in expiries),
-                "first_3_pairs": expiries[0].get("optionsChain", [])[:3] if expiries else [],
+                "underlyingValue": chain_service.underlying_spot(norm),
+                "expiry_calendar": chain_service.expiries(norm),
+                "call_strikes": len(call_strikes),
+                "put_strikes":  len(put_strikes),
+                "first_3_call_quotes": [chain_service.leg_quote(norm, s, "call") for s in call_strikes[:3]],
             }
 
         from data.data_store import store as _store
