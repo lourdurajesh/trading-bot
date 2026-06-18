@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from analysis.indicators import atr, rsi, bollinger_bands, ema, relative_volume
 from data.data_store import store
+from strategies.base_strategy import Signal, Direction, SignalType
 
 IST             = ZoneInfo("Asia/Kolkata")
 _MARKET_OPEN    = dtime(10, 0)    # avoid opening candle gap risk (data: -196pt slippage on 9:45 entry)
@@ -43,13 +44,13 @@ logger = logging.getLogger(__name__)
 
 class SimpleRSIStrategy:
     """
-    Paper-only learning strategy. Returns a LearningSignal dict or None.
+    Paper-only learning strategy. Returns a Signal (EQUITY) or None.
     """
 
     name      = "SimpleRSI"
     hold_type = "intraday"
 
-    def evaluate(self, symbol: str) -> Optional[dict]:
+    def evaluate(self, symbol: str) -> Optional[Signal]:
         if "-INDEX" in symbol:
             return None  # indices need options strategies, not equity RSI
 
@@ -112,16 +113,19 @@ class SimpleRSIStrategy:
 
         rr = abs(target_2 - ltp) / risk   # overall 2R potential
 
-        signal = {
-            "strategy":    self.name,
-            "symbol":      symbol,
-            "direction":   direction,
-            "entry_price": round(ltp, 2),
-            "stop_loss":   round(stop, 2),
-            "target":      round(target_1, 2),   # T1 — partial booking trigger
-            "target_2":    round(target_2, 2),   # T2 — final exit
-            "rr":          round(rr, 2),
-            "metadata": {
+        signal = Signal(
+            symbol      = symbol,
+            strategy    = self.name,
+            direction   = Direction(direction),
+            signal_type = SignalType.EQUITY,
+            entry       = round(ltp, 2),
+            stop_loss   = round(stop, 2),
+            target_1    = round(target_1, 2),   # T1 — partial booking trigger
+            target_2    = round(target_2, 2),   # T2 — final exit
+            risk_reward = round(rr, 2),         # overall 2R potential (vs T2, not T1)
+            timeframe   = TIMEFRAME,
+            reason      = f"RSI {rsi_val:.0f} {'oversold' if direction == 'LONG' else 'overbought'} reversal",
+            meta = {
                 "rsi":           round(rsi_val, 1),
                 "rvol":          round(rvol_val, 2),
                 "atr":           round(atr_val, 2),
@@ -138,7 +142,7 @@ class SimpleRSIStrategy:
                 "timeframe":     TIMEFRAME,
                 "ts":            datetime.now(tz=IST).isoformat(),
             },
-        }
+        )
         logger.info(
             f"[SimpleRSI] PAPER {direction} {symbol} | "
             f"Entry {ltp:.2f} SL {stop:.2f} T1 {target_1:.2f} T2 {target_2:.2f} | RSI {rsi_val:.0f}"

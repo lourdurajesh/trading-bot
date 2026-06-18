@@ -623,11 +623,10 @@ def main():
     # so strategy.evaluate() sees 1D bars but the cross-over logic still works.
     # We run them through the engine exactly the same way as TrendFollow.
 
-    # Wrap the dict-returning strategies so the engine can handle them.
-    # The engine calls signal.is_valid() and signal.direction.value —
-    # we need to make these strategies return Signal objects during backtest.
-    # Since SimpleMomentum/SimpleRSI are standalone (not BaseStrategy subclasses),
-    # we create thin adapter wrappers.
+    # Backtest-only adapters: standalone re-implementations of the SimpleMomentum /
+    # SimpleRSI logic on daily bars (the live strategies run 15m/1H with rvol/adx
+    # filters). The engine calls signal.is_valid() and signal.direction.value, so
+    # these emit Signal objects directly. They do NOT call the live strategy classes.
 
     class _SimpleMomentumAdapter:
         """Adapter: wraps SimpleMomentumStrategy and produces Signal objects."""

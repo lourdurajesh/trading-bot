@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from analysis.indicators import atr, ema, rsi, adx, relative_volume
 from data.data_store import store
+from strategies.base_strategy import Signal, Direction, SignalType
 
 IST           = ZoneInfo("Asia/Kolkata")
 _MARKET_OPEN  = dtime(9, 45)
@@ -37,13 +38,13 @@ logger = logging.getLogger(__name__)
 
 class SimpleMomentumStrategy:
     """
-    Paper-only EMA crossover strategy. Returns LearningSignal dict or None.
+    Paper-only EMA crossover strategy. Returns a Signal (EQUITY) or None.
     """
 
     name      = "SimpleMomentum"
     hold_type = "intraday"
 
-    def evaluate(self, symbol: str) -> Optional[dict]:
+    def evaluate(self, symbol: str) -> Optional[Signal]:
         if "-INDEX" in symbol:
             return None  # indices need options strategies, not equity momentum
 
@@ -109,15 +110,18 @@ class SimpleMomentumStrategy:
 
         rr = abs(target - ltp) / risk
 
-        signal = {
-            "strategy":    self.name,
-            "symbol":      symbol,
-            "direction":   direction,
-            "entry_price": round(ltp, 2),
-            "stop_loss":   round(stop, 2),
-            "target":      round(target, 2),
-            "rr":          round(rr, 2),
-            "metadata": {
+        signal = Signal(
+            symbol      = symbol,
+            strategy    = self.name,
+            direction   = Direction(direction),
+            signal_type = SignalType.EQUITY,
+            entry       = round(ltp, 2),
+            stop_loss   = round(stop, 2),
+            target_1    = round(target, 2),     # single 3R target
+            risk_reward = round(rr, 2),
+            timeframe   = TIMEFRAME,
+            reason      = f"EMA9 {'>' if direction == 'LONG' else '<'} EMA21 crossover, ADX {adx_val:.0f}",
+            meta = {
                 "ema9":        round(ema9.iloc[-1], 2),
                 "ema21":       round(ema21.iloc[-1], 2),
                 "ema50":       round(ema50_val, 2),
@@ -131,7 +135,7 @@ class SimpleMomentumStrategy:
                 "timeframe":   TIMEFRAME,
                 "ts":          datetime.now(tz=IST).isoformat(),
             },
-        }
+        )
         logger.info(
             f"[SimpleMomentum] PAPER {direction} {symbol} | "
             f"Entry {ltp:.2f} SL {stop:.2f} T {target:.2f} | "

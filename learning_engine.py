@@ -134,7 +134,11 @@ class LearningEngine:
         self._run_index_options_learning(LEARNING_NSE_INDICES)
 
     def _sig_to_learning_dict(self, sig, strategy_name: str, strat=None) -> dict:
-        """Convert a Signal object or legacy dict to the learning trade dict format."""
+        """Serialise a Signal into the learning trade dict that _open_trade stores.
+
+        U2: every strategy now returns a Signal — the old dual-mode dict shim
+        (SimpleRSI/SimpleMomentum used to return raw dicts) is retired.
+        """
         # Read hold_type from the strategy object itself — each strategy declares
         # its own type. Fall back to _SWING_STRATEGIES list for any strategy that
         # hasn't been updated yet.
@@ -144,12 +148,6 @@ class LearningEngine:
             base_name = strategy_name.replace("_LRN", "")
             hold_type = "swing" if base_name in _SWING_STRATEGIES else "intraday"
 
-        if isinstance(sig, dict):
-            # SimpleRSI / SimpleMomentum return dicts — just inject hold_type
-            d = sig.copy()
-            d.setdefault("metadata", {})["hold_type"] = hold_type
-            return d
-
         entry = sig.entry
         stop  = sig.stop_loss
         tgt   = sig.target_1
@@ -157,13 +155,16 @@ class LearningEngine:
             round(abs(tgt - entry) / abs(entry - stop), 2)
             if abs(entry - stop) > 0 else 0
         )
-        meta = {
+        # Start from the strategy's generic context (RSI/EMA/ATR/BB snapshots etc.),
+        # then layer the canonical Signal fields on top.
+        meta = dict(getattr(sig, "meta", {}) or {})
+        meta.update({
             "regime":      sig.regime,
             "reason":      sig.reason,
             "confidence":  sig.confidence,
             "signal_type": sig.signal_type.value if hasattr(sig.signal_type, "value") else str(sig.signal_type),
             "hold_type":   hold_type,
-        }
+        })
         if sig.options_meta:
             meta.update(sig.options_meta)
         if getattr(sig, "signal_type", None) and sig.signal_type.value == "OPTIONS":
@@ -175,6 +176,7 @@ class LearningEngine:
             "entry_price": entry,
             "stop_loss":   stop,
             "target":      tgt,
+            "target_2":    sig.target_2,
             "rr":          rr,
             "metadata":    meta,
         }

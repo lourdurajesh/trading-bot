@@ -69,6 +69,11 @@ class Signal:
     # Options-specific (populated by options strategies)
     options_meta: dict  = field(default_factory=dict)
 
+    # Generic strategy context (indicators, regime detail, anything a strategy wants
+    # carried for logging / learning review). Non-options analogue of options_meta —
+    # e.g. the learning equity strategies stash RSI/EMA/ATR/BB snapshots here.
+    meta:         dict  = field(default_factory=dict)
+
     # Symbol whose LTP drives stop/target checks for this position.
     # Equity: same as symbol. Options: the NFO contract symbol.
     # Set by options strategies; equity strategies leave it empty.
