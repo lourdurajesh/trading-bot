@@ -298,21 +298,13 @@ class OptionsExecutor:
                 return cached
 
         try:
-            from execution.fyers_broker import fyers_broker
-            if not fyers_broker._initialised:
+            # U1: the Fyers optionchain fetch is shared via chain_service (one fetch
+            # path for NSE + MCX). Normalisation below is NSE-specific and stays here
+            # until U1b-slice-2 folds it into chain_service too.
+            from analysis.options_chain import chain_service
+            chain_data = chain_service.get_chain(underlying, strikecount=15)
+            if not chain_data:
                 return None
-
-            resp = fyers_broker._client.optionchain(data={
-                "symbol":      underlying,
-                "strikecount": 15,   # 15 strikes each side of ATM
-                "timestamp":   "",
-            })
-
-            if resp.get("s") != "ok":
-                logger.warning(f"[OptionsExecutor] Chain fetch failed for {underlying}: {resp}")
-                return None
-
-            chain_data = resp.get("data", {})
 
             # Diagnostic: check where Fyers put the strike rows.
             # Fyers v3 has two observed layouts:
@@ -418,18 +410,11 @@ class OptionsExecutor:
     def _get_chain_for_timestamp(self, underlying: str, epoch: int) -> Optional[dict]:
         """Fetch chain for a specific expiry epoch (used when nearest expiry is outside DTE range)."""
         try:
-            from execution.fyers_broker import fyers_broker
-            if not fyers_broker._initialised:
+            # U1: shared fetch (specific expiry epoch) via chain_service.
+            from analysis.options_chain import chain_service
+            chain_data = chain_service.get_chain(underlying, strikecount=15, timestamp=str(epoch))
+            if not chain_data:
                 return None
-            resp = fyers_broker._client.optionchain(data={
-                "symbol":      underlying,
-                "strikecount": 15,
-                "timestamp":   str(epoch),
-            })
-            if resp.get("s") != "ok":
-                logger.debug(f"[OptionsExecutor] Chain fetch (ts={epoch}) failed: {resp.get('message')}")
-                return None
-            chain_data         = resp.get("data", {})
             expiry_blocks      = chain_data.get("expiryData", [])
             top_level_strikes  = chain_data.get("optionsChain", [])
             underlying_val     = chain_data.get("underlyingValue")
