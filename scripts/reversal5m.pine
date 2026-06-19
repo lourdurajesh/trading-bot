@@ -1,0 +1,98 @@
+//@version=6
+// Reversal5m — Red→Green reclaim (index / futures), points-based trailing exit.
+//
+// MIRRORS the AlphaLens Reversal5m strategy ENTRY + the tuned index-point exit.
+//
+// IMPORTANT: TradingView backtests the UNDERLYING directional move — it cannot
+// price options. The live strategy buys ATM calls, where the edge comes from
+// option convexity (capped loss + convex winners). On the index/futures the
+// directional P&L is NEGATIVE — that is EXPECTED and does not mean the option
+// strategy loses. Use this to tune the ENTRY and the SL/TRAIL POINT levels, and
+// to see trade frequency / where stops land — not to judge profitability.
+//
+// Volume: index spot (e.g. NSE:NIFTY) usually has NO volume on TradingView — run
+// it on the FUTURES chart (e.g. NIFTY1!) for the volume filter, or turn it off.
+// Use a 5-minute chart.
+//
+// Per-index point defaults (from the 90d 5m backtest):
+//   NIFTY      SL 70  / trail 90
+//   BANKNIFTY  SL 150 / trail 220
+//   FINNIFTY   SL 80  / trail 140
+strategy("Reversal5m Red->Green Reclaim", overlay=true,
+     initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1,
+     pyramiding=0, process_orders_on_close=true,
+     commission_type=strategy.commission.percent, commission_value=0.03,
+     slippage=2)
+
+// ─── Entry inputs ─────────────────────────────────────────
+grpE    = "Entry"
+rsiLen  = input.int(14,   "RSI length",            group=grpE)
+rsiLow  = input.float(30, "RSI band low",          group=grpE)
+rsiHigh = input.float(70, "RSI band high",         group=grpE)
+useVol  = input.bool(true,"Use volume filter (use a futures chart)", group=grpE)
+rvolLen = input.int(20,   "RVOL average length",   group=grpE)
+rvolMin = input.float(1.2,"Min relative volume",   group=grpE)
+
+// ─── Exit inputs (index points) ───────────────────────────
+grpX     = "Exit (index points)"
+slPts    = input.float(70,  "Initial stop (points)", group=grpX, tooltip="NIFTY 70 / BANKNIFTY 150 / FINNIFTY 80")
+useTrail = input.bool(true, "Trailing stop",         group=grpX)
+trailPts = input.float(90,  "Trail below peak (pts)",group=grpX, tooltip="NIFTY 90 / BANKNIFTY 220 / FINNIFTY 140")
+useTgt   = input.bool(false,"Fixed target as well",  group=grpX)
+tgtPts   = input.float(160, "Target (points)",       group=grpX)
+
+// ─── Session square-off (IST) ─────────────────────────────
+grpS   = "Session"
+sqH    = input.int(15, "Square-off hour (IST)",   group=grpS)
+sqM    = input.int(15, "Square-off minute (IST)", group=grpS)
+
+// ─── Indicators ───────────────────────────────────────────
+rsi  = ta.rsi(close, rsiLen)
+vAvg = ta.sma(volume, rvolLen)
+rvol = vAvg > 0 ? volume / vAvg : na
+
+// ─── Pattern: red candle then green reclaim ───────────────
+isRedPrev  = close[1] < open[1]
+isGreenNow = close > open
+reclaim    = close > open[1]                       // green closes above red's open
+rsiOK      = rsi > rsiLow and rsi < rsiHigh and rsi > rsi[1]
+volOK      = (not useVol) or na(rvol) or rvol >= rvolMin   // fail-open if no volume
+longSignal = isRedPrev and isGreenNow and reclaim and rsiOK and volOK
+
+// ─── EOD flag (IST) ───────────────────────────────────────
+istH = hour(time, "Asia/Kolkata")
+istM = minute(time, "Asia/Kolkata")
+eod  = istH > sqH or (istH == sqH and istM >= sqM)
+
+// ─── Trailing state ───────────────────────────────────────
+var float peakPrice = na
+var float stopPrice = na
+
+// Entry: flat, signal, not at EOD
+if longSignal and strategy.position_size == 0 and not eod
+    strategy.entry("Long", strategy.long)
+
+// Manage open position
+if strategy.position_size > 0
+    if na(stopPrice)                               // just filled — init from avg price
+        stopPrice := strategy.position_avg_price - slPts
+        peakPrice := high
+    peakPrice := math.max(peakPrice, high)
+    if useTrail
+        stopPrice := math.max(stopPrice, peakPrice - trailPts)   // ratchet up only
+    if useTgt
+        strategy.exit("X", "Long", stop=stopPrice, limit=strategy.position_avg_price + tgtPts)
+    else
+        strategy.exit("X", "Long", stop=stopPrice)
+    if eod
+        strategy.close("Long", comment="EOD")
+
+// Reset state when flat
+if strategy.position_size == 0
+    peakPrice := na
+    stopPrice := na
+
+// ─── Visuals ──────────────────────────────────────────────
+plotshape(longSignal and strategy.position_size == 0, "Signal",
+     shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.tiny)
+plot(strategy.position_size > 0 ? stopPrice : na, "Trail stop", color.red, style=plot.style_linebr)
