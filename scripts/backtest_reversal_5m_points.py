@@ -134,6 +134,32 @@ def gen_entries(symbol, df, iv):
     return entries
 
 
+def sim_ptrail(entries, sl_pts, trail_pts):
+    """Points-based trailing stop: initial stop = entry − sl_pts, then ratchet the
+    stop up to (peak_spot − trail_pts) as the index makes new highs. Exit on the
+    trailed stop / EOD; reprice the option at the exit spot."""
+    trades = []
+    for e in entries:
+        stop_spot = e["spot"] - sl_pts
+        peak = e["spot"]
+        exit_mid = None; reason = "EOD"
+        for (hi, lo, cl, held) in e["path"]:
+            dte_j = max(0.0, e["dte_y"] - held * BAR_YEARS)
+            peak = max(peak, hi)
+            ts = peak - trail_pts
+            if ts > stop_spot:
+                stop_spot = ts                       # ratchet up only
+            if lo <= stop_spot:
+                exit_mid = _px(stop_spot, e["strike"], dte_j, e["iv"])
+                reason = "TRAIL" if stop_spot > e["spot"] - sl_pts else "STOP"
+                break
+        if exit_mid is None:
+            last = e["path"][-1]
+            exit_mid = _px(last[2], e["strike"], max(0.0, e["dte_y"] - last[3] * BAR_YEARS), e["iv"])
+        trades.append({"pnl": _pnl(e["entry_mid"], exit_mid, e["qty"]), "reason": reason})
+    return trades
+
+
 def _pnl(entry_mid, exit_mid, qty):
     entry_fill = entry_mid * (1 + SPREAD_PCT)
     exit_fill  = exit_mid * (1 - SPREAD_PCT)
@@ -178,44 +204,54 @@ def summ(trades):
     return len(trades), len(wins)/len(trades), pf, exp, sum(t["pnl"] for t in trades)
 
 
+# Trailing fine-tune grid — points-based initial SL × points-based trail.
+# NIFTY SL widened (20-40 was too tight). (iv, [init SL pts], [trail pts])
+TRAIL_CFG = {
+    "NSE:NIFTY50-INDEX":   (0.12, [50, 70, 90],    [40, 60, 90]),
+    "NSE:NIFTYBANK-INDEX": (0.15, [120, 150, 200], [100, 150, 220]),
+    "NSE:FINNIFTY-INDEX":  (0.14, [60, 80, 110],   [70, 100, 140]),
+}
+
+
 def main():
     days = int(sys.argv[1]) if len(sys.argv) > 1 else 90
     fyers_broker.initialise()
     cl = fyers_broker._client
-    print(f"=== Reversal5m index-POINT SL/target — {days}d 5m, ATM call, spread={SPREAD_PCT:.0%}/side ===")
+    print(f"=== Reversal5m POINTS + TRAILING fine-tune — {days}d 5m, ATM call, spread={SPREAD_PCT:.0%}/side ===")
     pooled_best = []
-    for sym, (iv, sls, tgts) in CFG.items():
+    for sym, (iv, sls, trails) in TRAIL_CFG.items():
         df = fetch(cl, sym, days)
         if df is None or len(df) < 60:
             print(f"{sym}: no data"); continue
         ents = gen_entries(sym, df, iv)
         short = sym.replace("NSE:", "").replace("-INDEX", "")
-        print(f"\n{short}  entries={len(ents)}  (SL pts {sls}, target pts {tgts})")
-        print(f"  {'SL':>4} {'TGT':>5} {'win':>5} {'PF':>5} {'exp/lot':>9} {'total':>11}  exits")
+        print(f"\n{short}  entries={len(ents)}  init-SL pts {sls}, trail pts {trails}")
+        print(f"  {'SL':>4} {'TRAIL':>6} {'win':>5} {'PF':>5} {'exp/lot':>9} {'total':>11}  exits")
         best = None
         for sl in sls:
-            for tg in tgts:
-                tr = sim_points(ents, sl, tg, mode="fixed")
+            for tr_pts in trails:
+                tr = sim_ptrail(ents, sl, tr_pts)
                 n, wr, pf, exp, tot = summ(tr)
                 if best is None or exp > best["exp"]:
-                    best = {"sl": sl, "tg": tg, "pf": pf, "wr": wr, "exp": exp, "tot": tot, "tr": tr}
-                print(f"  {sl:>4} {tg:>5} {wr:>4.0%} {pf:>5.2f} Rs.{exp:>7,.0f} Rs.{tot:>9,.0f}  "
+                    best = {"sl": sl, "tr": tr_pts, "pf": pf, "wr": wr, "exp": exp, "tot": tot, "trades": tr}
+                print(f"  {sl:>4} {tr_pts:>6} {wr:>4.0%} {pf:>5.2f} Rs.{exp:>7,.0f} Rs.{tot:>9,.0f}  "
                       f"{dict(Counter(t['reason'] for t in tr))}")
-        # let-it-run comparisons (tightest SL in range)
-        sl0 = sls[0]
-        for label, kw in (("SL+trail40", dict(mode="trail", trail_pct=0.40)),
-                          ("SL+noTGT/EOD", dict(mode="none"))):
-            tr = sim_points(ents, sl0, 0, **kw)
-            n, wr, pf, exp, tot = summ(tr)
-            print(f"  SL={sl0} {label:>12} {wr:>4.0%} {pf:>5.2f} Rs.{exp:>7,.0f} Rs.{tot:>9,.0f}  "
-                  f"{dict(Counter(t['reason'] for t in tr))}")
-        print(f"  >> BEST fixed: SL {best['sl']} / TGT {best['tg']} → PF {best['pf']:.2f} "
+        # reference: best fixed target within a comparable grid
+        ref_best = None
+        for sl in sls:
+            for tg in (sl * 2, sl * 3):
+                t2 = sim_points(ents, sl, tg, mode="fixed")
+                _, _, pf2, exp2, _ = summ(t2)
+                if ref_best is None or exp2 > ref_best[2]:
+                    ref_best = (sl, tg, exp2, pf2)
+        print(f"  >> BEST trail: SL {best['sl']} / trail {best['tr']} pts → PF {best['pf']:.2f} "
               f"win {best['wr']:.0%} exp Rs.{best['exp']:,.0f}/lot total Rs.{best['tot']:,.0f}")
-        pooled_best += best["tr"]
+        print(f"     (ref best fixed SL{ref_best[0]}/TGT{ref_best[1]}: PF {ref_best[3]:.2f} exp Rs.{ref_best[2]:,.0f})")
+        pooled_best += best["trades"]
 
     if pooled_best:
         n, wr, pf, exp, tot = summ(pooled_best)
-        print(f"\n=== POOLED best-fixed-per-index: trades={n} win={wr:.0%} PF={pf:.2f} "
+        print(f"\n=== POOLED best-trail-per-index: trades={n} win={wr:.0%} PF={pf:.2f} "
               f"exp=Rs.{exp:,.0f}/lot total=Rs.{tot:,.0f} ===")
 
 
