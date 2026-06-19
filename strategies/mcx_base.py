@@ -12,7 +12,7 @@ Design patterns:
 Contract for every concrete strategy:
   1. Inherit from MCXStrategy
   2. Declare @property name, priority, default_config
-  3. Implement generate_signal(df, spot, now) → Optional[MCXSignalResult]
+  3. Implement generate_signal(df, spot, now) → Optional[Signal]
 
 Session guards (holiday, opening blackout, entry cutoff) are enforced by
 MCXSessionCalendar in run_cycle() BEFORE per-instrument evaluation starts.
@@ -29,6 +29,8 @@ from typing import ClassVar, Optional
 
 import pandas as pd
 from zoneinfo import ZoneInfo
+
+from strategies.base_strategy import Signal
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger(__name__)
@@ -123,22 +125,14 @@ class MCXStrategyConfig:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# SIGNAL RESULT
+# SIGNAL TYPE (U2)
 # ─────────────────────────────────────────────────────────────────────
-
-@dataclass
-class MCXSignalResult:
-    """
-    Output from MCXStrategy.generate_signal().
-    Returned to CommodityOptions._evaluate() for position sizing and trade construction.
-    """
-    direction:      str              # "LONG" | "SHORT"
-    strategy_name:  str
-    signal_reason:  str              # human-readable — logged and stored in DB
-    rsi_val:        float
-    ema5_val:       float
-    ema20_val:      float
-    breakout_level: Optional[float] = None   # set only by BreakoutSpreadStrategy
+# MCX strategies return the shared `Signal` (strategies/base_strategy.py) — the
+# same type the NSE strategies use. The old MCXSignalResult is retired. An MCX
+# Signal is a CARRIER: it sets direction / strategy / reason and stashes the
+# indicator snapshot (rsi_val, ema5_val, ema20_val, breakout_level) in Signal.meta.
+# Strike/premium/spread construction happens later in CommodityOptions._build_trade
+# from the option chain, so entry/stop/target are left at their Signal defaults.
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -194,9 +188,9 @@ class MCXStrategy(ABC):
         df:  pd.DataFrame,
         spot: float,
         now:  datetime,
-    ) -> Optional[MCXSignalResult]:
+    ) -> Optional[Signal]:
         """
-        Core strategy logic. Return MCXSignalResult if a setup is found, else None.
+        Core strategy logic. Return a Signal if a setup is found, else None.
 
         Preconditions (guaranteed by the caller):
           - Session is confirmed open (MCXSessionCalendar.allows_entry == True)
@@ -214,7 +208,7 @@ class MCXStrategy(ABC):
         df:   pd.DataFrame,
         spot: float,
         now:  datetime,
-    ) -> Optional[MCXSignalResult]:
+    ) -> Optional[Signal]:
         """
         Template method — calls generate_signal() and handles errors.
         Do NOT override in subclasses.

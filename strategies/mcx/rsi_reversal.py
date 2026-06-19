@@ -18,7 +18,8 @@ from typing import Optional
 
 import pandas as pd
 
-from strategies.mcx_base import MCXStrategy, MCXStrategyConfig, MCXSignalResult
+from strategies.mcx_base import MCXStrategy, MCXStrategyConfig
+from strategies.base_strategy import Signal, Direction
 
 
 class RSIReversalSpreadStrategy(MCXStrategy):
@@ -50,7 +51,7 @@ class RSIReversalSpreadStrategy(MCXStrategy):
 
     def generate_signal(
         self, df: pd.DataFrame, spot: float, now: datetime
-    ) -> Optional[MCXSignalResult]:
+    ) -> Optional[Signal]:
         from analysis.indicators import rsi as calc_rsi, ema as calc_ema
 
         close   = df["close"]
@@ -64,29 +65,35 @@ class RSIReversalSpreadStrategy(MCXStrategy):
         # The old proximity check allowed EMA5 up to 0.5% below EMA20, which fired
         # in downtrends where RSI hit oversold by continued selling — catching a knife.
         if rsi_val < cfg.rsi_oversold and ema5 >= ema20:
-            return MCXSignalResult(
-                direction     = "LONG",
-                strategy_name = self.name,
-                signal_reason = (
+            return Signal(
+                symbol    = "",
+                strategy  = self.name,
+                direction = Direction.LONG,
+                reason    = (
                     f"RSI={rsi_val:.1f} < {cfg.rsi_oversold:.0f} (oversold), "
                     f"EMA5 {ema5:.1f} >= EMA20 {ema20:.1f} (uptrend intact)"
                 ),
-                rsi_val       = round(rsi_val, 1),
-                ema5_val      = round(ema5, 2),
-                ema20_val     = round(ema20, 2),
+                meta = {
+                    "rsi_val":   round(rsi_val, 1),
+                    "ema5_val":  round(ema5, 2),
+                    "ema20_val": round(ema20, 2),
+                },
             )
 
         if rsi_val > cfg.rsi_overbought and ema5 <= ema20:
-            return MCXSignalResult(
-                direction     = "SHORT",
-                strategy_name = self.name,
-                signal_reason = (
+            return Signal(
+                symbol    = "",
+                strategy  = self.name,
+                direction = Direction.SHORT,
+                reason    = (
                     f"RSI={rsi_val:.1f} > {cfg.rsi_overbought:.0f} (overbought), "
                     f"EMA5 {ema5:.1f} <= EMA20 {ema20:.1f} (downtrend intact)"
                 ),
-                rsi_val       = round(rsi_val, 1),
-                ema5_val      = round(ema5, 2),
-                ema20_val     = round(ema20, 2),
+                meta = {
+                    "rsi_val":   round(rsi_val, 1),
+                    "ema5_val":  round(ema5, 2),
+                    "ema20_val": round(ema20, 2),
+                },
             )
 
         return None

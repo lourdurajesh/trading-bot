@@ -60,7 +60,8 @@ from typing import Optional
 
 import pandas as pd
 
-from strategies.mcx_base import MCXStrategy, MCXStrategyConfig, MCXSignalResult
+from strategies.mcx_base import MCXStrategy, MCXStrategyConfig
+from strategies.base_strategy import Signal, Direction
 
 
 class BreakoutSpreadStrategy(MCXStrategy):
@@ -92,7 +93,7 @@ class BreakoutSpreadStrategy(MCXStrategy):
 
     def generate_signal(
         self, df: pd.DataFrame, spot: float, now: datetime
-    ) -> Optional[MCXSignalResult]:
+    ) -> Optional[Signal]:
         from analysis.indicators import (
             rsi as calc_rsi,
             ema as calc_ema,
@@ -150,20 +151,23 @@ class BreakoutSpreadStrategy(MCXStrategy):
                 and adx_now >= cfg.min_adx_breakout      # directional, not ranging
                 and rvol_ok                               # volume confirms (or N/A)
                 and macd_h > 0):                          # MACD bullish
-            return MCXSignalResult(
-                direction      = "LONG",
-                strategy_name  = self.name,
-                signal_reason  = (
+            return Signal(
+                symbol    = "",
+                strategy  = self.name,
+                direction = Direction.LONG,
+                reason    = (
                     f"Closed above {prev_high:.0f}+{buffer:.0f}buf "
                     f"(ATR×{cfg.atr_buffer_mult:.2f}), "
                     f"RSI={rsi_val:.1f}>{cfg.rsi_breakout_long:.0f}, "
                     f"ADX={adx_now:.0f}, {rvol_label}, "
                     f"MACD-H={macd_h:.2f}, EMA5>EMA20(+{ema_gap_pct:.1f}%)"
                 ),
-                rsi_val        = round(rsi_val, 1),
-                ema5_val       = round(ema5, 2),
-                ema20_val      = round(ema20, 2),
-                breakout_level = round(prev_high, 2),
+                meta = {
+                    "rsi_val":        round(rsi_val, 1),
+                    "ema5_val":       round(ema5, 2),
+                    "ema20_val":      round(ema20, 2),
+                    "breakout_level": round(prev_high, 2),
+                },
             )
 
         # ── SHORT ────────────────────────────────────────────────
@@ -174,20 +178,23 @@ class BreakoutSpreadStrategy(MCXStrategy):
                 and adx_now >= cfg.min_adx_breakout      # directional, not ranging
                 and rvol_ok                               # volume confirms (or N/A)
                 and macd_h < 0):                          # MACD bearish
-            return MCXSignalResult(
-                direction      = "SHORT",
-                strategy_name  = self.name,
-                signal_reason  = (
+            return Signal(
+                symbol    = "",
+                strategy  = self.name,
+                direction = Direction.SHORT,
+                reason    = (
                     f"Closed below {prev_low:.0f}-{buffer:.0f}buf "
                     f"(ATR×{cfg.atr_buffer_mult:.2f}), "
                     f"RSI={rsi_val:.1f}<{cfg.rsi_breakout_short:.0f}, "
                     f"ADX={adx_now:.0f}, {rvol_label}, "
                     f"MACD-H={macd_h:.2f}, EMA5<EMA20(-{ema_gap_pct:.1f}%)"
                 ),
-                rsi_val        = round(rsi_val, 1),
-                ema5_val       = round(ema5, 2),
-                ema20_val      = round(ema20, 2),
-                breakout_level = round(prev_low, 2),
+                meta = {
+                    "rsi_val":        round(rsi_val, 1),
+                    "ema5_val":       round(ema5, 2),
+                    "ema20_val":      round(ema20, 2),
+                    "breakout_level": round(prev_low, 2),
+                },
             )
 
         return None

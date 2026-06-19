@@ -42,7 +42,8 @@ DB_PATH = "db/trades.db"
 
 logger = logging.getLogger(__name__)
 
-from strategies.mcx_base import MCXStrategy, MCXStrategyConfig, MCXSignalResult
+from strategies.mcx_base import MCXStrategy, MCXStrategyConfig
+from strategies.base_strategy import Signal
 from strategies.mcx import TrendSpreadStrategy, RSIReversalSpreadStrategy, BreakoutSpreadStrategy
 from config.mcx_calendar import mcx_calendar, SessionPhase, SessionStatus
 from config.mcx_engine_settings import engine_settings
@@ -1300,7 +1301,7 @@ class CommodityOptionsLearning:
             return
 
         # Try strategies in priority order — first match wins
-        signal: Optional[MCXSignalResult] = None
+        signal: Optional[Signal] = None
         for _strat in self._strategy_registry:
             signal = _strat.evaluate(df, spot, now)
             if signal:
@@ -1328,13 +1329,17 @@ class CommodityOptionsLearning:
                 logger.info(f"[CommOpts] {short} no strategy signal — spot={spot:.2f}")
             return
 
-        direction      = signal.direction
-        strategy_name  = signal.strategy_name
-        signal_reason  = signal.signal_reason
-        rsi_val        = signal.rsi_val
-        ema5_val       = signal.ema5_val
-        ema20_val      = signal.ema20_val
-        breakout_level = signal.breakout_level
+        # U2: MCX strategies now return the shared Signal — direction is a Direction
+        # enum (.value gives the "LONG"/"SHORT" string the rest of this engine expects);
+        # the indicator snapshot lives in Signal.meta.
+        _sigmeta       = signal.meta or {}
+        direction      = signal.direction.value
+        strategy_name  = signal.strategy
+        signal_reason  = signal.reason
+        rsi_val        = _sigmeta.get("rsi_val")
+        ema5_val       = _sigmeta.get("ema5_val")
+        ema20_val      = _sigmeta.get("ema20_val")
+        breakout_level = _sigmeta.get("breakout_level")
         logger.info(f"[CommOpts] {short} → {strategy_name} {direction} | {signal_reason}")
 
         chain    = self._get_chain(symbol)

@@ -52,7 +52,8 @@ from typing import Optional
 
 import pandas as pd
 
-from strategies.mcx_base import MCXStrategy, MCXStrategyConfig, MCXSignalResult
+from strategies.mcx_base import MCXStrategy, MCXStrategyConfig
+from strategies.base_strategy import Signal, Direction
 
 
 class TrendSpreadStrategy(MCXStrategy):
@@ -84,7 +85,7 @@ class TrendSpreadStrategy(MCXStrategy):
 
     def generate_signal(
         self, df: pd.DataFrame, spot: float, now: datetime
-    ) -> Optional[MCXSignalResult]:
+    ) -> Optional[Signal]:
         from analysis.indicators import (
             rsi as calc_rsi,
             ema as calc_ema,
@@ -119,17 +120,20 @@ class TrendSpreadStrategy(MCXStrategy):
                 and ema_gap_pct >= cfg.ema_gap_min_pct
                 and adx_now >= cfg.min_adx_trend
                 and rvol_ok_long):
-            return MCXSignalResult(
-                direction     = "LONG",
-                strategy_name = self.name,
-                signal_reason = (
+            return Signal(
+                symbol    = "",
+                strategy  = self.name,
+                direction = Direction.LONG,
+                reason    = (
                     f"EMA5={ema5:.0f}>EMA20={ema20:.0f}(+{ema_gap_pct:.1f}%), "
                     f"RSI={rsi_val:.1f} in [{cfg.rsi_long_min:.0f},{cfg.rsi_long_max:.0f}], "
                     f"ADX={adx_now:.0f}, {rvol_label}"
                 ),
-                rsi_val       = round(rsi_val, 1),
-                ema5_val      = round(ema5, 2),
-                ema20_val     = round(ema20, 2),
+                meta = {
+                    "rsi_val":   round(rsi_val, 1),
+                    "ema5_val":  round(ema5, 2),
+                    "ema20_val": round(ema20, 2),
+                },
             )
 
         # ── SHORT ───────────────────────────────────────────────────
@@ -139,17 +143,20 @@ class TrendSpreadStrategy(MCXStrategy):
                 and ema_gap_pct >= cfg.ema_gap_min_pct
                 and adx_now >= cfg.min_adx_trend
                 and rvol_ok_short):
-            return MCXSignalResult(
-                direction     = "SHORT",
-                strategy_name = self.name,
-                signal_reason = (
+            return Signal(
+                symbol    = "",
+                strategy  = self.name,
+                direction = Direction.SHORT,
+                reason    = (
                     f"EMA5={ema5:.0f}<EMA20={ema20:.0f}(-{ema_gap_pct:.1f}%), "
                     f"RSI={rsi_val:.1f} in [{cfg.rsi_short_min:.0f},{cfg.rsi_short_max:.0f}], "
                     f"ADX={adx_now:.0f}, {rvol_label}"
                 ),
-                rsi_val       = round(rsi_val, 1),
-                ema5_val      = round(ema5, 2),
-                ema20_val     = round(ema20, 2),
+                meta = {
+                    "rsi_val":   round(rsi_val, 1),
+                    "ema5_val":  round(ema5, 2),
+                    "ema20_val": round(ema20, 2),
+                },
             )
 
         return None
