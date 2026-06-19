@@ -16,6 +16,12 @@
     "MIDCPNIFTY": 25,
     "SENSEX": 100
   },
+  "_index_trail_comment": "Underlying index-point exits for intraday call-buying (Reversal5m, InstitutionalMomentum learning). sl = initial stop in index points below entry; trail = points below running peak to ratchet the stop. Tuned on 90d 5m backtest 2026-06.",
+  "index_trail_points": {
+    "NIFTY": {"sl": 70, "trail": 90},
+    "BANKNIFTY": {"sl": 150, "trail": 220},
+    "FINNIFTY": {"sl": 80, "trail": 140}
+  },
   "equity_lot_sizes": {
     "RELIANCE": 500,
     "TCS": 175,

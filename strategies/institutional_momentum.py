@@ -192,9 +192,19 @@ class InstitutionalMomentumStrategy(BaseStrategy):
 
         # stop_loss = absolute NFO price at 30% loss (70% of premium)
         # target_1  = absolute NFO price at 55% gain (155% of premium)
-        # Both are absolute price levels — position_manager compares directly to LTP.
+        # Production position_manager still compares these premium levels to LTP.
+        # The LEARNING exit (paper) instead uses an underlying index-point trailing
+        # stop (exit_mode below) — the 55% fixed target was capping winners. Unifying
+        # the production exit onto the trail is U3.
         stop_loss = round(premium * 0.70, 2)
         target_1  = round(premium * 1.55, 2)
+
+        # Per-index underlying trailing-stop config (None → keep premium stop/target).
+        try:
+            _tp = options_executor.get_trail_points(symbol)
+        except Exception:
+            _tp = None
+        _sl_pts, _trail_pts = _tp if _tp else (0.0, 0.0)
 
         # Construct reason from conviction scorer
         score_summary = f"Score={result.score:+d} {result.direction}"
@@ -242,6 +252,17 @@ class InstitutionalMomentumStrategy(BaseStrategy):
                 "time_stop":           _TIME_STOP.strftime("%H:%M"),
                 "entry_legs":          entry_legs,
                 "exit_legs":           exit_legs,
+                # Learning/paper exit: underlying index-point trailing stop (replaces
+                # the winner-capping 55% premium target). Production still uses 30/55.
+                **({
+                    "exit_mode":       "underlying_trail",
+                    "underlying":      symbol,
+                    "entry_spot":      round(spot, 2),
+                    "sl_pts":          _sl_pts,
+                    "trail_pts":       _trail_pts,
+                    "peak_spot":       round(spot, 2),
+                    "trail_stop_spot": round(spot - _sl_pts, 2),
+                } if _tp else {}),
             }
         )
         signal.calculate_rr()

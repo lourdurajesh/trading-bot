@@ -65,6 +65,8 @@ LOT_SIZES: dict[str, int]      = _inst.get("index_lot_sizes",   {"NIFTY": 25, "B
 STRIKE_STEPS: dict[str, int]   = _inst.get("index_strike_steps",{"NIFTY": 50, "BANKNIFTY": 100,"FINNIFTY": 50, "MIDCPNIFTY": 25, "SENSEX": 100})
 EQUITY_LOT_SIZES: dict[str,int]= _inst.get("equity_lot_sizes",  {})
 EQUITY_STRIKE_STEPS: dict[str,int]=_inst.get("equity_strike_steps",{})
+# Underlying index-point exits for intraday call-buying (config-driven).
+INDEX_TRAIL_POINTS: dict[str,dict] = _inst.get("index_trail_points", {})
 
 logger.info(
     f"[OptionsExecutor] Lot sizes loaded: "
@@ -248,6 +250,18 @@ class OptionsExecutor:
     def get_strike_step(self, underlying: str) -> int:
         _, _, step = self._resolve_underlying(underlying)
         return step or 10
+
+    def get_trail_points(self, underlying: str) -> Optional[tuple[float, float]]:
+        """Config-driven (sl_pts, trail_pts) for an index's underlying-trailing exit,
+        or None if not configured. See config/nse_instruments.json:index_trail_points."""
+        short = INDEX_SHORT.get(underlying)
+        cfg = INDEX_TRAIL_POINTS.get(short) if short else None
+        if not cfg:
+            return None
+        try:
+            return float(cfg["sl"]), float(cfg["trail"])
+        except (KeyError, ValueError, TypeError):
+            return None
 
     def update_iv_history(self, underlying: str) -> None:
         """

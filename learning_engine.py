@@ -191,9 +191,11 @@ class LearningEngine:
         try:
             from strategies.directional_options    import DirectionalOptionsStrategy
             from strategies.institutional_momentum import InstitutionalMomentumStrategy
+            from strategies.reversal_5m            import Reversal5mStrategy
             index_strategies = [
                 DirectionalOptionsStrategy(),
                 InstitutionalMomentumStrategy(),
+                Reversal5mStrategy(),    # 5m red→green reclaim, ATM call + underlying trail
             ]
             for symbol in index_symbols:
                 if self._is_on_cooldown(symbol):
@@ -298,6 +300,34 @@ class LearningEngine:
                 except Exception as e:
                     logger.error(f"[Learning] Failed to subscribe options ticks for {symbol}: {e}")
 
+    def _underlying_trail_exit(self, metadata: dict, opt_ltp: float, store):
+        """
+        Underlying index-point trailing stop for an option-BUYING trade.
+
+        Initial stop = entry_spot − sl_pts. As the index makes new highs, ratchet
+        the stop up to (peak_spot − trail_pts). Exit the option at its current
+        premium LTP when the index trades at/through the trailed stop. peak/stop
+        are tracked in `metadata` (in-memory across cycles). Returns
+        (reason, opt_ltp) or (None, None) when not triggered / no index tick.
+        """
+        und  = metadata.get("underlying")
+        spot = store.get_ltp(und) if und else None
+        if not spot or spot <= 0:
+            return None, None   # no index tick this cycle — re-check next time
+        entry_spot = float(metadata.get("entry_spot") or 0)
+        sl_pts     = float(metadata.get("sl_pts") or 0)
+        trail_pts  = float(metadata.get("trail_pts") or 0)
+        init_stop  = entry_spot - sl_pts
+        peak_spot  = max(float(metadata.get("peak_spot") or entry_spot), float(spot))
+        metadata["peak_spot"] = peak_spot
+        cur_stop = max(float(metadata.get("trail_stop_spot") or init_stop),
+                       peak_spot - trail_pts, init_stop)
+        metadata["trail_stop_spot"] = cur_stop
+        if spot <= cur_stop:
+            reason = "TRAIL_STOP" if cur_stop > init_stop + 1e-6 else "STOP"
+            return reason, opt_ltp
+        return None, None
+
     def _check_exits(self, store) -> None:
         from datetime import time as dtime
         closed_keys = []
@@ -375,7 +405,12 @@ class LearningEngine:
 
             # Stop / target exits
             if instrument_type == "nse_options":
-                if ltp <= stop:
+                if metadata.get("exit_mode") == "underlying_trail":
+                    # Index-point trailing stop on the UNDERLYING (Reversal5m,
+                    # InstitutionalMomentum-learning). Exits the option at its
+                    # premium LTP when the index breaches the trailed stop.
+                    exit_reason, exit_price = self._underlying_trail_exit(metadata, ltp, store)
+                elif ltp <= stop:
                     exit_reason, exit_price = "STOP",   ltp
                 elif ltp >= target:
                     exit_reason, exit_price = "TARGET", ltp

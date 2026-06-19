@@ -607,8 +607,11 @@ class FyersStream:
         # return regime=UNKNOWN and never fire.
         from config.watchlist import NSE_INDICES
         logger.info(f"[FyersStream] Seeding index historical data for {NSE_INDICES} ...")
+        # Indices also seed 5m (Reversal5m needs it from the open; the store keeps 5m
+        # live but without a seed it takes ~2.5h of ticks to warm up after a restart).
+        index_timeframes = {**nse_timeframes, "5m": {"resolution": "5", "days_back": 15}}
         for symbol in NSE_INDICES:
-            for tf, params in nse_timeframes.items():
+            for tf, params in index_timeframes.items():
                 try:
                     df = self._fetch_historical(symbol, params["resolution"], params["days_back"])
                     if df is not None and len(df) > 0:

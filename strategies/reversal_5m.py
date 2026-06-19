@@ -145,30 +145,101 @@ class Reversal5mStrategy(BaseStrategy):
             f"Red→green reclaim (green close {green_close:.1f} > red open {red_open:.1f}) | "
             f"RSI {rsi_prev:.0f}→{rsi_now:.0f} rising in band | {rvol_label}"
         )
+        ctx = {
+            "red_open":    round(red_open, 2),
+            "red_close":   round(red_close, 2),
+            "green_open":  round(green_open, 2),
+            "green_close": round(green_close, 2),
+            "rsi_now":     round(rsi_now, 1),
+            "rsi_prev":    round(rsi_prev, 1),
+            "rvol":        round(rvol, 2),
+            "atr":         round(atr_val, 2),
+        }
 
-        signal = Signal(
-            symbol      = symbol,
-            strategy    = self.name,
-            direction   = Direction.LONG,
-            signal_type = SignalType.EQUITY,   # directional index view (backtest measures the move)
-            entry       = round(entry, 2),
-            stop_loss   = round(stop, 2),
-            target_1    = round(target_1, 2),
-            target_2    = round(target_2, 2),
-            confidence  = confidence,
-            timeframe   = self.timeframe,
-            reason      = reason,
-            meta = {
-                "red_open":    round(red_open, 2),
-                "red_close":   round(red_close, 2),
-                "green_open":  round(green_open, 2),
-                "green_close": round(green_close, 2),
-                "rsi_now":     round(rsi_now, 1),
-                "rsi_prev":    round(rsi_prev, 1),
-                "rvol":        round(rvol, 2),
-                "atr":         round(atr_val, 2),
+        # ── Backtest: directional index Signal (engine measures the underlying move) ──
+        if self.backtest_mode:
+            signal = Signal(
+                symbol      = symbol,
+                strategy    = self.name,
+                direction   = Direction.LONG,
+                signal_type = SignalType.EQUITY,
+                entry       = round(entry, 2),
+                stop_loss   = round(stop, 2),
+                target_1    = round(target_1, 2),
+                target_2    = round(target_2, 2),
+                confidence  = confidence,
+                timeframe   = self.timeframe,
+                reason      = reason,
+                meta        = ctx,
+            )
+            signal.calculate_rr()
+            self.log_signal(signal)
+            return signal
+
+        # ── Live/paper: buy an ATM weekly call; exit via the underlying index-point
+        # trailing stop (config-driven per index). Indices aren't directly tradeable. ──
+        return self._build_options_signal(symbol, ltp, confidence, reason, ctx)
+
+    def _build_options_signal(self, symbol, spot, confidence, reason, ctx) -> Optional[Signal]:
+        from execution.options_executor import options_executor
+
+        tp = options_executor.get_trail_points(symbol)
+        if not tp:
+            self.log_skip(symbol, "no index_trail_points config for this index")
+            return None
+        sl_pts, trail_pts = tp
+
+        opt = options_executor.get_best_option(
+            underlying=symbol, option_type="call", target_delta=0.50,
+            min_dte=1, max_dte=7,
+        )
+        if not opt or opt.is_simulated or not opt.symbol:
+            self.log_skip(symbol, "no live ATM call chain — skipping")
+            return None
+        entry_prem = float(opt.ltp or 0)
+        if entry_prem < 5.0:
+            self.log_skip(symbol, f"ATM premium ₹{entry_prem} too low")
+            return None
+
+        # Nominal premium stop for Signal.is_valid() + R reporting only — the REAL
+        # exit is the underlying index-point trail handled by the exit manager.
+        delta = abs(opt.delta) or 0.5
+        stop_prem = round(entry_prem - delta * sl_pts, 2)
+        if stop_prem >= entry_prem or stop_prem <= 0:
+            stop_prem = round(entry_prem * 0.7, 2)
+        nfo = opt.symbol
+
+        sig = Signal(
+            symbol         = symbol,
+            strategy       = self.name,
+            direction      = Direction.LONG,
+            signal_type    = SignalType.OPTIONS,
+            entry          = round(entry_prem, 2),
+            stop_loss      = stop_prem,
+            target_1       = round(entry_prem * 2.0, 2),   # nominal; trail governs exit
+            confidence     = confidence,
+            timeframe      = self.timeframe,
+            reason         = f"{reason} | ATM CALL {nfo} ₹{entry_prem:.1f} | trail {sl_pts:.0f}/{trail_pts:.0f}pts",
+            monitor_symbol = nfo,
+            options_meta   = {
+                "strategy":        "reversal_5m",
+                "option_type":     "call",
+                "nfo_symbol":      nfo,
+                "lot_size":        opt.lot_size,
+                "dte":             opt.dte,
+                "iv":              opt.iv,
+                "exit_mode":       "underlying_trail",
+                "underlying":      symbol,
+                "entry_spot":      round(spot, 2),
+                "sl_pts":          sl_pts,
+                "trail_pts":       trail_pts,
+                "peak_spot":       round(spot, 2),
+                "trail_stop_spot": round(spot - sl_pts, 2),
+                "entry_legs":      [{"symbol": nfo, "direction": "LONG"}],
+                "exit_legs":       [{"symbol": nfo, "direction": "SHORT"}],
+                **ctx,
             },
         )
-        signal.calculate_rr()
-        self.log_signal(signal)
-        return signal
+        sig.calculate_rr()
+        self.log_signal(sig)
+        return sig
