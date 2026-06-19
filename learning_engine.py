@@ -988,6 +988,14 @@ class LearningEngine:
                 d["pnl_inr"] = round((d.get("pnl_pts") or 0) * lot_size - fees, 2)
             else:
                 d["pnl_inr"] = None
+            # Live mark-to-market for OPEN trades so the dashboard summary reflects
+            # unrealized P&L instead of only updating when a trade closes.
+            if d.get("status") == "OPEN":
+                u = self._unrealized(d)
+                if u:
+                    d["live_ltp"]       = u["ltp"]
+                    d["unrealized_r"]   = u["pnl_r"]
+                    d["unrealized_inr"] = u["pnl_inr"]
             # SQLite can store NaN/Inf from edge-case calculations; JSON cannot.
             # Apply recursively so nested metadata values (e.g. rvol=nan) are
             # also sanitised — a shallow loop misses dict/list nesting and
@@ -996,11 +1004,72 @@ class LearningEngine:
             result.append(d)
         return result
 
+    def _unrealized(self, trade: dict) -> Optional[dict]:
+        """
+        Mark an OPEN trade to market using the SAME live LTP source as _check_exits
+        (store.get_ltp on the option contract, or the equity symbol). Returns
+        {ltp, pnl_pts, pnl_r, pnl_inr} or None when no live price is available.
+        """
+        try:
+            from data.data_store import store
+            meta  = trade.get("metadata") or {}
+            if not isinstance(meta, dict):
+                meta = {}
+            entry = float(trade.get("entry_price") or 0)
+            stop  = float(trade.get("stop_loss") or 0)
+            if entry <= 0:
+                return None
+
+            if meta.get("instrument_type") == "nse_options":
+                ltp = store.get_ltp(meta.get("nfo_symbol"))
+                if not ltp or ltp <= 0:
+                    return None
+                risk    = entry - stop          # long premium: stop < entry
+                pnl_pts = ltp - entry           # premium move per unit
+                lot     = int(meta.get("lot_size") or 1) or 1
+                pnl_inr = round(pnl_pts * lot - float(trade.get("fees") or 0), 2)
+            else:
+                ltp = store.get_ltp(trade.get("symbol"))
+                if not ltp or ltp <= 0:
+                    return None
+                if trade.get("direction") == "LONG":
+                    risk, pnl_pts = entry - stop, ltp - entry
+                else:
+                    risk, pnl_pts = stop - entry, entry - ltp
+                pnl_inr = None
+
+            pnl_r = round(pnl_pts / risk, 2) if risk and risk > 0 else 0.0
+            return {"ltp": round(ltp, 2), "pnl_pts": round(pnl_pts, 2),
+                    "pnl_r": pnl_r, "pnl_inr": pnl_inr}
+        except Exception as exc:
+            logger.debug(f"[Learning] _unrealized error for {trade.get('id')}: {exc}")
+            return None
+
+    def _open_summary(self) -> dict:
+        """Live unrealized P&L across all OPEN learning trades (marked to market)."""
+        open_trades = self.get_trades(status="OPEN", limit=500)
+        marked = 0
+        unreal_r = 0.0
+        unreal_inr = 0.0
+        for t in open_trades:
+            if t.get("unrealized_r") is not None:
+                marked += 1
+                unreal_r += float(t.get("unrealized_r") or 0)
+                unreal_inr += float(t.get("unrealized_inr") or 0)
+        return {
+            "count":          len(open_trades),
+            "marked":         marked,        # how many had a live price this cycle
+            "unrealized_r":   round(unreal_r, 2),
+            "unrealized_inr": round(unreal_inr, 2),
+        }
+
     def get_stats(self) -> dict:
-        """Win rate, avg R, best/worst trades, breakdown by strategy."""
+        """Win rate, avg R, best/worst trades, breakdown by strategy + live open P&L."""
+        open_block = self._open_summary()
         trades = self.get_trades(status="CLOSED", limit=1000)
         if not trades:
-            return {"total_closed": 0, "message": "No closed learning trades yet."}
+            return {"total_closed": 0, "open": open_block,
+                    "message": "No closed learning trades yet."}
 
         wins   = [t for t in trades if t["pnl_r"] > 0]
         losses = [t for t in trades if t["pnl_r"] <= 0]
@@ -1025,7 +1094,8 @@ class LearningEngine:
         total_fees = round(sum(t.get("fees", 0.0) or 0.0 for t in trades), 2)
         return {
             "total_closed":  len(trades),
-            "total_open":    len(self.get_trades(status="OPEN")),
+            "total_open":    open_block["count"],
+            "open":          open_block,
             "win_rate_pct":  round(len(wins) / len(trades) * 100, 1),
             "avg_r":         round(sum(all_r) / len(all_r), 2),
             "total_r":       round(sum(all_r), 2),

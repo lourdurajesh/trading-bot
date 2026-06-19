@@ -51,6 +51,15 @@ _MIN_DTE = 3
 _MAX_DTE = 7
 _TARGET_DELTA = 0.50            # ATM = delta ~0.50
 
+# Intraday confirmation (moderate). The conviction direction is fixed pre-market
+# (09:00/09:10). Before committing, check the recent 1H index trend hasn't clearly
+# turned against it. Vetoes ONLY a clear contradiction (EMA gap beyond the band) and
+# FAILS OPEN on missing/short data — deliberately light so genuine setups still fire.
+_CONFIRM_TF       = "1H"        # index 1H candles are seeded by the stream on startup
+_CONFIRM_EMA_FAST = 9
+_CONFIRM_EMA_SLOW = 21
+_CONFIRM_GAP_PCT  = 0.15        # EMA gap must exceed this % to count as a contradiction
+
 
 class InstitutionalMomentumStrategy(BaseStrategy):
     """
@@ -128,6 +137,17 @@ class InstitutionalMomentumStrategy(BaseStrategy):
                 f"direction={score_direction} (score={result.score if result else 'N/A'}) | "
                 f"capital={result.capital_pct if result else 35}%"
             )
+
+        # Moderate intraday confirmation — don't fire into a clearly opposing 1H
+        # trend. Applies in FORCE mode too: that's exactly the weak-signal case it
+        # guards (e.g. a pre-market BULLISH score firing LONG while the index has
+        # actually rolled over intraday).
+        short_dbg = symbol.replace("NSE:", "").replace("-INDEX", "")
+        confirmed, conf_reason = self._intraday_confirms(symbol, direction)
+        if not confirmed:
+            self.log_skip(symbol, f"Intraday confirmation veto — {conf_reason}")
+            return None
+        logger.info(f"[InstitutionalMomentum] {short_dbg} intraday confirm OK — {conf_reason}")
 
         # Prefer BANKNIFTY, allow NIFTY as fallback
         short_name = _ALLOWED[symbol]
@@ -231,6 +251,38 @@ class InstitutionalMomentumStrategy(BaseStrategy):
     # ─────────────────────────────────────────────────────────────
     # HELPERS
     # ─────────────────────────────────────────────────────────────
+
+    def _intraday_confirms(self, symbol: str, direction: Direction) -> tuple[bool, str]:
+        """
+        Moderate intraday confirmation against the recent 1H index trend.
+
+        Returns (ok, reason). Vetoes ONLY a clear contradiction — a LONG when the
+        1H EMA-fast is below EMA-slow by more than _CONFIRM_GAP_PCT (or the mirror
+        for SHORT). Fails OPEN (returns True) on missing/short data or any error so
+        a genuine high-conviction setup is never suppressed by a data gap.
+        """
+        try:
+            from data.data_store import store
+            from analysis.indicators import ema as calc_ema
+
+            df = store.get_ohlcv(symbol, _CONFIRM_TF, n=40)
+            if df is None or len(df) < _CONFIRM_EMA_SLOW + 1:
+                return True, "no 1H bars (fail-open)"
+
+            close = df["close"]
+            fast  = calc_ema(close, _CONFIRM_EMA_FAST).iloc[-1]
+            slow  = calc_ema(close, _CONFIRM_EMA_SLOW).iloc[-1]
+            gap_pct = (fast - slow) / slow * 100 if slow else 0.0
+
+            if direction == Direction.LONG and gap_pct <= -_CONFIRM_GAP_PCT:
+                return False, (f"1H EMA{_CONFIRM_EMA_FAST}<EMA{_CONFIRM_EMA_SLOW} "
+                               f"({gap_pct:+.2f}%) — intraday trend down, contradicts LONG")
+            if direction == Direction.SHORT and gap_pct >= _CONFIRM_GAP_PCT:
+                return False, (f"1H EMA{_CONFIRM_EMA_FAST}>EMA{_CONFIRM_EMA_SLOW} "
+                               f"({gap_pct:+.2f}%) — intraday trend up, contradicts SHORT")
+            return True, f"1H trend aligned (EMA gap {gap_pct:+.2f}%)"
+        except Exception as e:
+            return True, f"confirm error, fail-open: {e}"
 
     def _get_atm_option(
         self, symbol: str, option_type: str

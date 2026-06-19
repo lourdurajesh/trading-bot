@@ -518,10 +518,13 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
   });
 
   const closedF  = filtered.filter(t => t.status === "CLOSED");
+  const openF    = filtered.filter(t => t.status === "OPEN");
   const winnersF = closedF.filter(t => (t.pnl_r||0) > 0);
   const winRateF = closedF.length ? Math.round(winnersF.length / closedF.length * 100) : null;
   const avgRF    = closedF.length ? closedF.reduce((s,t)=>s+(t.pnl_r||0),0)/closedF.length : null;
   const totalRF  = closedF.reduce((s,t)=>s+(t.pnl_r||0), 0);
+  // Live unrealized R across open positions (backend marks each open row to market)
+  const liveR    = openF.reduce((s,t)=>s+(t.unrealized_r||0), 0);
   const isFiltered = !!(filterSym || filterStrat!=="all" || filterDir!=="all" || filterStatus!=="all" || filterDate);
 
   const inputStyle = {
@@ -585,6 +588,13 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
           <div className="lbl">Total R</div>
           <div className={`val ${totalRF>=0?"up":"down"}`}>
             {closedF.length?`${totalRF>=0?"+":""}${totalRF.toFixed(1)}R`:"—"}
+          </div>
+        </div>
+        <div className="metric">
+          <div className="lbl">Open · live</div>
+          <div className={`val ${liveR>=0?"up":"down"}`}>
+            {openF.length?`${liveR>=0?"+":""}${liveR.toFixed(2)}R`:"—"}
+            {openF.length?<span style={{color:"#64748b",fontSize:11,marginLeft:6}}>({openF.length})</span>:null}
           </div>
         </div>
       </div>
