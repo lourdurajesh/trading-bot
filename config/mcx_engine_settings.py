@@ -29,7 +29,7 @@ from datetime import time as dtime
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "db/trades.db"
+from config.settings import DB_PATH   # single source — reads $DB_PATH (.env), default db/trades.db
 
 # ─────────────────────────────────────────────────────────────────
 # DEFAULTS  —  written to DB on first run; never overwrite existing

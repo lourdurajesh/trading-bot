@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 ET  = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
-DB_PATH = "db/trades.db"
+from config.settings import DB_PATH   # single source — reads $DB_PATH (.env), default db/trades.db
 
 from strategies.reversal_core import bullish_reclaim, RSI_LOW, RSI_HIGH, MIN_RVOL, MIN_BARS
 from execution.exit_rules import underlying_exit

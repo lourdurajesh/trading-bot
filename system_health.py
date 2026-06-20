@@ -24,7 +24,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
-DB_PATH = "db/trades.db"
+from config.settings import DB_PATH   # single source — reads $DB_PATH (.env), default db/trades.db
 
 logger = logging.getLogger(__name__)
 

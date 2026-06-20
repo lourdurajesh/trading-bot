@@ -42,7 +42,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-DB_PATH        = "db/trades.db"
+from config.settings import DB_PATH   # single source — reads $DB_PATH (.env), default db/trades.db
 _NSE_KEY       = "holidays.nse.{year}"   # commodity_settings key per calendar year
 _MCX_EXTRA_KEY = "holidays.mcx_extra"    # small set of MCX-only closures (not in NSE list)
 

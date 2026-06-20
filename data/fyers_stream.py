@@ -44,7 +44,7 @@ fyers_stream: "FyersStream | None" = None
 # ── Module-level DB helpers ────────────────────────────────────────────────────
 # Used by dashboard endpoints that don't have a reference to the stream instance.
 
-_DB_PATH         = "db/trades.db"
+from config.settings import DB_PATH as _DB_PATH   # single source — $DB_PATH (.env), default db/trades.db
 _INVALID_SYM_KEY = "fyers.invalid_symbols"
 _INVALID_SYM_TTL = 30   # days
 

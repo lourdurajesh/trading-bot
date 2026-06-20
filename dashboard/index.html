@@ -202,9 +202,13 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const API      = "http://140.245.26.69:8000";
-const WS       = "ws://140.245.26.69:8000/ws/live";
-const WS_LOGS  = "ws://140.245.26.69:8000/ws/logs";
+// Derive from the origin that served this page (the FastAPI app itself), so the
+// dashboard is portable: works on the server's public IP, via an SSH tunnel on
+// localhost:8000, and over TLS (https→wss) — no hardcoded host to update on redeploy.
+const API      = window.location.origin;
+const _WS_BASE = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+const WS       = _WS_BASE + "/ws/live";
+const WS_LOGS  = _WS_BASE + "/ws/logs";
 
 /* ── API key helper ── */
 const getApiKey = () => localStorage.getItem("dashboardApiKey") || "";

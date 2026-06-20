@@ -29,12 +29,10 @@ import math
 import sqlite3
 from typing import Optional
 
-# Match the trade engines EXACTLY: learning_engine / commodity_options_learning /
-# us_reversal all use the relative "db/trades.db" (which on the server, cwd
-# /home/ubuntu/trading-bot, is the same file as config.settings.DB_PATH). The ledger
-# MUST write/read the same file the engines read their views from, so we mirror their
-# path rather than config.settings.DB_PATH (which can diverge off-server).
-DB_PATH = "db/trades.db"
+# Single source for the trades-DB path. config.settings reads $DB_PATH from .env
+# (default "db/trades.db"); every engine imports DB_PATH from there too, so the ledger
+# always writes/reads the exact file the engines read their views from.
+from config.settings import DB_PATH
 
 LEDGER_TABLE = "ledger"
 
