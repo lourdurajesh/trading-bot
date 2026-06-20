@@ -26,16 +26,26 @@ Asset-class differences live in **DATA / adapters**, never in copied control flo
 
 ## Single source of truth — where each concern MUST live
 
+**The rule applies EVERYWHERE and RETROACTIVELY — not just new strategies.** Any logic that
+exists in more than one place per asset class (Index / MCX / US / equity) is a bug waiting to
+happen: you "fix" it in one copy, the others silently keep the old behaviour, and the backtest
+stops matching live. Strategy logic, order placement, exits, sizing, ledger, AND the dashboard
+(API + screens) all obey this. Category differences live in an **adapter or a parameter**, never
+in a duplicated function/endpoint/screen.
+
 | Concern | The ONE place | Never duplicate into |
 |---|---|---|
-| Option chain fetch + parse | `execution/options_executor.py` | a second parser (MCX had one — being removed) |
+| Option chain fetch + parse | `analysis/options_chain.py` (`chain_service`) | a second parser (NSE + MCX both use it now) |
+| Strategy entry/exit *logic* | a shared core module per family (e.g. `strategies/reversal_core.py`) | re-inlined pattern/exit copies in NSE / US / backtests |
 | Transaction costs | `analysis/cost_model.py` + `config/cost_rates.json` | inline fee math |
-| Lot sizes / strike steps | `config/nse_instruments.json` (+ `scripts/fetch_lot_sizes.py`) | hard-coded numbers |
+| Lot sizes / strike steps / per-index params | `config/nse_instruments.json` | hard-coded numbers |
 | Tunable values | `.env` / JSON / DB (surfaced for config) | literals in code |
 | Strategy → output | `BaseStrategy.evaluate() → Signal` | `dict` or `MCXSignalResult` variants |
 | Position sizing / risk | one RiskSizer (target) | per-engine sizing |
 | Exit rules | one PositionManager (target) | per-engine `_check_exits` |
-| Order placement | one OrderRouter (target) | per-engine `place_order` call sites |
+| Order placement | one OrderRouter + BrokerAdapter | per-engine `place_order` / `_open_trade` call sites |
+| Ledger / trades store | one store + `segment` column | per-engine trade tables |
+| Dashboard API + screens | one endpoint/component per data-concern, **category as a param/filter** | per-category endpoints (`/learning/*`, `/commodity/*`, `/us/*` …) or cloned screens |
 
 ## Before you code — answer these
 
@@ -56,6 +66,12 @@ Asset-class differences live in **DATA / adapters**, never in copied control flo
 - Do **not** hard-code lot sizes, fees, thresholds, times — they are config.
 - When fixing a bug in pricing/exit/sizing, **grep for sibling copies** and fix the shared
   source, or flag that the duplication must be collapsed (this is why B2.3 had to be fixed twice).
+- Applies to the **dashboard** too: a new category (US, etc.) reuses the existing trades/stats
+  endpoints + screens with a `segment`/`market` filter — do **not** add `/us/*` clones of
+  `/learning/*`, and do not clone a tab. Category-specific *display* differences are a config/prop,
+  not a duplicated component.
+- If you must ship a shortcut that violates this (e.g. a standalone engine to move fast), **say so
+  explicitly in the response and log it as Phase-U debt** — never let it pass silently as "done".
 
 ## Current reality (migration state — keep this honest)
 

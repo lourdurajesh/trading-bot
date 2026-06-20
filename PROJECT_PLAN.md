@@ -268,8 +268,15 @@ control flow. Full map: `docs/ARCHITECTURE_AUDIT.md`. Guardrail: `trading-archit
 - `[ ]` **U4** Unify sizing/risk — one `RiskSizer` (B2.1 size-to-fit) for all asset classes.
 - `[ ]` **U5** Unify order placement + ledger — one `OrderRouter` + one trades store (segment column).
 - `[ ]` **U6** Collapse the three `run_cycle`s into one orchestrator over instrument+adapter list.
-
-## B6. Honest paper validation → go live small
+- `[ ]` **U7** Unify the **dashboard** — one trades/stats endpoint + one screen per data-concern,
+  category (NSE-eq / index-opt / MCX / US) selected by a `segment`/`market` param/filter. Retire the
+  per-category clones (`/learning/*`, `/commodity/*`, `/us/*`) and cloned tabs.
+- **Single-source debt to fold in (user directive 2026-06-20 — applies everywhere, retroactively):**
+  - `us_reversal.py` is a standalone pipeline + ledger table + `/us/*` endpoints — fold into the
+    unified strategy→exit→ledger + dashboard once U3/U5/U7 land (logic already shared via
+    `reversal_core`).
+  - Remaining exploratory backtest scripts still inline the Reversal pattern — route the rest through
+    `strategies/reversal_core.py` (the two deployed-config ones already are).
 
 - `[ ]` **B6.1** Run the survivor set in paper with **real measurement** for ≥ 2 weeks.
 - `[ ]` **B6.2** Compare live-paper stats to backtest (within tolerance = edge is real).
