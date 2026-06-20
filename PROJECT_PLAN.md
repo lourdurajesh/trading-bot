@@ -272,7 +272,13 @@ control flow. Full map: `docs/ARCHITECTURE_AUDIT.md`. Guardrail: `trading-archit
   - `[ ]` remaining: production EQUITY trailing/breakeven/partial-booking; MCX dynamic-target.
   Option SL/target/trail/breach/breakdown now single-source across learning/US/MCX/production.
 - `[ ]` **U4** Unify sizing/risk — one `RiskSizer` (B2.1 size-to-fit) for all asset classes.
-- `[ ]` **U5** Unify order placement + ledger — one `OrderRouter` + one trades store (segment column).
+- `[~]` **U5** Unify order placement + ledger.
+  - `[x]` **slice-1** `execution/order_router.py` — one broker-selection + place/cancel entry
+    (NSE/BSE/MCX→Fyers, US→Alpaca). MCX routed through it (was bypassing); order_manager selection
+    delegates to it (fixed latent MCX→Alpaca mis-route). (b3a6135)
+  - `[ ]` route order_manager's individual `place_order` calls through `order_router.place` (facade).
+  - `[ ]` **slice-2** one trades ledger with a `segment` column (collapse learning_trades /
+    commodity_learning_trades / us_reversal_trades).
 - `[ ]` **U6** Collapse the three `run_cycle`s into one orchestrator over instrument+adapter list.
 - `[ ]` **U7** Unify the **dashboard** — one trades/stats endpoint + one screen per data-concern,
   category (NSE-eq / index-opt / MCX / US) selected by a `segment`/`market` param/filter. Retire the
