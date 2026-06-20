@@ -370,93 +370,87 @@ def get_paper_positions():
 
 @app.get("/us/stats")
 def us_stats():
-    """US index-ETF (SPY/QQQ) Reversal paper stats."""
-    try:
-        from us_reversal import us_reversal
-        return us_reversal.get_stats()
-    except Exception as e:
-        return {"error": str(e)}
+    """US index-ETF (SPY/QQQ) Reversal paper stats — shim over /ledger/stats?segment=us."""
+    return ledger_stats(segment="us")
 
 
 @app.get("/us/trades")
 def us_trades(status: str = None, limit: int = 200):
-    """US Reversal paper trades (OPEN/CLOSED)."""
-    import sqlite3
-    try:
-        with sqlite3.connect("db/trades.db") as c:
-            c.row_factory = sqlite3.Row
-            q = "SELECT * FROM us_reversal_trades"
-            params: list = []
-            if status:
-                q += " WHERE status=?"; params.append(status.upper())
-            q += " ORDER BY entry_time DESC LIMIT ?"; params.append(int(limit))
-            rows = [dict(r) for r in c.execute(q, params)]
-        return {"trades": rows}
-    except Exception as e:
-        return {"error": str(e)}
+    """US Reversal paper trades — shim over /ledger/trades?segment=us."""
+    return ledger_trades(segment="us", status=status, limit=limit)
 
 
 # ─────────────────────────────────────────────────────────────────
 # LEARNING PAPER TRADES
 # ─────────────────────────────────────────────────────────────────
 
-@app.get("/learning/trades")
-def learning_trades(status: str = None, limit: int = 200):
-    """
-    All learning paper trades.
-    ?status=OPEN|CLOSED   filter by status
-    ?limit=N              max rows (default 200)
-    Each trade includes full entry metadata (RSI, EMA, ATR etc.)
-    for post-trade review and strategy refinement.
-    """
+# ─────────────────────────────────────────────────────────────────
+# UNIFIED LEDGER VIEW (U7) — one trades/stats/review endpoint for every
+# segment, category chosen by ?segment=nse|mcx|us. The per-category
+# differences live in api/segment_readers.py (an adapter), not in cloned
+# endpoints. The /learning, /commodity and /us routes below are now thin
+# shims over the same adapter and retire once the frontend (U7-slice-2)
+# calls /ledger/* directly.
+# ─────────────────────────────────────────────────────────────────
+
+@app.get("/ledger/trades")
+def ledger_trades(segment: str = "nse", status: str = None, limit: int = 200,
+                  symbol: str = None):
+    """Paper trades for any segment. ?segment=nse|mcx|us ?status=OPEN|CLOSED
+    ?limit=N ?symbol=CRUDEOIL (MCX instrument filter)."""
     import json as _json
     from fastapi.responses import JSONResponse
+    from api import segment_readers
     try:
-        from learning_engine import learning_engine
-        trades = learning_engine.get_trades(status=status, limit=limit)
-        # Explicitly serialise here so any remaining non-JSON-safe values
-        # are caught inside this try/except rather than propagating as a
-        # silent HTTP 500 from FastAPI's response serialiser (orjson).
-        payload = _json.dumps({"trades": trades}, allow_nan=False, default=str)
+        rows = segment_readers.trades(segment, status=status, limit=limit, symbol=symbol)
+        # Explicit allow_nan=False serialisation so any non-JSON-safe value is caught
+        # here rather than surfacing as a silent HTTP 500 from FastAPI's serialiser.
+        payload = _json.dumps({"trades": rows, "count": len(rows), "segment": segment},
+                              allow_nan=False, default=str)
         return JSONResponse(content=_json.loads(payload))
     except Exception as e:
-        logger.error(f"[Dashboard] /learning/trades error: {e}")
-        return {"error": str(e), "status": status, "limit": limit}
+        logger.error(f"[Dashboard] /ledger/trades segment={segment} error: {e}")
+        return {"error": str(e), "segment": segment, "status": status, "limit": limit}
+
+
+@app.get("/ledger/stats")
+def ledger_stats(segment: str = "nse"):
+    """Aggregate performance for any segment. ?segment=nse|mcx|us."""
+    from api import segment_readers
+    try:
+        return segment_readers.stats(segment)
+    except Exception as e:
+        return {"error": str(e), "segment": segment}
+
+
+@app.get("/ledger/review")
+def ledger_review(segment: str = "nse", strategy: str = None):
+    """Closed trades grouped by outcome bucket. ?segment=nse|mcx|us ?strategy=."""
+    from api import segment_readers
+    try:
+        return segment_readers.review(segment, strategy=strategy)
+    except Exception as e:
+        return {"error": str(e), "segment": segment}
+
+
+# ── Per-category shims (delegate to the unified adapter; retire at U7-slice-2) ──
+
+@app.get("/learning/trades")
+def learning_trades(status: str = None, limit: int = 200):
+    """NSE learning paper trades — shim over /ledger/trades?segment=nse."""
+    return ledger_trades(segment="nse", status=status, limit=limit)
 
 
 @app.get("/learning/stats")
 def learning_stats():
-    """
-    Aggregate performance of learning strategies.
-    Returns win rate, average R, breakdown by strategy/direction/exit-reason.
-    """
-    try:
-        from learning_engine import learning_engine
-        return learning_engine.get_stats()
-    except Exception as e:
-        return {"error": str(e)}
+    """NSE learning aggregate stats — shim over /ledger/stats?segment=nse."""
+    return ledger_stats(segment="nse")
 
 
 @app.get("/learning/review")
 def learning_review(strategy: str = None):
-    """
-    Closed learning trades grouped by outcome bucket
-    (strong_win / small_win / scratch / small_loss / large_loss).
-    Pass ?strategy=SimpleRSI or ?strategy=SimpleMomentum to filter.
-    """
-    try:
-        from learning_engine import learning_engine
-        trades = learning_engine.get_review(strategy=strategy)
-        from collections import defaultdict
-        grouped: dict = defaultdict(list)
-        for t in trades:
-            grouped[t["outcome_bucket"]].append(t)
-        return {
-            "by_outcome": dict(grouped),
-            "total":      len(trades),
-        }
-    except Exception as e:
-        return {"error": str(e)}
+    """NSE learning review buckets — shim over /ledger/review?segment=nse."""
+    return ledger_review(segment="nse", strategy=strategy)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -465,35 +459,15 @@ def learning_review(strategy: str = None):
 
 @app.get("/commodity/trades")
 def commodity_trades(status: str = None, symbol: str = None, limit: int = 200):
-    """
-    MCX commodity options paper trades.
-    ?status=OPEN|CLOSED   filter by status
-    ?symbol=CRUDEOIL      filter by commodity (partial match)
-    ?limit=N              max rows (default 200)
-    Each trade includes spread legs, greeks, P&L, and entry metadata.
-    """
-    try:
-        from commodity_options_learning import commodity_options
-        trades = commodity_options.get_trades(status=status, limit=limit)
-        if symbol:
-            sym_upper = symbol.upper()
-            trades = [t for t in trades if sym_upper in t.get("instrument", "").upper()]
-        return {"trades": trades, "count": len(trades)}
-    except Exception as e:
-        return {"error": str(e)}
+    """MCX commodity options paper trades — shim over /ledger/trades?segment=mcx.
+    ?status=OPEN|CLOSED ?symbol=CRUDEOIL (partial match) ?limit=N."""
+    return ledger_trades(segment="mcx", status=status, limit=limit, symbol=symbol)
 
 
 @app.get("/commodity/stats")
 def commodity_stats():
-    """
-    Aggregate performance of MCX commodity options paper trades.
-    Returns win rate, avg R, best/worst trade, breakdown by commodity and direction.
-    """
-    try:
-        from commodity_options_learning import commodity_options
-        return commodity_options.get_stats()
-    except Exception as e:
-        return {"error": str(e)}
+    """MCX commodity options aggregate stats — shim over /ledger/stats?segment=mcx."""
+    return ledger_stats(segment="mcx")
 
 
 @app.get("/commodity/chain/{symbol:path}")

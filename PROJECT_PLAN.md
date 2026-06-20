@@ -289,9 +289,19 @@ control flow. Full map: `docs/ARCHITECTURE_AUDIT.md`. Guardrail: `trading-archit
   - `[ ]` **slice-2** one trades ledger with a `segment` column (collapse learning_trades /
     commodity_learning_trades / us_reversal_trades).
 - `[ ]` **U6** Collapse the three `run_cycle`s into one orchestrator over instrument+adapter list.
-- `[ ]` **U7** Unify the **dashboard** — one trades/stats endpoint + one screen per data-concern,
+- `[~]` **U7** Unify the **dashboard** — one trades/stats endpoint + one screen per data-concern,
   category (NSE-eq / index-opt / MCX / US) selected by a `segment`/`market` param/filter. Retire the
   per-category clones (`/learning/*`, `/commodity/*`, `/us/*`) and cloned tabs.
+  - `[x]` **slice-1 (backend)** `api/segment_readers.py` — ONE adapter mapping `segment`→trades/stats/review
+    (nse=learning_engine, mcx=commodity_options, us=us_reversal; alias-tolerant). Unified
+    `/ledger/{trades,stats,review}?segment=` endpoints. The `/learning/*`, `/commodity/*`, `/us/*`
+    routes are now thin shims over the same adapter (one code path). Added `us_reversal.get_trades`
+    (US endpoint no longer inlines SQL). Smoke-verified all three segments against the live schema;
+    shim responses are additive-superset (extra `count`/`segment` keys), frontend reads `.trades`.
+  - `[ ]` **slice-2 (frontend)** collapse the cloned learning/commodity/us tabs+screens in
+    `dashboard/index.html` to ONE segment-driven screen calling `/ledger/*`, then delete the shims.
+  - Note: when **U5-slice-2** (one ledger table + `segment` col) lands, the three readers in
+    `segment_readers.py` collapse to a single `WHERE segment=?` query — endpoints/screen unchanged.
 - **Single-source debt to fold in (user directive 2026-06-20 — applies everywhere, retroactively):**
   - `us_reversal.py` is a standalone pipeline + ledger table + `/us/*` endpoints — fold into the
     unified strategy→exit→ledger + dashboard once U3/U5/U7 land (logic already shared via

@@ -176,6 +176,19 @@ class USReversalEngine:
         self._persist_close(p, spot, exit_mid, pnl, reason)
         logger.info(f"[USReversal] CLOSE {sym} {reason} spot=${spot:.2f} prem ${exit_mid:.2f} | P&L ${pnl:+.0f}")
 
+    # ── Reads (for the dashboard) ────────────────────────────────
+    def get_trades(self, status: str = None, limit: int = 200) -> list:
+        """US Reversal paper trades (OPEN/CLOSED). Parallels learning/commodity
+        get_trades so the dashboard reads every segment through one shape (U7)."""
+        with sqlite3.connect(DB_PATH) as c:
+            c.row_factory = sqlite3.Row
+            q = "SELECT * FROM us_reversal_trades"
+            params: list = []
+            if status:
+                q += " WHERE status=?"; params.append(status.upper())
+            q += " ORDER BY entry_time DESC LIMIT ?"; params.append(int(limit))
+            return [dict(r) for r in c.execute(q, params)]
+
     # ── Stats (for the dashboard) ────────────────────────────────
     def get_stats(self) -> dict:
         with sqlite3.connect(DB_PATH) as c:
