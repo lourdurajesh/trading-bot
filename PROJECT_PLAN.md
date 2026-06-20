@@ -263,8 +263,14 @@ control flow. Full map: `docs/ARCHITECTURE_AUDIT.md`. Guardrail: `trading-archit
   - `[x]` **slice-B** MCX: `MCXSignalResult` deleted — `MCXStrategy.generate_signal(df,spot,now)`
     returns a carrier `Signal` (indicators → `Signal.meta`); `commodity_options._evaluate` reads
     `Signal`. The `(df,spot,now)` call signature stays as the MCX data-access adapter (U6). (5137254)
-- `[ ]` **U3** Unify exit management — one `PositionManager` (SL/target/trail/EOD/DTE) + adapter
-  for spot-vs-LTP stop semantics.
+- `[~]` **U3** Unify exit management — shared exit-decision module `execution/exit_rules.py`
+  (premium SL/target, underlying trail `ratchet_stop`, `spot_breached`, `bear_breakdown`);
+  category differences (LONG/SHORT, points/%, trail-trigger) are params, not forks.
+  - `[x]` **slice-1** module + NSE-learning + US engines (f856430)
+  - `[x]` **slice-2** MCX trail + spot-breach onto shared primitives (ac54992)
+  - `[x]` **slice-3** production options STOP/TARGET via shared `premium_exit` (acb5e71)
+  - `[ ]` remaining: production EQUITY trailing/breakeven/partial-booking; MCX dynamic-target.
+  Option SL/target/trail/breach/breakdown now single-source across learning/US/MCX/production.
 - `[ ]` **U4** Unify sizing/risk — one `RiskSizer` (B2.1 size-to-fit) for all asset classes.
 - `[ ]` **U5** Unify order placement + ledger — one `OrderRouter` + one trades store (segment column).
 - `[ ]` **U6** Collapse the three `run_cycle`s into one orchestrator over instrument+adapter list.
