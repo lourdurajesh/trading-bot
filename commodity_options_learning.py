@@ -757,13 +757,13 @@ class CommodityOptionsLearning:
         Returns (atm_order_id, otm_order_id, atm_fill_price, otm_fill_price).
         On any failure: unwinds the filled leg and returns (None, None, 0, 0).
         """
-        from execution.fyers_broker import fyers_broker
+        from execution.order_router import order_router
         if not atm_sym or not otm_sym:
             logger.error("[CommOpts] Real entry blocked — missing option symbols (need live chain)")
             return None, None, 0.0, 0.0
 
-        # Leg 1 — buy ATM
-        atm_oid = fyers_broker.place_order(
+        # Leg 1 — buy ATM (via the shared OrderRouter — one placement path)
+        atm_oid = order_router.place(
             symbol=atm_sym, direction="LONG", qty=qty,
             order_type="MARKET", product=_MCX_PRODUCT,
         )
@@ -773,12 +773,12 @@ class CommodityOptionsLearning:
 
         atm_filled, atm_fill = self._confirm_fill(atm_oid)
         if not atm_filled:
-            fyers_broker.cancel_order(atm_oid)
+            order_router.cancel(atm_sym, atm_oid)
             logger.error(f"[CommOpts] ATM fill timeout — cancelled: {atm_oid}")
             return None, None, 0.0, 0.0
 
         # Leg 2 — sell OTM
-        otm_oid = fyers_broker.place_order(
+        otm_oid = order_router.place(
             symbol=otm_sym, direction="SHORT", qty=qty,
             order_type="MARKET", product=_MCX_PRODUCT,
         )
@@ -790,7 +790,7 @@ class CommodityOptionsLearning:
                 f"MCX SPREAD ENTRY PARTIAL — ATM filled ({atm_sym}), OTM rejected ({otm_sym}). "
                 f"Unwinding ATM. Check broker."
             )
-            fyers_broker.place_order(atm_sym, "SHORT", qty, "MARKET", product=_MCX_PRODUCT)
+            order_router.place(atm_sym, "SHORT", qty, "MARKET", product=_MCX_PRODUCT)
             return None, None, 0.0, 0.0
 
         otm_filled, otm_fill = self._confirm_fill(otm_oid)
@@ -802,8 +802,8 @@ class CommodityOptionsLearning:
                 f"MCX SPREAD ENTRY PARTIAL — ATM filled ({atm_sym}), OTM timed out ({otm_oid}). "
                 f"Unwinding ATM. Check broker immediately."
             )
-            fyers_broker.cancel_order(otm_oid)
-            fyers_broker.place_order(atm_sym, "SHORT", qty, "MARKET", product=_MCX_PRODUCT)
+            order_router.cancel(otm_sym, otm_oid)
+            order_router.place(atm_sym, "SHORT", qty, "MARKET", product=_MCX_PRODUCT)
             return None, None, 0.0, 0.0
 
         logger.info(
@@ -817,7 +817,7 @@ class CommodityOptionsLearning:
         Close both legs of a real debit spread with market orders.
         Sends a CRITICAL alert if any leg fails — manual action required.
         """
-        from execution.fyers_broker import fyers_broker
+        from execution.order_router import order_router
         meta      = trade.get("metadata", {})
         atm_sym   = meta.get("atm_symbol", "")
         otm_sym   = meta.get("otm_symbol", "")
@@ -837,7 +837,7 @@ class CommodityOptionsLearning:
         ]:
             if not sym:
                 continue
-            oid = fyers_broker.place_order(
+            oid = order_router.place(
                 symbol=sym, direction=close_dir, qty=qty,
                 order_type="MARKET", product=_MCX_PRODUCT,
             )

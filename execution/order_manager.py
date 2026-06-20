@@ -576,10 +576,10 @@ class OrderManager:
                 logger.info(f"[OrderManager] Signal expired: {sig.symbol}")
 
     def _get_broker(self, symbol: str):
-        from execution.fyers_broker import fyers_broker
-        from execution.alpaca_broker import alpaca_broker
-        return fyers_broker if symbol.startswith("NSE:") or symbol.startswith("BSE:") \
-               else alpaca_broker
+        # Single-source broker selection (execution/order_router) — fixes MCX, which the
+        # old local rule mis-routed to Alpaca (it only matched NSE:/BSE:).
+        from execution.order_router import get_broker
+        return get_broker(symbol)
 
     def _send_alert(self, signal: Signal, order_id: str, pending: bool = False) -> None:
         try:
