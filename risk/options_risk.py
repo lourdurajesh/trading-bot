@@ -212,6 +212,7 @@ class OptionsRiskGate:
         Hard cap: never exceed MAX_FO_CAPITAL_PCT% regardless of score.
         """
         from config.settings import MAX_FO_CAPITAL_PCT
+        from execution.sizing import lots_capped
         meta              = signal.options_meta or {}
         requested_lots    = int(meta.get("institutional_lots", 1))
         cost_per_lot      = premium * lot_size
@@ -219,9 +220,7 @@ class OptionsRiskGate:
             return 0, 0.0
 
         max_cap           = capital * MAX_FO_CAPITAL_PCT / 100
-        max_lots_by_cap   = int(max_cap / cost_per_lot)
-        lots              = min(requested_lots, max_lots_by_cap)
-        lots              = max(1, lots)   # at least 1 lot if approved
+        lots              = lots_capped(requested_lots, cost_per_lot, max_cap, floor=1)
         capital_used      = round(lots * cost_per_lot, 2)
         return lots, capital_used
 
@@ -238,6 +237,7 @@ class OptionsRiskGate:
           max_by_cap    = floor(capital × MAX_OPTIONS_TRADE_PCT / 100 / (premium × lot_size))
           lots          = min(max_by_risk, max_by_cap, MAX_OPTIONS_LOTS_PER_TRADE)
         """
+        from execution.sizing import lots_to_fit
         cost_per_lot  = premium * lot_size
         if cost_per_lot <= 0:
             return 0, 0.0
@@ -245,12 +245,11 @@ class OptionsRiskGate:
         risk_budget   = capital * (RISK_PER_TRADE_PCT / 100)
         cap_budget    = capital * (MAX_OPTIONS_TRADE_PCT / 100)
 
-        max_by_risk   = int(risk_budget / cost_per_lot)
-        max_by_cap    = int(cap_budget  / cost_per_lot)
-        lots          = min(max_by_risk, max_by_cap, MAX_OPTIONS_LOTS_PER_TRADE)
-        # Do NOT force min=1 here — if budget says 0 lots, return 0 so caller rejects the trade.
-        # Forcing 1 lot when budget says 0 can deploy 100× intended capital.
-
+        # Size to fit BOTH the risk budget AND the exposure cap, hard-capped at
+        # MAX_OPTIONS_LOTS_PER_TRADE. Returns 0 when even 1 lot won't fit — we do NOT
+        # force min=1 (that could deploy 100× the intended capital); the caller rejects.
+        lots          = lots_to_fit(cost_per_lot, risk_budget, cap_budget,
+                                    MAX_OPTIONS_LOTS_PER_TRADE)
         if lots <= 0:
             return 0, 0.0
 

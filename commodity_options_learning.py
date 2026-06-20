@@ -686,21 +686,21 @@ class CommodityOptionsLearning:
         if available <= 0:
             logger.warning(f"[CommOpts] {instrument} fund check returned 0 — blocking entry")
             return 0
+        from execution.sizing import lots_to_fit
         max_cap   = engine_settings.max_capital_pct()
         lot_cap   = engine_settings.max_lots_per_trade()
-        max_lots  = int((available * max_cap) / cost_per_lot)
 
-        # Size to fit the per-strategy risk budget: one trade's max loss
-        # (cost_per_lot × lots, i.e. the debit paid) must stay within
-        # MAX_STRATEGY_LOSS_PCT of capital. Skip if even 1 lot is too big —
-        # the instrument's mini/micro variant should be traded instead.
+        # Size to fit BOTH the exposure cap (max_capital_pct of FREE funds) AND the
+        # per-strategy risk budget — one trade's max loss (the debit paid) must stay
+        # within MAX_STRATEGY_LOSS_PCT of capital — hard-capped at lot_cap. Skip (0)
+        # if even 1 lot is too big: trade the instrument's mini/micro variant instead.
         import os as _os
         from config.settings import TOTAL_CAPITAL as _CAP
         risk_pct = float(_os.getenv("MAX_STRATEGY_LOSS_PCT", "1.5")) / 100.0
         risk_inr = _CAP * risk_pct
-        max_by_risk = int(risk_inr / cost_per_lot)
+        max_by_risk = int(risk_inr / cost_per_lot)   # kept for the log line below
 
-        lots = min(max_lots, lot_cap, max_by_risk)
+        lots = lots_to_fit(cost_per_lot, risk_inr, available * max_cap, lot_cap)
         if lots < 1:
             logger.info(
                 f"[CommOpts] {instrument} SKIP (real) — 1 lot max-loss ₹{cost_per_lot:,.0f} "

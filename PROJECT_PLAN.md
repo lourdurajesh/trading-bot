@@ -271,7 +271,16 @@ control flow. Full map: `docs/ARCHITECTURE_AUDIT.md`. Guardrail: `trading-archit
   - `[x]` **slice-3** production options STOP/TARGET via shared `premium_exit` (acb5e71)
   - `[ ]` remaining: production EQUITY trailing/breakeven/partial-booking; MCX dynamic-target.
   Option SL/target/trail/breach/breakdown now single-source across learning/US/MCX/production.
-- `[ ]` **U4** Unify sizing/risk — one `RiskSizer` (B2.1 size-to-fit) for all asset classes.
+- `[~]` **U4** Unify sizing/risk — shared `execution/sizing.py` (B2.1 size-to-fit math):
+  `units_in_budget` (atomic floor-div), `lots_to_fit` (risk∩cap∩hard-cap, reject-at-0),
+  `lots_capped` (requested∩cap, floor=1), `shares_to_fit` (equity fixed-fractional + tight-stop
+  guard). Routed the four duplicated call-sites through it: `options_risk._calculate_lots` +
+  `_calculate_institutional_lots`, `commodity_options._compute_lots`, `risk_manager` equity
+  `_calculate_size`, `institutional_momentum` target_lots. Behavior-preserving — `tests/test_sizing.py`
+  asserts new==old byte-identical across a premium/capital/lot grid; `test_pipeline.py` still PASS.
+  *Debt:* learning_engine (NSE) + us_reversal still fixed 1 lot/contract — route through the sizer
+  when they size for real. Capital base + config %s stay per-engine params (not yet one RiskSizer
+  *object*; the sizing *math* is now single-source, which is what bit us).
 - `[~]` **U5** Unify order placement + ledger.
   - `[x]` **slice-1** `execution/order_router.py` — one broker-selection + place/cancel entry
     (NSE/BSE/MCX→Fyers, US→Alpaca). MCX routed through it (was bypassing); order_manager selection

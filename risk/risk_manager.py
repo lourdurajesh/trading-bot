@@ -235,23 +235,15 @@ class RiskManager:
             return self._calculate_options_size(signal)
 
         # ── Equity / futures sizing ───────────────────────────────
-        risk_amount    = capital * (RISK_PER_TRADE_PCT / 100)
-        risk_per_share = abs(signal.entry - signal.stop_loss)
-
-        # Minimum meaningful risk: 0.1% of entry price.
-        # Smaller stop = stop is practically at entry = strategy error, not a real signal.
-        # Without this guard, a ₹0.01 stop on a ₹100 stock = 750,000 shares on ₹500k capital.
-        min_risk = signal.entry * 0.001
-        if risk_per_share < min_risk:
-            logger.warning(
-                f"[RiskManager] {signal.symbol}: stop loss too tight "
-                f"(risk ₹{risk_per_share:.4f} < min ₹{min_risk:.4f}) — rejecting"
-            )
+        # Fixed-fractional sizing + tight-stop guard live in the shared sizer so the
+        # rule is identical wherever equity is sized.
+        from execution.sizing import shares_to_fit
+        risk_amount        = capital * (RISK_PER_TRADE_PCT / 100)
+        shares, actual_risk, reason = shares_to_fit(signal.entry, signal.stop_loss, risk_amount)
+        if reason:
+            logger.warning(f"[RiskManager] {signal.symbol}: {reason} — rejecting")
             return 0, 0.0
-
-        shares      = int(risk_amount / risk_per_share)
-        actual_risk = shares * risk_per_share
-        return shares, round(actual_risk, 2)
+        return shares, actual_risk
 
     def _calculate_options_size(self, signal: Signal) -> tuple[int, float]:
         """

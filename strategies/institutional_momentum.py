@@ -180,11 +180,13 @@ class InstitutionalMomentumStrategy(BaseStrategy):
             logger.info(f"[InstitutionalMomentum] {short} SKIP — DTE={dte} outside [{_MIN_DTE}-{_MAX_DTE}]")
             return None
 
-        # Calculate lot sizing based on capital deployment %
+        # Calculate lot sizing based on capital deployment % (shared size primitive —
+        # the options_risk gate re-caps this against the hard FO capital limit).
+        from execution.sizing import units_in_budget
         capital_pct  = (result.capital_pct if result and result.capital_pct else 35)
         capital_budget = TOTAL_CAPITAL * capital_pct / 100
         cost_per_lot   = premium * lot_size
-        target_lots    = int(capital_budget / cost_per_lot) if cost_per_lot > 0 else 0
+        target_lots    = units_in_budget(capital_budget, cost_per_lot)
 
         if target_lots <= 0:
             logger.info(f"[InstitutionalMomentum] {short} SKIP — zero lots at ₹{premium} × {lot_size}")
