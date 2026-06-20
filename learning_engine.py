@@ -195,7 +195,13 @@ class LearningEngine:
             index_strategies = [
                 DirectionalOptionsStrategy(),
                 InstitutionalMomentumStrategy(),
-                Reversal5mStrategy(),    # 5m red→green reclaim, ATM call + underlying trail
+                Reversal5mStrategy(),    # 5m red→green reclaim, ATM call, per-index exit
+                # 3m NIFTY/FINNIFTY trailing variant — A/B against the 5m version.
+                Reversal5mStrategy(
+                    timeframe="3m", name="Reversal3m",
+                    allowed={"NSE:NIFTY50-INDEX", "NSE:FINNIFTY-INDEX"},
+                    force_exit_mode="underlying_trail",
+                ),
             ]
             for symbol in index_symbols:
                 if self._is_on_cooldown(symbol):

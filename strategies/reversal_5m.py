@@ -56,20 +56,34 @@ OPENING_BLACKOUT_END = dtime(9, 25)
 
 
 class Reversal5mStrategy(BaseStrategy):
-    """Bullish reversal (red→green reclaim) on 5m index candles."""
+    """
+    Bullish reversal (red→green reclaim) on index candles, traded as ATM call-buying.
 
-    def __init__(self):
+    Parametrized so the same logic runs as the 5m base (all indices, per-index exit
+    mode) AND as a 3m NIFTY/FINNIFTY trailing variant for live A/B testing:
+      Reversal5mStrategy()                                            # 5m, all indices
+      Reversal5mStrategy(timeframe="3m", name="Reversal3m",           # 3m NIFTY/FINNIFTY
+          allowed={"NSE:NIFTY50-INDEX","NSE:FINNIFTY-INDEX"},
+          force_exit_mode="underlying_trail")
+    """
+
+    def __init__(self, timeframe: str = "5m", name: str = "Reversal5m",
+                 allowed: Optional[set] = None, force_exit_mode: Optional[str] = None):
         super().__init__()
-        self.name       = "Reversal5m"
-        self.hold_type  = "intraday"
-        self.timeframe  = "5m"
+        self.name             = name
+        self.hold_type        = "intraday"
+        self.timeframe        = timeframe
+        self._allowed         = allowed            # restrict to these underlyings, or None = all indices
+        self._force_exit_mode = force_exit_mode    # override per-index exit mode (e.g. 3m must trail)
 
     def evaluate(self, symbol: str) -> Optional[Signal]:
         if not self.enabled:
             return None
 
-        # Index-only strategy.
+        # Index-only strategy (optionally restricted to a subset).
         if "-INDEX" not in symbol:
+            return None
+        if self._allowed is not None and symbol not in self._allowed:
             return None
 
         # Opening blackout (live only).
@@ -81,7 +95,7 @@ class Reversal5mStrategy(BaseStrategy):
 
         df = self.get_ohlcv(symbol, self.timeframe)
         if df is None or len(df) < MIN_BARS:
-            self.log_skip(symbol, "Insufficient 5m data")
+            self.log_skip(symbol, f"Insufficient {self.timeframe} data")
             return None
 
         ltp = self.get_ltp(symbol)
@@ -228,7 +242,7 @@ class Reversal5mStrategy(BaseStrategy):
                 "lot_size":        opt.lot_size,
                 "dte":             opt.dte,
                 "iv":              opt.iv,
-                "exit_mode":       options_executor.get_exit_mode(symbol),
+                "exit_mode":       self._force_exit_mode or options_executor.get_exit_mode(symbol),
                 "underlying":      symbol,
                 "entry_spot":      round(spot, 2),
                 "sl_pts":          sl_pts,

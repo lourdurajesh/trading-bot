@@ -35,12 +35,13 @@ MAX_CANDLES = 500
 
 # Candle snapshot — persists across bot restarts so strategies have history immediately
 SNAPSHOT_PATH = "db/candle_snapshot.json.gz"
-_SNAPSHOT_TIMEFRAMES  = {"1H", "15m", "5m", "1D"}  # only timeframes strategies need
+_SNAPSHOT_TIMEFRAMES  = {"1H", "15m", "5m", "3m", "1D"}  # only timeframes strategies need
 _SNAPSHOT_MAX_CANDLES = 200                          # enough for any strategy
 
 # Timeframe → seconds mapping
 TF_SECONDS = {
     "1m":  60,
+    "3m":  180,
     "5m":  300,
     "15m": 900,
     "1H":  3600,
