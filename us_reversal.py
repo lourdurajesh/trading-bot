@@ -23,7 +23,8 @@ ET  = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
 DB_PATH = "db/trades.db"
 
-from strategies.reversal_core import bullish_reclaim, ratchet_stop, RSI_LOW, RSI_HIGH, MIN_RVOL, MIN_BARS
+from strategies.reversal_core import bullish_reclaim, RSI_LOW, RSI_HIGH, MIN_RVOL, MIN_BARS
+from execution.exit_rules import underlying_exit
 
 R_FREE      = 0.045
 SPREAD      = 0.005     # 0.5%/side on premium
@@ -114,18 +115,15 @@ class USReversalEngine:
             # ── Manage an open position ──────────────────────────
             if sym in self._open:
                 p = self._open[sym]
-                if spot and spot > 0:
-                    p["peak_spot"] = max(p["peak_spot"], float(spot))
-                    init_stop = p["entry_spot"] * (1 - p["sl_pct"] / 100)
-                    p["stop_spot"] = ratchet_stop(p["stop_spot"], p["peak_spot"],
-                                                  init_stop, p["trail_pct"] / 100, pct=True)
-                exit_reason = None
-                if spot and spot > 0 and spot <= p["stop_spot"]:
-                    exit_reason = "TRAIL" if p["stop_spot"] > p["entry_spot"] * (1 - p["sl_pct"]/100) else "STOP"
-                elif eod:
-                    exit_reason = "EOD"
-                if exit_reason:
-                    self._close(sym, float(spot or p["entry_spot"]), exit_reason)
+                # Shared exit decision (execution/exit_rules) — same trail logic as
+                # the NSE engine, % distances here (pct=True).
+                reason, p["peak_spot"], p["stop_spot"] = underlying_exit(
+                    spot, p["entry_spot"], p["sl_pct"] / 100, p["trail_pct"] / 100,
+                    p["peak_spot"], p["stop_spot"], pct=True)
+                if not reason and eod:
+                    reason = "EOD"
+                if reason:
+                    self._close(sym, float(spot or p["entry_spot"]), reason)
                 continue
 
             # ── Look for a new entry ─────────────────────────────

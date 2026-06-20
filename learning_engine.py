@@ -316,6 +316,7 @@ class LearningEngine:
         are tracked in `metadata` (in-memory across cycles). Returns
         (reason, opt_ltp) or (None, None) when not triggered / no index tick.
         """
+        from execution.exit_rules import underlying_exit
         und  = metadata.get("underlying")
         spot = store.get_ltp(und) if und else None
         if not spot or spot <= 0:
@@ -323,17 +324,12 @@ class LearningEngine:
         entry_spot = float(metadata.get("entry_spot") or 0)
         sl_pts     = float(metadata.get("sl_pts") or 0)
         trail_pts  = float(metadata.get("trail_pts") or 0)
-        from strategies.reversal_core import ratchet_stop
-        init_stop  = entry_spot - sl_pts
-        peak_spot  = max(float(metadata.get("peak_spot") or entry_spot), float(spot))
-        metadata["peak_spot"] = peak_spot
-        cur_stop = ratchet_stop(float(metadata.get("trail_stop_spot") or init_stop),
-                                peak_spot, init_stop, trail_pts, pct=False)
-        metadata["trail_stop_spot"] = cur_stop
-        if spot <= cur_stop:
-            reason = "TRAIL_STOP" if cur_stop > init_stop + 1e-6 else "STOP"
-            return reason, opt_ltp
-        return None, None
+        peak = float(metadata.get("peak_spot") or entry_spot)
+        stop = float(metadata.get("trail_stop_spot") or (entry_spot - sl_pts))
+        reason, peak, stop = underlying_exit(spot, entry_spot, sl_pts, trail_pts, peak, stop, pct=False)
+        metadata["peak_spot"] = peak
+        metadata["trail_stop_spot"] = stop
+        return (reason, opt_ltp) if reason else (None, None)
 
     def _underlying_breakdown_exit(self, metadata: dict, opt_ltp: float, store):
         """
@@ -343,21 +339,19 @@ class LearningEngine:
               the previous 5m candle's low (mirror of the entry trigger).
         Returns (reason, opt_ltp) or (None, None). Best for NIFTY/BANKNIFTY (backtest).
         """
+        from execution.exit_rules import underlying_exit, bear_breakdown
         und = metadata.get("underlying")
-        # (a) hard stop on the underlying
         spot = store.get_ltp(und) if und else None
         entry_spot = float(metadata.get("entry_spot") or 0)
         sl_pts     = float(metadata.get("sl_pts") or 0)
-        if spot and spot > 0 and entry_spot and spot <= entry_spot - sl_pts:
-            return "STOP", opt_ltp
-        # (b) bear breakdown on the latest two 5m index candles (shared core)
         try:
-            from strategies.reversal_core import bear_breakdown
-            if bear_breakdown(store.get_ohlcv(und, "5m", n=3)):
-                return "BREAK", opt_ltp
+            bd = bear_breakdown(store.get_ohlcv(und, "5m", n=3))
         except Exception:
-            pass
-        return None, None
+            bd = False
+        # hard stop (sl_pts below entry) OR bear breakdown — shared decision (no trail)
+        reason, _, _ = underlying_exit(spot, entry_spot, sl_pts, 0.0,
+                                       entry_spot, entry_spot - sl_pts, breakdown=bd, pct=False)
+        return (reason, opt_ltp) if reason else (None, None)
 
     def _check_exits(self, store) -> None:
         from datetime import time as dtime
@@ -445,10 +439,12 @@ class LearningEngine:
                     # Hard SL on the underlying + exit when a red 5m index candle
                     # closes below the prior 5m low (Reversal5m NIFTY/BANKNIFTY).
                     exit_reason, exit_price = self._underlying_breakdown_exit(metadata, ltp, store)
-                elif ltp <= stop:
-                    exit_reason, exit_price = "STOP",   ltp
-                elif ltp >= target:
-                    exit_reason, exit_price = "TARGET", ltp
+                else:
+                    # Premium-level SL/target — shared decision (execution/exit_rules).
+                    from execution.exit_rules import premium_exit
+                    _pr = premium_exit(ltp, stop, target)
+                    if _pr:
+                        exit_reason, exit_price = _pr, ltp
             elif direction == "LONG":
                 if ltp <= stop:
                     original_stop = metadata.get("original_stop", stop)
