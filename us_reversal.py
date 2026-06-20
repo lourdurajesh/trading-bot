@@ -23,12 +23,13 @@ ET  = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
 DB_PATH = "db/trades.db"
 
+from strategies.reversal_core import bullish_reclaim, ratchet_stop, RSI_LOW, RSI_HIGH, MIN_RVOL, MIN_BARS
+
 R_FREE      = 0.045
 SPREAD      = 0.005     # 0.5%/side on premium
 COMMISSION  = 0.65      # per contract, each way
 MULT        = 100       # shares per US option contract
 STRIKE_STEP = 1.0
-RSI_LOW, RSI_HIGH, MIN_RVOL, MIN_BARS = 30.0, 70.0, 1.2, 30
 
 # symbol -> (assumed IV, initial SL %, trail %)  — best config from the backtest
 CFG = {"SPY": (0.14, 0.5, 0.9), "QQQ": (0.18, 0.5, 0.9)}
@@ -115,8 +116,9 @@ class USReversalEngine:
                 p = self._open[sym]
                 if spot and spot > 0:
                     p["peak_spot"] = max(p["peak_spot"], float(spot))
-                    trail = p["peak_spot"] * (1 - p["trail_pct"] / 100)
-                    p["stop_spot"] = max(p["stop_spot"], trail)
+                    init_stop = p["entry_spot"] * (1 - p["sl_pct"] / 100)
+                    p["stop_spot"] = ratchet_stop(p["stop_spot"], p["peak_spot"],
+                                                  init_stop, p["trail_pct"] / 100, pct=True)
                 exit_reason = None
                 if spot and spot > 0 and spot <= p["stop_spot"]:
                     exit_reason = "TRAIL" if p["stop_spot"] > p["entry_spot"] * (1 - p["sl_pct"]/100) else "STOP"
@@ -136,21 +138,13 @@ class USReversalEngine:
         if df is None or len(df) < MIN_BARS:
             return
         try:
-            from analysis.indicators import rsi as calc_rsi, relative_volume
-            o, c = df["open"], df["close"]
-            red_then_green = (c.iloc[-2] < o.iloc[-2] and c.iloc[-1] > o.iloc[-1]
-                              and c.iloc[-1] > o.iloc[-2])
-            if not red_then_green:
+            # Entry pattern via the shared core — identical to the NSE strategy and
+            # the backtests, so tuning the pattern changes all of them together.
+            ok, pat = bullish_reclaim(df, RSI_LOW, RSI_HIGH, MIN_RVOL)
+            if not ok:
                 return
-            rsis = calc_rsi(c)
-            rsi_now, rsi_prev = float(rsis.iloc[-1]), float(rsis.iloc[-2])
-            if not (RSI_LOW < rsi_now < RSI_HIGH and rsi_now > rsi_prev):
-                return
-            vol_present = df["volume"].sum() > 0
-            rvol = float(relative_volume(df).iloc[-1])
-            if vol_present and rvol < MIN_RVOL:
-                return
-            spot = float(store.get_ltp(sym) or c.iloc[-1])
+            rsi_now, rsi_prev = pat["rsi_now"], pat["rsi_prev"]
+            spot = float(store.get_ltp(sym) or df["close"].iloc[-1])
             strike = round(spot / STRIKE_STEP) * STRIKE_STEP
             dte = _dte_days(datetime.now(tz=ET).date())
             prem = _bs_call(spot, strike, dte / 365.0, iv)

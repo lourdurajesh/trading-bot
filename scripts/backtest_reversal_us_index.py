@@ -21,13 +21,14 @@ ET = ZoneInfo("America/New_York")
 from analysis.indicators import rsi as calc_rsi, relative_volume
 from analysis.options_engine import options_engine
 from execution.alpaca_broker import alpaca_broker
+from strategies.reversal_core import is_reclaim, RSI_LOW, RSI_HIGH, MIN_RVOL
 
 R_FREE    = 0.045          # US risk-free ~4.5%
 SPREAD    = 0.005          # 0.5%/side — SPY/QQQ ATM weeklies are very tight
 COMMISSION_PER_CONTRACT = 0.65   # each way
 MULT      = 100            # US option contract = 100 shares
 STRIKE_STEP = 1.0          # SPY/QQQ have $1 strikes
-RSI_LOW, RSI_HIGH, MIN_RVOL, WARMUP = 30.0, 70.0, 1.2, 30
+WARMUP = 30
 BAR_YEARS = 5 / (60 * 24 * 365)
 
 # symbol -> assumed IV
@@ -74,9 +75,8 @@ def sim(df, iv, sl_pct, trail_pct):
     n = len(df); trades = []; i = WARMUP
     while i < n - 1:
         eod = dts[i + 1] != dts[i]
-        bull = (i >= 2 and c[i-1] < o[i-1] and c[i] > o[i] and c[i] > o[i-1]
-                and RSI_LOW < rsi[i] < RSI_HIGH and rsi[i] > rsi[i-1]
-                and ((not vol_present) or rvol[i] >= MIN_RVOL))
+        bull = (i >= 2 and is_reclaim(o[i-1], c[i-1], o[i], c[i],
+                                      rsi[i], rsi[i-1], rvol[i], vol_present))
         if bull and not eod:
             spot = c[i]; strike = round(spot / STRIKE_STEP) * STRIKE_STEP
             dte_y = dte_days(dts[i]) / 365.0

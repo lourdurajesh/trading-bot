@@ -33,6 +33,8 @@ from analysis.indicators import rsi as calc_rsi, relative_volume
 from analysis.options_engine import options_engine
 from execution.fyers_broker import fyers_broker
 from execution.options_executor import options_executor
+# Entry/exit DECISION from the one shared core (same code the live strategies use).
+from strategies.reversal_core import is_reclaim, is_breakdown, RSI_LOW, RSI_HIGH, MIN_RVOL
 
 # RESOLUTION + BAR_MIN come from argv (default 5-minute) so the same study runs
 # across 3m / 5m / 15m. BAR_YEARS (for option theta) tracks the bar size.
@@ -42,7 +44,6 @@ R_FREE     = 0.065
 SPREAD_PCT = 0.010
 WARMUP     = 30
 BAR_YEARS  = BAR_MIN / (60 * 24 * 365)
-RSI_LOW, RSI_HIGH, MIN_RVOL = 30.0, 70.0, 1.2
 
 # symbol -> (iv, sl_pts, trail_pts)  [5m-tuned]
 CFG = {
@@ -77,17 +78,14 @@ def flags(df):
     n = len(df)
     bull = [False] * n; bear = [False] * n; bear_break = [False] * n
     for i in range(2, n):
+        # bullish reclaim + breakdown via the shared core predicates
+        bull[i] = is_reclaim(o[i-1], c[i-1], o[i], c[i], rsi[i], rsi[i-1], rvol[i], vol_present)
+        bear_break[i] = is_breakdown(o[i], c[i], l[i-1])
+        # mirror bearish reversal — exploratory only (not a deployed path), kept inline
         vol_ok = (not vol_present) or (rvol[i] >= MIN_RVOL)
-        in_band = RSI_LOW < rsi[i] < RSI_HIGH
-        if (c[i-1] < o[i-1] and c[i] > o[i] and c[i] > o[i-1]
-                and in_band and rsi[i] > rsi[i-1] and vol_ok):
-            bull[i] = True
         if (c[i-1] > o[i-1] and c[i] < o[i] and c[i] < o[i-1]
-                and in_band and rsi[i] < rsi[i-1] and vol_ok):
+                and RSI_LOW < rsi[i] < RSI_HIGH and rsi[i] < rsi[i-1] and vol_ok):
             bear[i] = True
-        # User's breakdown: a red candle that closes below the previous candle's low.
-        if c[i] < o[i] and c[i] < l[i-1]:
-            bear_break[i] = True
     return bull, bear, bear_break
 
 

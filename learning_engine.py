@@ -323,11 +323,12 @@ class LearningEngine:
         entry_spot = float(metadata.get("entry_spot") or 0)
         sl_pts     = float(metadata.get("sl_pts") or 0)
         trail_pts  = float(metadata.get("trail_pts") or 0)
+        from strategies.reversal_core import ratchet_stop
         init_stop  = entry_spot - sl_pts
         peak_spot  = max(float(metadata.get("peak_spot") or entry_spot), float(spot))
         metadata["peak_spot"] = peak_spot
-        cur_stop = max(float(metadata.get("trail_stop_spot") or init_stop),
-                       peak_spot - trail_pts, init_stop)
+        cur_stop = ratchet_stop(float(metadata.get("trail_stop_spot") or init_stop),
+                                peak_spot, init_stop, trail_pts, pct=False)
         metadata["trail_stop_spot"] = cur_stop
         if spot <= cur_stop:
             reason = "TRAIL_STOP" if cur_stop > init_stop + 1e-6 else "STOP"
@@ -349,14 +350,11 @@ class LearningEngine:
         sl_pts     = float(metadata.get("sl_pts") or 0)
         if spot and spot > 0 and entry_spot and spot <= entry_spot - sl_pts:
             return "STOP", opt_ltp
-        # (b) bear breakdown on the latest two 5m index candles
+        # (b) bear breakdown on the latest two 5m index candles (shared core)
         try:
-            df = store.get_ohlcv(und, "5m", n=3)
-            if df is not None and len(df) >= 2:
-                o = float(df["open"].iloc[-1]); c = float(df["close"].iloc[-1])
-                prev_low = float(df["low"].iloc[-2])
-                if c < o and c < prev_low:
-                    return "BREAK", opt_ltp
+            from strategies.reversal_core import bear_breakdown
+            if bear_breakdown(store.get_ohlcv(und, "5m", n=3)):
+                return "BREAK", opt_ltp
         except Exception:
             pass
         return None, None

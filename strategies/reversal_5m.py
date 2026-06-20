@@ -35,20 +35,19 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-from analysis.indicators import atr, relative_volume, rsi
+from analysis.indicators import atr
 from strategies.base_strategy import BaseStrategy, Direction, Signal, SignalType
+# Pattern + thresholds come from the ONE shared core (changes here apply to India,
+# US, and the backtests together — no silent divergence).
+from strategies.reversal_core import bullish_reclaim, RSI_LOW, RSI_HIGH, MIN_RVOL, MIN_BARS
 
 logger = logging.getLogger(__name__)
 
-# ── Strategy parameters ───────────────────────────────────────────
-RSI_BAND_LOW    = 30.0    # RSI must be inside (30, 70) …
-RSI_BAND_HIGH   = 70.0
-MIN_RVOL        = 1.2     # green candle must have above-average volume
+# ── Strategy parameters (stop/target sizing — strategy-specific) ───
 ATR_STOP_BUFFER = 0.5     # stop = pattern low − ATR×buffer
 MIN_STOP_PCT    = 0.0015  # floor: stop at least 0.15% below entry (5m index noise)
 TARGET_R1       = 1.5     # T1 — partial booking trigger
 TARGET_R2       = 2.5     # T2 — final exit
-MIN_BARS        = 30      # need ≥ RSI(14) warmup + the 2 pattern candles
 
 # Opening blackout: skip the first 10 minutes (gap/auction noise). Live only —
 # in backtest we replay by bar index, not wall-clock, so this is bypassed.
@@ -102,39 +101,16 @@ class Reversal5mStrategy(BaseStrategy):
         if not ltp or ltp <= 0:
             return None
 
-        close = df["close"]
-
-        # ── Last two CLOSED candles: red (i-1) then green (i) ─────
+        # ── Entry pattern via the shared core (same code path as the US
+        #    engine and the backtests — tune it in ONE place) ───────
+        ok, pat = bullish_reclaim(df, RSI_LOW, RSI_HIGH, MIN_RVOL)
+        if not ok:
+            self.log_skip(symbol, "No bullish reclaim setup (pattern / RSI band+rising / volume)")
+            return None
+        rsi_now, rsi_prev, rvol = pat["rsi_now"], pat["rsi_prev"], pat["rvol"]
+        rvol_label = f"RVOL={rvol:.2f}x" if pat["vol_present"] else "RVOL=N/A(no feed)"
         red_open,   red_close   = float(df["open"].iloc[-2]), float(df["close"].iloc[-2])
         green_open, green_close = float(df["open"].iloc[-1]), float(df["close"].iloc[-1])
-
-        is_red    = red_close < red_open
-        is_green  = green_close > green_open
-        reclaims  = green_close > red_open          # green closes above red's open
-        if not (is_red and is_green and reclaims):
-            self.log_skip(symbol, "No red→green reclaim pattern on last 2 candles")
-            return None
-
-        # ── RSI inside band AND rising ────────────────────────────
-        rsi_series = rsi(close)
-        rsi_now, rsi_prev = float(rsi_series.iloc[-1]), float(rsi_series.iloc[-2])
-        rsi_in_band = RSI_BAND_LOW < rsi_now < RSI_BAND_HIGH
-        rsi_rising  = rsi_now > rsi_prev
-        if not (rsi_in_band and rsi_rising):
-            self.log_skip(
-                symbol,
-                f"RSI gate failed: {rsi_now:.1f} (band {RSI_BAND_LOW:.0f}-{RSI_BAND_HIGH:.0f}, "
-                f"rising={rsi_rising})"
-            )
-            return None
-
-        # ── Volume gate (fail-open when no volume feed) ───────────
-        volume_available = df["volume"].sum() > 0
-        rvol = float(relative_volume(df).iloc[-1])
-        if volume_available and rvol < MIN_RVOL:
-            self.log_skip(symbol, f"RVOL {rvol:.2f} below {MIN_RVOL} — weak participation")
-            return None
-        rvol_label = f"RVOL={rvol:.2f}x" if volume_available else "RVOL=N/A(no feed)"
 
         # ── Build the LONG signal ─────────────────────────────────
         entry   = green_close
