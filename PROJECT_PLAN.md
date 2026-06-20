@@ -286,8 +286,18 @@ control flow. Full map: `docs/ARCHITECTURE_AUDIT.md`. Guardrail: `trading-archit
     (NSE/BSE/MCX→Fyers, US→Alpaca). MCX routed through it (was bypassing); order_manager selection
     delegates to it (fixed latent MCX→Alpaca mis-route). (b3a6135)
   - `[ ]` route order_manager's individual `place_order` calls through `order_router.place` (facade).
-  - `[ ]` **slice-2** one trades ledger with a `segment` column (collapse learning_trades /
-    commodity_learning_trades / us_reversal_trades).
+  - `[~]` **slice-2** one trades ledger with a `segment` column — **code+local done; live migration
+    gated.** New `execution/ledger.py`: a single `ledger` table (promoted index cols + full row as JSON
+    `payload`) replacing learning_trades / commodity_learning_trades / us_reversal_trades. The three
+    old names become read-only **compatibility VIEWS** over it, so every reader (engines + external
+    `analysis/*`, `run_analysis`, the `trading-review` skill) keeps working byte-identically; only the
+    9 engine WRITE sites cut over to `ledger.record()` / `update_fields()` (+ each `_init_db` →
+    `ledger.init()`). `scripts/migrate_unified_ledger.py` backfills + verifies byte-identical, aborts
+    before any DROP if verify fails. Proven locally on the real 132-row DB; pipeline + sizing + U7
+    readers all green. **Remaining:** run the gated migration on the server (fresh backup → deploy →
+    migrate → restart → verify). *Note:* ledger uses the engines' relative `"db/trades.db"` (same file
+    as `config.settings.DB_PATH` on the server); the engines hardcoding that path vs config is a
+    pre-existing latent inconsistency, left as-is (equivalent on the server).
 - `[ ]` **U6** Collapse the three `run_cycle`s into one orchestrator over instrument+adapter list.
 - `[~]` **U7** Unify the **dashboard** — one trades/stats endpoint + one screen per data-concern,
   category (NSE-eq / index-opt / MCX / US) selected by a `segment`/`market` param/filter. Retire the

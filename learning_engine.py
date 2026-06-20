@@ -798,21 +798,15 @@ class LearningEngine:
 
     def _db_update_stop(self, trade_id: str, new_stop: float) -> None:
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute(
-                    "UPDATE learning_trades SET stop_loss=? WHERE id=?",
-                    (new_stop, trade_id),
-                )
+            from execution import ledger
+            ledger.update_fields("nse", trade_id, stop_loss=new_stop)
         except Exception as e:
             logger.debug(f"[Learning] Could not persist trailing stop for {trade_id}: {e}")
 
     def _db_update_metadata(self, trade_id: str, metadata: dict) -> None:
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute(
-                    "UPDATE learning_trades SET metadata=? WHERE id=?",
-                    (json.dumps(metadata), trade_id),
-                )
+            from execution import ledger
+            ledger.update_fields("nse", trade_id, metadata=json.dumps(metadata))
         except Exception as e:
             logger.debug(f"[Learning] Could not persist metadata for {trade_id}: {e}")
 
@@ -885,35 +879,12 @@ class LearningEngine:
     # ─────────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
+        # Trades now live in the unified `ledger` store; `learning_trades` is a
+        # compatibility VIEW created by ledger.init() (U5-slice-2). This engine reads
+        # that view (SELECT * FROM learning_trades) and writes via execution.ledger.
+        from execution import ledger
+        ledger.init()
         with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS learning_trades (
-                    id           TEXT PRIMARY KEY,
-                    symbol       TEXT,
-                    strategy     TEXT,
-                    direction    TEXT,
-                    entry_price  REAL,
-                    exit_price   REAL DEFAULT 0,
-                    stop_loss    REAL,
-                    target       REAL,
-                    rr_planned   REAL,
-                    pnl_pts      REAL DEFAULT 0,
-                    pnl_r        REAL DEFAULT 0,
-                    status       TEXT DEFAULT 'OPEN',
-                    exit_reason  TEXT DEFAULT '',
-                    entry_time   TEXT,
-                    exit_time    TEXT DEFAULT '',
-                    metadata     TEXT DEFAULT '{}',
-                    mae_pts      REAL DEFAULT 0,
-                    mfe_pts      REAL DEFAULT 0
-                )
-            """)
-            # Safe migration for pre-existing tables
-            for col, default in [("mae_pts", 0), ("mfe_pts", 0), ("fees", 0)]:
-                try:
-                    conn.execute(f"ALTER TABLE learning_trades ADD COLUMN {col} REAL DEFAULT {default}")
-                except Exception:
-                    pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS learning_cooldowns (
                     symbol     TEXT PRIMARY KEY,
@@ -987,19 +958,20 @@ class LearningEngine:
             logger.info(f"[Learning] Restored {restored} open position(s) from DB")
 
     def _db_insert(self, trade: dict) -> None:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
-                INSERT INTO learning_trades
-                (id, symbol, strategy, direction, entry_price, stop_loss,
-                 target, rr_planned, status, entry_time, metadata)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                trade["id"], trade["symbol"], trade["strategy"],
-                trade["direction"], trade["entry_price"], trade["stop_loss"],
-                trade["target"], trade["rr"], trade["status"],
-                trade["entry_time"],
-                json.dumps(trade.get("metadata", {})),
-            ))
+        from execution import ledger
+        ledger.record("nse", {
+            "id":          trade["id"],
+            "symbol":      trade["symbol"],
+            "strategy":    trade["strategy"],
+            "direction":   trade["direction"],
+            "entry_price": trade["entry_price"],
+            "stop_loss":   trade["stop_loss"],
+            "target":      trade["target"],
+            "rr_planned":  trade["rr"],
+            "status":      trade["status"],
+            "entry_time":  trade["entry_time"],
+            "metadata":    json.dumps(trade.get("metadata", {})),
+        })
 
     def _db_close(
         self, trade_id: str, exit_price: float,
@@ -1007,20 +979,13 @@ class LearningEngine:
         mae_pts: float = 0.0, mfe_pts: float = 0.0,
         fees: float = 0.0,
     ) -> None:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
-                UPDATE learning_trades
-                SET exit_price=?, exit_reason=?, pnl_pts=?, pnl_r=?,
-                    status='CLOSED', exit_time=?, mae_pts=?, mfe_pts=?, fees=?
-                WHERE id=?
-            """, (
-                exit_price, exit_reason,
-                round(pnl_pts, 2), round(pnl_r, 2),
-                datetime.now(tz=IST).isoformat(),
-                round(mae_pts, 2), round(mfe_pts, 2),
-                round(fees, 2),
-                trade_id,
-            ))
+        from execution import ledger
+        ledger.update_fields("nse", trade_id,
+            exit_price=exit_price, exit_reason=exit_reason,
+            pnl_pts=round(pnl_pts, 2), pnl_r=round(pnl_r, 2),
+            status="CLOSED", exit_time=datetime.now(tz=IST).isoformat(),
+            mae_pts=round(mae_pts, 2), mfe_pts=round(mfe_pts, 2),
+            fees=round(fees, 2))
 
     # ─────────────────────────────────────────────────────────────
     # READ API — used by dashboard

@@ -58,15 +58,11 @@ class USReversalEngine:
 
     # ── DB ───────────────────────────────────────────────────────
     def _init_db(self) -> None:
-        with sqlite3.connect(DB_PATH) as c:
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS us_reversal_trades(
-                    id TEXT PRIMARY KEY, symbol TEXT, strategy TEXT, status TEXT,
-                    entry_time TEXT, entry_spot REAL, strike REAL, dte INTEGER, iv REAL,
-                    entry_premium REAL, sl_pct REAL, trail_pct REAL,
-                    exit_time TEXT, exit_spot REAL, exit_premium REAL, pnl REAL,
-                    exit_reason TEXT, peak_spot REAL, stop_spot REAL)
-            """)
+        # Trades live in the unified `ledger` store; `us_reversal_trades` is a
+        # compatibility VIEW created by ledger.init() (U5-slice-2). Reads use the view;
+        # writes go through execution.ledger.
+        from execution import ledger
+        ledger.init()
 
     def _load_open(self) -> None:
         with sqlite3.connect(DB_PATH) as c:
@@ -77,22 +73,16 @@ class USReversalEngine:
             logger.info(f"[USReversal] Loaded {len(self._open)} open paper positions")
 
     def _persist_open(self, p: dict) -> None:
-        with sqlite3.connect(DB_PATH) as c:
-            c.execute("""INSERT OR REPLACE INTO us_reversal_trades
-                (id,symbol,strategy,status,entry_time,entry_spot,strike,dte,iv,
-                 entry_premium,sl_pct,trail_pct,peak_spot,stop_spot)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (p["id"], p["symbol"], p["strategy"], "OPEN", p["entry_time"],
-                 p["entry_spot"], p["strike"], p["dte"], p["iv"], p["entry_premium"],
-                 p["sl_pct"], p["trail_pct"], p["peak_spot"], p["stop_spot"]))
+        from execution import ledger
+        ledger.record("us", {**p, "status": "OPEN"})
 
     def _persist_close(self, p: dict, spot, exit_prem, pnl, reason) -> None:
-        with sqlite3.connect(DB_PATH) as c:
-            c.execute("""UPDATE us_reversal_trades SET status='CLOSED', exit_time=?,
-                exit_spot=?, exit_premium=?, pnl=?, exit_reason=?, peak_spot=?, stop_spot=?
-                WHERE id=?""",
-                (datetime.now(tz=ET).isoformat(), round(spot, 2), round(exit_prem, 2),
-                 round(pnl, 2), reason, p["peak_spot"], p["stop_spot"], p["id"]))
+        from execution import ledger
+        ledger.update_fields("us", p["id"],
+            status="CLOSED", exit_time=datetime.now(tz=ET).isoformat(),
+            exit_spot=round(spot, 2), exit_premium=round(exit_prem, 2),
+            pnl=round(pnl, 2), exit_reason=reason,
+            peak_spot=p["peak_spot"], stop_spot=p["stop_spot"])
 
     # ── Cycle ────────────────────────────────────────────────────
     def run_cycle(self) -> None:

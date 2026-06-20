@@ -2021,11 +2021,8 @@ class CommodityOptionsLearning:
     def _db_update_sl(self, trade_id: str, metadata: dict) -> None:
         """Persist trailing SL / dynamic target state to DB metadata column."""
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute(
-                    "UPDATE commodity_learning_trades SET metadata=? WHERE id=?",
-                    (json.dumps(metadata), trade_id),
-                )
+            from execution import ledger
+            ledger.update_fields("mcx", trade_id, metadata=json.dumps(metadata))
         except Exception as exc:
             logger.debug(f"[CommOpts] SL state persist error for {trade_id}: {exc}")
 
@@ -2108,56 +2105,13 @@ class CommodityOptionsLearning:
     # ─────────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
+        # Trades now live in the unified `ledger` store; `commodity_learning_trades` is a
+        # compatibility VIEW created by ledger.init() (U5-slice-2). This engine reads that
+        # view and writes via execution.ledger. The settings/instruments tables below are NOT
+        # trade tables and remain real tables owned by this engine.
+        from execution import ledger
+        ledger.init()
         with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS commodity_learning_trades (
-                    id              TEXT PRIMARY KEY,
-                    symbol          TEXT,
-                    instrument      TEXT,
-                    direction       TEXT,
-                    opt_type        TEXT,
-                    strategy        TEXT,
-                    spot_at_entry   REAL,
-                    spot_at_exit    REAL DEFAULT 0,
-                    atm_strike      INTEGER,
-                    otm_strike      INTEGER,
-                    net_debit       REAL,
-                    max_profit      REAL,
-                    spread_width    REAL,
-                    rr              REAL,
-                    iv_used         REAL,
-                    lot_size        INTEGER,
-                    lots            INTEGER DEFAULT 1,
-                    trade_mode      TEXT    DEFAULT 'PAPER',
-                    risk_per_lot    REAL,
-                    dte             INTEGER,
-                    pnl_approx      REAL DEFAULT 0,
-                    pnl_r           REAL DEFAULT 0,
-                    status          TEXT DEFAULT 'OPEN',
-                    exit_reason     TEXT DEFAULT '',
-                    data_source     TEXT DEFAULT 'bs_estimate',
-                    pnl_source      TEXT DEFAULT 'ESTIMATE',
-                    fees            REAL DEFAULT 0,
-                    entry_time      TEXT,
-                    exit_time       TEXT DEFAULT '',
-                    metadata        TEXT DEFAULT '{}'
-                )
-            """)
-            for col_sql in [
-                "ALTER TABLE commodity_learning_trades ADD COLUMN lots       INTEGER DEFAULT 1",
-                "ALTER TABLE commodity_learning_trades ADD COLUMN trade_mode TEXT    DEFAULT 'PAPER'",
-                # pnl_source: how the recorded P&L was derived — REAL vs estimated.
-                #   CHAIN_MARK = marked to the live option spread at close (real)
-                #   ESTIMATE   = spot-move × delta heuristic (NOT a real fill)
-                # Existing closed rows used the spot×delta estimate → default ESTIMATE is correct.
-                "ALTER TABLE commodity_learning_trades ADD COLUMN pnl_source TEXT DEFAULT 'ESTIMATE'",
-                "ALTER TABLE commodity_learning_trades ADD COLUMN fees       REAL DEFAULT 0",
-            ]:
-                try:
-                    conn.execute(col_sql)
-                except Exception:
-                    pass
-
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS commodity_settings (
                     key   TEXT PRIMARY KEY,
@@ -2223,42 +2177,44 @@ class CommodityOptionsLearning:
         logger.info(f"[CommOpts] DB ready — {len(MCX_CONTRACTS)} instruments loaded")
 
     def _db_insert(self, t: dict) -> None:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
-                INSERT INTO commodity_learning_trades
-                (id, symbol, instrument, direction, opt_type, strategy,
-                 spot_at_entry, atm_strike, otm_strike, net_debit, max_profit,
-                 spread_width, rr, iv_used, lot_size, lots, trade_mode,
-                 risk_per_lot, dte, status, data_source, entry_time, metadata)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                t["id"], t["symbol"], t["instrument"], t["direction"],
-                t["opt_type"], t["strategy"], t["spot_at_entry"],
-                t["atm_strike"], t["otm_strike"], t["net_debit"],
-                t["max_profit"], t["spread_width"], t["rr"], t["iv_used"],
-                t["lot_size"], t.get("lots", 1), t.get("trade_mode", "PAPER"),
-                t["risk_per_lot"], t["dte"],
-                t["status"], t["data_source"], t["entry_time"],
-                json.dumps(t.get("metadata", {})),
-            ))
+        from execution import ledger
+        ledger.record("mcx", {
+            "id":            t["id"],
+            "symbol":        t["symbol"],
+            "instrument":    t["instrument"],
+            "direction":     t["direction"],
+            "opt_type":      t["opt_type"],
+            "strategy":      t["strategy"],
+            "spot_at_entry": t["spot_at_entry"],
+            "atm_strike":    t["atm_strike"],
+            "otm_strike":    t["otm_strike"],
+            "net_debit":     t["net_debit"],
+            "max_profit":    t["max_profit"],
+            "spread_width":  t["spread_width"],
+            "rr":            t["rr"],
+            "iv_used":       t["iv_used"],
+            "lot_size":      t["lot_size"],
+            "lots":          t.get("lots", 1),
+            "trade_mode":    t.get("trade_mode", "PAPER"),
+            "risk_per_lot":  t["risk_per_lot"],
+            "dte":           t["dte"],
+            "status":        t["status"],
+            "data_source":   t["data_source"],
+            "entry_time":    t["entry_time"],
+            "metadata":      json.dumps(t.get("metadata", {})),
+        })
 
     def _db_close(
         self, trade_id: str, exit_spot: float,
         reason: str, pnl: float, pnl_r: float, pnl_source: str = "ESTIMATE",
         fees: float = 0.0,
     ) -> None:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
-                UPDATE commodity_learning_trades
-                SET spot_at_exit=?, exit_reason=?, pnl_approx=?, pnl_r=?,
-                    pnl_source=?, fees=?, status='CLOSED', exit_time=?
-                WHERE id=?
-            """, (
-                exit_spot, reason,
-                round(pnl, 2), round(pnl_r, 2), pnl_source, round(fees, 2),
-                datetime.now(tz=IST).isoformat(),
-                trade_id,
-            ))
+        from execution import ledger
+        ledger.update_fields("mcx", trade_id,
+            spot_at_exit=exit_spot, exit_reason=reason,
+            pnl_approx=round(pnl, 2), pnl_r=round(pnl_r, 2),
+            pnl_source=pnl_source, fees=round(fees, 2),
+            status="CLOSED", exit_time=datetime.now(tz=IST).isoformat())
 
     # ─────────────────────────────────────────────────────────────
     # READ API
