@@ -34,11 +34,14 @@ from analysis.options_engine import options_engine
 from execution.fyers_broker import fyers_broker
 from execution.options_executor import options_executor
 
-RESOLUTION = "5"
+# RESOLUTION + BAR_MIN come from argv (default 5-minute) so the same study runs
+# across 3m / 5m / 15m. BAR_YEARS (for option theta) tracks the bar size.
+RESOLUTION = sys.argv[2] if len(sys.argv) > 2 else "5"
+BAR_MIN    = int(sys.argv[3]) if len(sys.argv) > 3 else 5
 R_FREE     = 0.065
 SPREAD_PCT = 0.010
 WARMUP     = 30
-BAR_YEARS  = 5 / (60 * 24 * 365)
+BAR_YEARS  = BAR_MIN / (60 * 24 * 365)
 RSI_LOW, RSI_HIGH, MIN_RVOL = 30.0, 70.0, 1.2
 
 # symbol -> (iv, sl_pts, trail_pts)  [5m-tuned]
@@ -184,7 +187,7 @@ def main():
     days = int(sys.argv[1]) if len(sys.argv) > 1 else 90
     fyers_broker.initialise()
     cl = fyers_broker._client
-    print(f"=== Reversal EXIT study + SHORTS — {days}d 5m, ATM call/put, spread={SPREAD_PCT:.0%}/side ===")
+    print(f"=== Reversal EXIT study + SHORTS — {days}d {RESOLUTION}m candles, ATM call/put, spread={SPREAD_PCT:.0%}/side ===")
     pool = {k: [] for k in ("A", "B", "C", "D", "S")}
     for sym, (iv, sl, trail) in CFG.items():
         df = fetch(cl, sym, days)
