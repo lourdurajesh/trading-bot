@@ -347,39 +347,27 @@ class PositionManager:
             except Exception:
                 pass
 
-        # ── 5. Stop loss — absolute level comparison ───────────────
-        # For long options: exit when LTP drops to or below stop
-        # For short options (strangle): exit when combined LTP rises to stop
-        if stop > 0:
-            if direction == "SHORT" and option_ltp >= stop:
-                logger.warning(
-                    f"[PositionManager] OPTIONS STOP {symbol}: "
-                    f"value {option_ltp:.2f} >= stop {stop:.2f}"
-                )
-                self._exit_options_position(symbol, size, "STOP", options_meta)
-                return
-            elif direction == "LONG" and option_ltp <= stop:
-                logger.warning(
-                    f"[PositionManager] OPTIONS STOP {symbol}: "
-                    f"premium {option_ltp:.2f} <= stop {stop:.2f}"
-                )
-                self._exit_options_position(symbol, size, "STOP", options_meta)
-                return
-
-        # ── 6. Target — absolute level comparison ──────────────────
-        # For long options: exit when LTP rises to target
-        # For short options (strangle): exit when combined LTP falls to target
-        if target_1 > 0 and symbol not in self._partial_exited:
-            hit = (direction == "LONG" and option_ltp >= target_1) or \
-                  (direction == "SHORT" and option_ltp <= target_1)
-            if hit:
-                logger.info(
-                    f"[PositionManager] OPTIONS TARGET {symbol}: "
-                    f"ltp {option_ltp:.2f} {'≥' if direction == 'LONG' else '≤'} target {target_1:.2f}"
-                )
-                self._exit_options_position(symbol, size, "TARGET", options_meta)
-                self._partial_exited.add(symbol)
-                return
+        # ── 5/6. Premium STOP / TARGET — shared decision (execution/exit_rules) ──
+        # LONG (buying): STOP when premium ≤ stop, TARGET when ≥ target.
+        # SHORT (selling/strangle): mirrored. One predicate, no LONG/SHORT fork here.
+        from execution.exit_rules import premium_exit
+        _pdec = premium_exit(option_ltp, stop, target_1, direction)
+        if _pdec == "STOP" and stop > 0:
+            logger.warning(
+                f"[PositionManager] OPTIONS STOP {symbol}: "
+                f"{'value' if direction == 'SHORT' else 'premium'} {option_ltp:.2f} "
+                f"{'≥' if direction == 'SHORT' else '≤'} stop {stop:.2f}"
+            )
+            self._exit_options_position(symbol, size, "STOP", options_meta)
+            return
+        if _pdec == "TARGET" and target_1 > 0 and symbol not in self._partial_exited:
+            logger.info(
+                f"[PositionManager] OPTIONS TARGET {symbol}: "
+                f"ltp {option_ltp:.2f} {'≥' if direction == 'LONG' else '≤'} target {target_1:.2f}"
+            )
+            self._exit_options_position(symbol, size, "TARGET", options_meta)
+            self._partial_exited.add(symbol)
+            return
 
     def _get_monitor_ltp(self, pos_dict: dict) -> Optional[float]:
         """

@@ -48,14 +48,26 @@ def underlying_exit(spot: Optional[float], entry_spot: float, sl: float, trail: 
     return None, peak, stop
 
 
-def premium_exit(ltp: Optional[float], stop: float, target: float) -> Optional[str]:
-    """Premium-level exit for a long option: hard SL / target on the option price."""
+def premium_exit(ltp: Optional[float], stop: float, target: float,
+                 direction: str = "LONG") -> Optional[str]:
+    """Premium-level (option-price) exit decision.
+
+    LONG  (option-buying):  STOP when premium falls to ≤ stop, TARGET when it rises to ≥ target.
+    SHORT (option-selling, e.g. strangle/iron-condor): mirrored — STOP when premium rises to
+          ≥ stop (value going against us), TARGET when it falls to ≤ target.
+    """
     if ltp is None or ltp <= 0:
         return None
-    if ltp <= stop:
-        return "STOP"
-    if target and ltp >= target:
-        return "TARGET"
+    if direction == "LONG":
+        if stop and ltp <= stop:
+            return "STOP"
+        if target and ltp >= target:
+            return "TARGET"
+    else:
+        if stop and ltp >= stop:
+            return "STOP"
+        if target and ltp <= target:
+            return "TARGET"
     return None
 
 
