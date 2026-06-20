@@ -59,5 +59,14 @@ def premium_exit(ltp: Optional[float], stop: float, target: float) -> Optional[s
     return None
 
 
-# Re-export the breakdown predicate so engines have one import for option exits.
-__all__ = ["underlying_exit", "premium_exit", "bear_breakdown"]
+def spot_breached(spot: Optional[float], stop: float, direction: str = "LONG") -> bool:
+    """Underlying-spot stop breach — LONG exits when spot ≤ stop, SHORT when spot ≥ stop.
+    The one predicate for spot-based SL (MCX STOP_SPOT, Reversal hard stop, …)."""
+    if spot is None or spot <= 0:
+        return False
+    return (spot <= stop) if direction == "LONG" else (spot >= stop)
+
+
+# ratchet_stop + bear_breakdown are imported at top; re-export so engines have one
+# import site for all option-exit primitives.
+__all__ = ["underlying_exit", "premium_exit", "spot_breached", "ratchet_stop", "bear_breakdown"]

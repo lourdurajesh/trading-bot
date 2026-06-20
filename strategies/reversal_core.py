@@ -46,11 +46,16 @@ def is_breakdown(o_now, c_now, low_prev) -> bool:
 
 
 def ratchet_stop(prev_stop: float, peak: float, init_stop: float,
-                 trail: float, pct: bool = False) -> float:
-    """Trailing stop that only moves up: trail = points (pct=False) or fraction
-    (pct=True) below the running peak; never below init_stop."""
-    trail_level = peak * (1 - trail) if pct else peak - trail
-    return max(prev_stop, trail_level, init_stop)
+                 trail: float, pct: bool = False, long: bool = True) -> float:
+    """Trailing stop that only moves in the favourable direction. trail = points
+    (pct=False) or fraction (pct=True) from the running peak/trough. LONG: stop
+    ratchets UP, never below init_stop. SHORT: stop ratchets DOWN, never above
+    init_stop. (peak is the favourable extreme — highest for long, lowest for short.)"""
+    if long:
+        trail_level = peak * (1 - trail) if pct else peak - trail
+        return max(prev_stop, trail_level, init_stop)
+    trail_level = peak * (1 + trail) if pct else peak + trail
+    return min(prev_stop, trail_level, init_stop)
 
 
 # ── DataFrame helpers (convenience for the live strategies) ──────

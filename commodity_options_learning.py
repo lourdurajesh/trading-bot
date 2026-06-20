@@ -1687,21 +1687,18 @@ class CommodityOptionsLearning:
                     peak_spot    = spot
                     peak_updated = True
 
-            # Advance trailing SL once favorable move ≥ trail_trig
+            # Advance trailing SL once favorable move ≥ trail_trig.
+            # Uses the shared directional ratchet (execution/exit_rules → reversal_core)
+            # so the trailing-stop math is the same as the NSE/US engines.
             favorable_move = (peak_spot - entry_spot) if direction == "LONG" else (entry_spot - peak_spot)
             if favorable_move >= trail_trig:
-                if direction == "LONG":
-                    new_sl = round(peak_spot - trail_dist, 2)   # fixed distance below peak
-                    if new_sl > sl_price:
-                        sl_price = new_sl
-                        trade_meta["trail_active"] = True
-                        sl_updated = True
-                else:
-                    new_sl = round(peak_spot + trail_dist, 2)   # fixed distance above peak (trough)
-                    if new_sl < sl_price:
-                        sl_price = new_sl
-                        trade_meta["trail_active"] = True
-                        sl_updated = True
+                from execution.exit_rules import ratchet_stop
+                new_sl = round(ratchet_stop(sl_price, peak_spot, sl_price, trail_dist,
+                                            long=(direction == "LONG")), 2)
+                if new_sl != sl_price:
+                    sl_price = new_sl
+                    trade_meta["trail_active"] = True
+                    sl_updated = True
 
             # Upgrade target once momentum is ≥ tgt_up_mult × SL distance,
             # capped at 90% of T1 distance so the upgrade always fires before
@@ -1797,20 +1794,16 @@ class CommodityOptionsLearning:
                             f"(gap={_gap_now:.1f}% >= {_gap_thresh:.1f}%)"
                         )
 
-            # ── Spot-based SL ────────────────────────────────────────────────────
+            # ── Spot-based SL (shared spot_breached predicate) ──────────────────
             if exit_reason is None:
-                sl_type = "trail" if trade_meta.get("trail_active") else "initial"
-                if direction == "LONG" and spot <= sl_price:
+                from execution.exit_rules import spot_breached
+                if spot_breached(spot, sl_price, direction):
+                    sl_type = "trail" if trade_meta.get("trail_active") else "initial"
                     exit_reason = "STOP_SPOT"
                     pnl_approx  = round(est_pnl, 2)
+                    _cmp = "≤" if direction == "LONG" else "≥"
                     logger.info(
-                        f"[CommOpts] {instrument} SL hit: spot {spot:.2f} ≤ sl {sl_price:.2f} ({sl_type})"
-                    )
-                elif direction == "SHORT" and spot >= sl_price:
-                    exit_reason = "STOP_SPOT"
-                    pnl_approx  = round(est_pnl, 2)
-                    logger.info(
-                        f"[CommOpts] {instrument} SL hit: spot {spot:.2f} ≥ sl {sl_price:.2f} ({sl_type})"
+                        f"[CommOpts] {instrument} SL hit: spot {spot:.2f} {_cmp} sl {sl_price:.2f} ({sl_type})"
                     )
 
             # ── Dynamic target ───────────────────────────────────────────────────
