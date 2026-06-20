@@ -328,6 +328,33 @@ class LearningEngine:
             return reason, opt_ltp
         return None, None
 
+    def _underlying_breakdown_exit(self, metadata: dict, opt_ltp: float, store):
+        """
+        Exit a long index call on either:
+          (a) a hard stop — index trades sl_pts below entry_spot, or
+          (b) a 'bear breakdown' — the latest 5m index candle is red AND closes below
+              the previous 5m candle's low (mirror of the entry trigger).
+        Returns (reason, opt_ltp) or (None, None). Best for NIFTY/BANKNIFTY (backtest).
+        """
+        und = metadata.get("underlying")
+        # (a) hard stop on the underlying
+        spot = store.get_ltp(und) if und else None
+        entry_spot = float(metadata.get("entry_spot") or 0)
+        sl_pts     = float(metadata.get("sl_pts") or 0)
+        if spot and spot > 0 and entry_spot and spot <= entry_spot - sl_pts:
+            return "STOP", opt_ltp
+        # (b) bear breakdown on the latest two 5m index candles
+        try:
+            df = store.get_ohlcv(und, "5m", n=3)
+            if df is not None and len(df) >= 2:
+                o = float(df["open"].iloc[-1]); c = float(df["close"].iloc[-1])
+                prev_low = float(df["low"].iloc[-2])
+                if c < o and c < prev_low:
+                    return "BREAK", opt_ltp
+        except Exception:
+            pass
+        return None, None
+
     def _check_exits(self, store) -> None:
         from datetime import time as dtime
         closed_keys = []
@@ -405,11 +432,15 @@ class LearningEngine:
 
             # Stop / target exits
             if instrument_type == "nse_options":
-                if metadata.get("exit_mode") == "underlying_trail":
-                    # Index-point trailing stop on the UNDERLYING (Reversal5m,
-                    # InstitutionalMomentum-learning). Exits the option at its
-                    # premium LTP when the index breaches the trailed stop.
+                _em = metadata.get("exit_mode")
+                if _em == "underlying_trail":
+                    # Index-point trailing stop on the UNDERLYING (exits the option at
+                    # its premium LTP when the index breaches the trailed stop).
                     exit_reason, exit_price = self._underlying_trail_exit(metadata, ltp, store)
+                elif _em == "underlying_breakdown":
+                    # Hard SL on the underlying + exit when a red 5m index candle
+                    # closes below the prior 5m low (Reversal5m NIFTY/BANKNIFTY).
+                    exit_reason, exit_price = self._underlying_breakdown_exit(metadata, ltp, store)
                 elif ltp <= stop:
                     exit_reason, exit_price = "STOP",   ltp
                 elif ltp >= target:

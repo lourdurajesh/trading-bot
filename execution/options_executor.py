@@ -67,6 +67,7 @@ EQUITY_LOT_SIZES: dict[str,int]= _inst.get("equity_lot_sizes",  {})
 EQUITY_STRIKE_STEPS: dict[str,int]=_inst.get("equity_strike_steps",{})
 # Underlying index-point exits for intraday call-buying (config-driven).
 INDEX_TRAIL_POINTS: dict[str,dict] = _inst.get("index_trail_points", {})
+INDEX_EXIT_MODE:    dict[str,str]  = _inst.get("index_exit_mode", {})
 
 logger.info(
     f"[OptionsExecutor] Lot sizes loaded: "
@@ -262,6 +263,12 @@ class OptionsExecutor:
             return float(cfg["sl"]), float(cfg["trail"])
         except (KeyError, ValueError, TypeError):
             return None
+
+    def get_exit_mode(self, underlying: str) -> str:
+        """Config-driven option exit mode for an index — 'underlying_breakdown' or
+        'underlying_trail' (default). See config/nse_instruments.json:index_exit_mode."""
+        short = INDEX_SHORT.get(underlying)
+        return INDEX_EXIT_MODE.get(short, "underlying_trail") if short else "underlying_trail"
 
     def update_iv_history(self, underlying: str) -> None:
         """

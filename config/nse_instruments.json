@@ -22,6 +22,12 @@
     "BANKNIFTY": {"sl": 150, "trail": 220},
     "FINNIFTY": {"sl": 80, "trail": 140}
   },
+  "_index_exit_mode_comment": "Per-index option exit for Reversal5m (90d 5m backtest): underlying_breakdown = hard SL + exit when a red 5m candle closes below the prior 5m low (best for NIFTY/BANKNIFTY); underlying_trail = ratcheting points trail (best for FINNIFTY).",
+  "index_exit_mode": {
+    "NIFTY": "underlying_breakdown",
+    "BANKNIFTY": "underlying_breakdown",
+    "FINNIFTY": "underlying_trail"
+  },
   "equity_lot_sizes": {
     "RELIANCE": 500,
     "TCS": 175,

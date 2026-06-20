@@ -228,7 +228,7 @@ class Reversal5mStrategy(BaseStrategy):
                 "lot_size":        opt.lot_size,
                 "dte":             opt.dte,
                 "iv":              opt.iv,
-                "exit_mode":       "underlying_trail",
+                "exit_mode":       options_executor.get_exit_mode(symbol),
                 "underlying":      symbol,
                 "entry_spot":      round(spot, 2),
                 "sl_pts":          sl_pts,
