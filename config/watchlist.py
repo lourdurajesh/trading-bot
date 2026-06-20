@@ -91,9 +91,9 @@ NSE_OPTIONS_UNIVERSE = [
     "NSE:HDFCBANK-EQ",
 ]
 
-# ── US (disabled until Alpaca account ready) ──────────────────────
+# ── US index ETFs — Reversal options paper strategy (Alpaca IEX) ──
 US_EQUITIES = []
-US_ETFS     = []
+US_ETFS     = ["SPY", "QQQ"]   # S&P 500 / Nasdaq-100 — the US "index" equivalents
 
 # ── Combined lists ────────────────────────────────────────────────
 ALL_NSE_SYMBOLS = NSE_EQUITIES + NSE_MIDCAP + NSE_INDICES
@@ -104,6 +104,7 @@ PRIORITY_SYMBOLS = [
     "NSE:NIFTYBANK-INDEX",  # institutional momentum — evaluated first (preferred over NIFTY)
     "NSE:NIFTY50-INDEX",
     "NSE:FINNIFTY-INDEX",   # added: now covered by institutional_momentum + directional_options
+    "SPY", "QQQ",           # US index ETFs — seeded for the US Reversal paper strategy
     "NSE:RELIANCE-EQ",
     "NSE:HDFCBANK-EQ",
     "NSE:TCS-EQ",

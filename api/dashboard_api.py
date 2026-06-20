@@ -368,6 +368,34 @@ def get_paper_positions():
         return {"error": str(e)}
 
 
+@app.get("/us/stats")
+def us_stats():
+    """US index-ETF (SPY/QQQ) Reversal paper stats."""
+    try:
+        from us_reversal import us_reversal
+        return us_reversal.get_stats()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/us/trades")
+def us_trades(status: str = None, limit: int = 200):
+    """US Reversal paper trades (OPEN/CLOSED)."""
+    import sqlite3
+    try:
+        with sqlite3.connect("db/trades.db") as c:
+            c.row_factory = sqlite3.Row
+            q = "SELECT * FROM us_reversal_trades"
+            params: list = []
+            if status:
+                q += " WHERE status=?"; params.append(status.upper())
+            q += " ORDER BY entry_time DESC LIMIT ?"; params.append(int(limit))
+            rows = [dict(r) for r in c.execute(q, params)]
+        return {"trades": rows}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ─────────────────────────────────────────────────────────────────
 # LEARNING PAPER TRADES
 # ─────────────────────────────────────────────────────────────────

@@ -168,6 +168,7 @@ class AlpacaStream:
         us_priority = [s for s in PRIORITY_SYMBOLS if not s.startswith("NSE:")]
 
         timeframes_to_seed = {
+            "5m":  {"timeframe": "5Min",  "days_back": 12},   # Reversal strategy needs 5m
             "15m": {"timeframe": "15Min", "days_back": 30},
             "1H":  {"timeframe": "1Hour", "days_back": 90},
             "1D":  {"timeframe": "1Day",  "days_back": 365},
@@ -190,12 +191,16 @@ class AlpacaStream:
         end   = datetime.now(tz=IST)
         start = end - timedelta(days=days_back)
 
+        # feed='iex' is required on the free data plan — the default (SIP) returns
+        # empty for free accounts. end is set 1 day back to avoid the SIP "last 15min"
+        # restriction that also blocks recent IEX bars on free.
         bars = self._rest_client.get_bars(
             symbol,
             timeframe,
             start=start.isoformat(),
-            end=end.isoformat(),
+            end=(end - timedelta(days=1)).isoformat(),
             adjustment="raw",
+            feed="iex",
         ).df
 
         if bars.empty:

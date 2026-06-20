@@ -242,6 +242,7 @@ class TradingBot:
 
         last_slow_run        = 0
         last_commodity_run   = 0
+        last_us_run          = 0
         last_token_check     = 0          # periodic token health check
         last_snapshot_save   = 0
         TOKEN_CHECK_INTERVAL = 1800       # check token every 30 min
@@ -466,6 +467,16 @@ class TradingBot:
                         commodity_options.run_cycle()
                     except Exception as ce:
                         logger.exception(f"[CommOpts] Cycle error: {ce}")
+
+                # US index-ETF Reversal options (SPY/QQQ) — paper, BS-modeled.
+                # US-session hours gate is enforced internally in run_cycle().
+                if now - last_us_run >= EVAL_INTERVAL_SECONDS:
+                    last_us_run = now
+                    try:
+                        from us_reversal import us_reversal
+                        us_reversal.run_cycle()
+                    except Exception as ue:
+                        logger.exception(f"[USReversal] Cycle error: {ue}")
 
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)
