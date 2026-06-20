@@ -2158,8 +2158,8 @@ function App() {
     const loadDrought = () =>
       fetch(`${API}/signals/drought`).then(r=>r.json()).then(setDrought).catch(()=>{});
     const loadComm = () => {
-      fetch(`${API}/commodity/stats`).then(r=>r.json()).then(setCommStats).catch(()=>{});
-      fetch(`${API}/commodity/trades?limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});
+      fetch(`${API}/ledger/stats?segment=mcx`).then(r=>r.json()).then(setCommStats).catch(()=>{});
+      fetch(`${API}/ledger/trades?segment=mcx&limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});
       fetch(`${API}/commodity/trade-mode`).then(r=>r.json()).then(d=>{ if(d.mode) setCommMode(d.mode); }).catch(()=>{});
     };
     const loadConfig = () =>
@@ -2590,8 +2590,8 @@ function App() {
               .finally(()=>setCommModeBusy(false));
           }}
           onManualClose={() => {
-            fetch(`${API}/commodity/stats`).then(r=>r.json()).then(setCommStats).catch(()=>{});
-            fetch(`${API}/commodity/trades?limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});
+            fetch(`${API}/ledger/stats?segment=mcx`).then(r=>r.json()).then(setCommStats).catch(()=>{});
+            fetch(`${API}/ledger/trades?segment=mcx&limit=100`).then(r=>r.json()).then(d=>setCommTrades(d.trades||[])).catch(()=>{});
           }}
         />
       </div>

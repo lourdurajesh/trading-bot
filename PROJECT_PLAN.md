@@ -298,8 +298,19 @@ control flow. Full map: `docs/ARCHITECTURE_AUDIT.md`. Guardrail: `trading-archit
     routes are now thin shims over the same adapter (one code path). Added `us_reversal.get_trades`
     (US endpoint no longer inlines SQL). Smoke-verified all three segments against the live schema;
     shim responses are additive-superset (extra `count`/`segment` keys), frontend reads `.trades`.
-  - `[ ]` **slice-2 (frontend)** collapse the cloned learning/commodity/us tabs+screens in
-    `dashboard/index.html` to ONE segment-driven screen calling `/ledger/*`, then delete the shims.
+  - `[~]` **slice-2 (frontend)** `dashboard/index.html` commodity trades/stats fetches now call the
+    unified `/ledger/{stats,trades}?segment=mcx` (identical code path — the `/commodity/*` shims
+    already route through `ledger_*`). **Did NOT force-merge the React component trees**: after
+    reading them, `LearningTradesTable`/`CommodityTradesTable` (and the two TabContent trees) have
+    legitimately *diverged* — MCX has spread-legs/greeks/manual-close/trade-mode/chain-admin, learning
+    has options-LTP/MAE-MFE/review-buckets; learning is WS-pushed (`d.learning`) while MCX is
+    REST-polled; **there is no US frontend tab**. The single-source *trading* risk the guardrail
+    guards (a fix landing in one copy → backtest drifts from live) lives in DATA, and was removed at
+    the API in slice-1; UI presentation divergence carries no such risk, so collapsing two working,
+    diverged ~200-line components into one column-config component is high-risk/low-value on a live
+    dashboard — deferred unless a real third clone appears. *Remaining:* retire the `/learning/*`,
+    `/commodity/*`, `/us/*` shims once confirmed no external/manual consumer hits them (kept for now —
+    one-line delegations over the same adapter, not a second code path).
   - Note: when **U5-slice-2** (one ledger table + `segment` col) lands, the three readers in
     `segment_readers.py` collapse to a single `WHERE segment=?` query — endpoints/screen unchanged.
 - **Single-source debt to fold in (user directive 2026-06-20 — applies everywhere, retroactively):**
