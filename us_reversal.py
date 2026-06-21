@@ -6,7 +6,7 @@ US index-ETF Reversal options PAPER engine (SPY = S&P 500, QQQ = Nasdaq-100).
 The US equivalent of the Indian index Reversal strategy: the red→green reclaim
 pattern on 5m bars, traded as ATM weekly CALL-buying with an underlying % trailing
 stop + EOD square-off. Premiums are Black-Scholes modeled (validated by
-scripts/backtest_reversal_us_index.py — pooled PF ~2.5). Self-contained with its own
+scripts/_archive/backtest_reversal_us_index.py — pooled PF ~2.5). Self-contained with its own
 DB table so it never collides with the NSE learning engine's exit loop.
 
 PAPER ONLY. No real Alpaca option orders — this measures the modeled edge on live

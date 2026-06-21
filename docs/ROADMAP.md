@@ -88,9 +88,9 @@ Weekly ritual every Monday after receiving the edge report:
 **B5. Backtesting before applying changes**
 - [ ] Before applying any param change to live paper trading, run a backtest first:
   ```bash
-  python run_backtest.py --strategy trend_follow --param ATR_STOP_MULTIPLIER=2.0 --days 90
+  PYTHONPATH=. python scripts/run_backtest.py --strategy trend_follow --param ATR_STOP_MULTIPLIER=2.0 --days 90
   ```
-- [ ] `run_backtest.py` currently exists — verify it accepts per-param overrides
+- [ ] `scripts/run_backtest.py` currently exists — verify it accepts per-param overrides
 - [ ] Add a quick comparison report: "current params vs proposed params" over last 90 days
 
 ### Phase 3 — Semi-automated suggestions (after 3 months of Phase 2)

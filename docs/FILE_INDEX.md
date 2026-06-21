@@ -1,7 +1,9 @@
 # File Index
 
-> Every module and what it does, grouped by role. Generated from AST reachability analysis
-> (85 production modules / 9 manual tools). Updated 2026-06-16.
+> Every module and what it does, grouped by role. Updated 2026-06-21 (audit: root decluttered,
+> backtest runners moved to `scripts/`, one-off dev backtests archived, Phase-U unification
+> modules added — `execution/{sizing,ledger,exit_rules,order_router}.py`, `api/segment_readers.py`,
+> `strategies/reversal_core.py`).
 
 **Entry points (how the bot actually runs):**
 - `watchdog.py` → systemd `trading-bot.service`; supervises and restarts `main.py`.
@@ -19,6 +21,7 @@
 | `watchdog.py` | Process supervisor (systemd entry) — keeps `main.py` alive. |
 | `learning_engine.py` | Paper "learning lab": runs simple equity strategies + index-options path on a watchlist, logs labeled trades. |
 | `commodity_options_learning.py` | MCX commodity-options engine: signals, spread construction, exits, P&L for `strategies/mcx/`. |
+| `us_reversal.py` | US index-ETF (SPY/QQQ) Reversal options PAPER engine; logic shared via `strategies/reversal_core.py`; a segment of the unified ledger (folds fully into the pipeline at U6/U7). |
 | `token_manager.py` | Fyers token lifecycle — refresh, health check, proactive pre-6 AM renewal. |
 | `generate_token.py` | One-time/daily Fyers auth token generation (cron). |
 | `audit_log.py` | Append-only audit trail (bot events, rejections). |
@@ -36,16 +39,15 @@
 | `portfolio_analyser.py` | Portfolio analytics (dashboard). |
 | `system_health.py` | Health snapshot. |
 
-## Root — manual tools (run by hand)
+## Root — other
 
 | File | Purpose |
 |------|---------|
-| `run_backtest.py` | Backtest entry point (canonical — see B3). |
-| `run_full_backtest.py` | Fuller backtest sweep (consolidation candidate C2). |
-| `run_analysis.py` | Ad-hoc analysis runner. |
-| `validate_edges_v2.py` | Statistical edge validation (expiry theta, FII flow, Thursday vol). |
-| `validate_fo_leverage.py` | F&O leverage/sizing sanity checks. |
-| `paper_trading.py` | Paper-trading harness. |
+| `paper_trading.py` | Paper-trading harness (imported by `position_manager`/`learning_engine`; mirrors live trades to a paper wallet). |
+
+> Manual backtest/analysis runners moved to `scripts/` (2026-06-21): `run_backtest.py`,
+> `run_full_backtest.py`, `run_analysis.py` — run as `PYTHONPATH=. python scripts/run_backtest.py …`.
+> `validate_edges_v2.py` / `validate_fo_leverage.py` were deleted (stale one-off analyses).
 
 ## `strategies/` — see [STRATEGIES.md](STRATEGIES.md) for full logic
 
@@ -61,6 +63,8 @@
 | `options_income.py` | Short strangle (premium selling). |
 | `iron_condor.py` + `options_strategy_config.py` | Defined-risk condor (**disabled**). |
 | `simple_rsi.py` / `simple_momentum.py` | Learning-lab baselines (paper only). |
+| `reversal_core.py` | **SINGLE SOURCE** for the Reversal pattern + exit + trailing-stop maths (shared by NSE live, US, learning exits, and the archived backtests). |
+| `reversal_5m.py` | Live NSE index Reversal (Reversal5m / Reversal3m) on 5m/3m bars. |
 | `mcx_base.py` | Base class for MCX spread strategies. |
 | `mcx/trend_spread.py` · `mcx/breakout_spread.py` · `mcx/rsi_reversal.py` | MCX commodity-option spreads. |
 
@@ -73,6 +77,10 @@
 | `options_executor.py` | Option-chain fetch/parse, expiry+strike selection, lot/strike resolution, BS fallback. |
 | `order_manager.py` | Signal → order: risk submit, fills, alerts, position open. |
 | `position_manager.py` | Open-position monitor: stops/targets/trailing, EOD/DTE/time exits. |
+| `exit_rules.py` | **ONE** option-exit decision module — premium SL/target, underlying trail, spot-breach, breakdown (U3; used by learning/US/MCX/production). |
+| `order_router.py` | **ONE** broker-selection + place/cancel entry — Fyers (NSE/MCX) / Alpaca (US) (U5). |
+| `sizing.py` | **ONE** size-to-fit sizer — lots/shares for every asset class (U4). |
+| `ledger.py` | **ONE** trades store: the `ledger` table (+ `segment`) behind read-only compat views `learning_trades`/`commodity_learning_trades`/`us_reversal_trades` (U5-slice-2). |
 
 ## `data/` — market data
 
@@ -144,34 +152,35 @@
 | Path | Purpose |
 |------|---------|
 | `notifications/alert_service.py` | Telegram/alert dispatch. |
-| `api/dashboard_api.py` | FastAPI backend for the dashboard. |
-| `dashboard/index.html` | React dashboard UI. |
+| `api/dashboard_api.py` | FastAPI backend: serves the UI + API on :8000; loopback-bound, write-auth middleware (X-API-Key on all writes). |
+| `api/segment_readers.py` | Maps a `segment` (nse/mcx/us) → trades/stats/review reader behind the unified `/ledger/*` endpoints (U7). |
+| `dashboard/index.html` | React dashboard UI (served by `dashboard_api` at `/`; API base derived from `window.location`). |
 | `tests/test_pipeline.py` | Pipeline smoke test. |
+| `tests/test_sizing.py` | U4 sizing regression (new == old across a grid). |
 | `deploy/trading-bot.service` | systemd unit. |
-| `scripts/` | Operational scripts (`fetch_lot_sizes.py`, migrations in `_archive/`). |
+| `scripts/` | Manual runners — `run_backtest.py`, `run_full_backtest.py`, `run_analysis.py`; ops — `fetch_lot_sizes.py`, `migrate_unified_ledger.py`. `_archive/` holds one-off dev backtests (`backtest_reversal_*`, `diagnose_equity`, `backtest_equity_exit`) + old migrations. |
 
 ---
 
-## Proposed target structure (future — coordinate with server release)
+## Cleanup done (2026-06-21 audit)
 
-The package layout (`analysis/`, `config/`, `data/`, `execution/`, `intelligence/`, `risk/`,
-`strategies/`) is already clean. The **root** is what feels cluttered. Proposed grouping **without
-moving server-referenced entry points** (`watchdog.py`, `main.py`, `generate_token.py`,
-`nightly_agent.py`, `weekly_agent.py` must stay at root, or systemd/cron paths break):
+- Standalone docs moved into `docs/` (LOGIC, ROADMAP, options_bugs, PLAN, architecture_enhancement_spec).
+- Backtest/analysis runners moved root → `scripts/`; one-off dev backtests → `scripts/_archive/`.
+- Deleted stale one-offs (`validate_edges_v2.py`, `validate_fo_leverage.py`) + local cruft
+  (`fyers*.log`, a stray `.env` copy).
+- Root now holds only live engines, entry points, review/report tools, and `paper_trading.py`.
+
+## Remaining (optional, future — coordinate with server release)
+
+The package layout is clean; the root could be grouped further **without moving server-referenced
+entry points** (`watchdog.py`, `main.py`, `generate_token.py`, `nightly_agent.py`, `weekly_agent.py`
+must stay at root, or systemd/cron paths break):
 
 ```
-trading-bot/
-  main.py, watchdog.py, generate_token.py, nightly_agent.py, weekly_agent.py   # entry points (stay)
-  core/        learning_engine.py, commodity_options_learning.py, token_manager.py, audit_log.py
-  tools/       run_backtest.py, run_full_backtest.py, run_analysis.py,
-               validate_edges_v2.py, validate_fo_leverage.py, paper_trading.py
-  reviews/     daily_plan.py, daily_review.py, weekly_review.py,
-               journal_analyser.py, portfolio_analyser.py, system_health.py
-  (analysis/ api/ backtesting/ config/ data/ dashboard/ deploy/ execution/
-   intelligence/ notifications/ risk/ scripts/ strategies/ tests/ unchanged)
+  core/        learning_engine.py, commodity_options_learning.py, us_reversal.py, token_manager.py, audit_log.py
+  reviews/     daily_plan.py, daily_review.py, weekly_review.py, journal_analyser.py, portfolio_analyser.py, system_health.py
 ```
 
-> ⚠️ Moving `core/` modules updates imports across many files, and moving `tools/`/`reviews/`
-> changes how they're invoked. This is a dedicated, fully-verified PR — **not** to be mixed with
-> functional work. Tracked as PROJECT_PLAN A5.4. Do it when we can also update server cron paths
-> in the same release.
+> ⚠️ Moving `core/` modules updates absolute imports across many files; moving `reviews/` changes how
+> they're invoked. A dedicated, fully-verified PR — **not** mixed with functional work — done when
+> server cron paths can be updated in the same release. (Tracked as PROJECT_PLAN A5.4.)

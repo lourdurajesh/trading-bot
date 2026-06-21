@@ -373,5 +373,7 @@ intelligence_engine.py` → `execution/order_manager.py` → `execution/position
 **Learning/MCX:** `learning_engine.py`, `commodity_options_learning.py`,
 `strategies/mcx_base.py`, `strategies/mcx/{trend_spread,breakout_spread,rsi_reversal}.py`.
 
-**Manual tools (keep):** `run_backtest.py`, `run_full_backtest.py`, `run_analysis.py`,
-`validate_edges_v2.py`, `validate_fo_leverage.py`, `weekly_review.py`, `tests/test_pipeline.py`.
+**Manual tools (keep):** `scripts/run_backtest.py`, `scripts/run_full_backtest.py`,
+`scripts/run_analysis.py` (run as `PYTHONPATH=. python scripts/run_backtest.py …`),
+`weekly_review.py`, `tests/test_pipeline.py`. *(validate_edges_v2/validate_fo_leverage deleted
+2026-06-21 — stale one-off analyses; the reversal dev backtests moved to `scripts/_archive/`.)*
