@@ -307,6 +307,12 @@ class AlertService:
             return
         threading.Thread(target=self._post, args=(message,), daemon=True).start()
 
+    @staticmethod
+    def _redact(text: str) -> str:
+        """Strip the bot token before logging — it appears verbatim in the request URL,
+        so a raw requests exception (e.g. ConnectionError) would otherwise leak it."""
+        return text.replace(TELEGRAM_BOT_TOKEN, "***") if TELEGRAM_BOT_TOKEN else text
+
     def _post(self, message: str) -> None:
         try:
             import requests
@@ -322,7 +328,7 @@ class AlertService:
             if not resp.ok:
                 logger.warning(f"[Alerts] Telegram API error: {resp.status_code} {resp.text[:200]}")
         except Exception as exc:
-            logger.warning(f"[Alerts] Telegram send error: {exc}")
+            logger.warning(f"[Alerts] Telegram send error: {self._redact(str(exc))}")
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────

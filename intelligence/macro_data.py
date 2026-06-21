@@ -29,12 +29,8 @@ logger = logging.getLogger(__name__)
 REQUEST_TIMEOUT = 8
 CACHE_MINUTES   = 30
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-    )
-}
+from config.settings import HTTP_USER_AGENT
+HEADERS = {"User-Agent": HTTP_USER_AGENT}
 
 
 @dataclass

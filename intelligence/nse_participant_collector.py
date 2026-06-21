@@ -187,12 +187,9 @@ class NSEParticipantCollector:
 
     def _fetch_csv(self, url: str, retries: int = 3) -> Optional[str]:
         """Download CSV from NSE archives with retry and browser-like headers."""
+        from config.settings import HTTP_USER_AGENT
         headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": HTTP_USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Referer": "https://www.nseindia.com/",

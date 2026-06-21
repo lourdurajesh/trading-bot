@@ -50,11 +50,9 @@ _MCX_EXTRA_KEY = "holidays.mcx_extra"    # small set of MCX-only closures (not i
 # Same session-cookie approach as premarket_analyzer — NSE rejects bare requests.
 _NSE_HOME        = "https://www.nseindia.com/"
 _NSE_HOLIDAY_URL = "https://www.nseindia.com/api/holiday-master?type=trading"
+from config.settings import HTTP_USER_AGENT
 _NSE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": HTTP_USER_AGENT,
     "Accept":          "*/*",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",

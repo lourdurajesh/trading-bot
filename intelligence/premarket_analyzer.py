@@ -43,11 +43,9 @@ _IEP_WINDOW_END   = dtime(9, 20)   # allow a few minutes past open for late fetc
 # adjusted via the dashboard without restarting the bot.
 # Defaults: strong=0.50% (±2 score), mild=0.15% (±1 score)
 
+from config.settings import HTTP_USER_AGENT
 _NSE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": HTTP_USER_AGENT,
     "Accept":          "*/*",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",

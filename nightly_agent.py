@@ -385,8 +385,8 @@ def _generate_play_with_rules(candidate, bt: dict, macro) -> dict:
 
 def _update_live_watchlist(symbols: list[str]) -> None:
     """Write tomorrow's watchlist to a JSON file for the bot to read at startup."""
-    watchlist_path = "db/dynamic_watchlist.json"
-    os.makedirs("db", exist_ok=True)
+    from config.settings import DYNAMIC_WATCHLIST_PATH as watchlist_path
+    os.makedirs(os.path.dirname(watchlist_path) or "db", exist_ok=True)
     with open(watchlist_path, "w") as f:
         json.dump({
             "generated_at": datetime.now(tz=IST).isoformat(),

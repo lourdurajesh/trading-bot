@@ -209,6 +209,17 @@ OPTIONS_SIGNAL_TF   = "1D"
 
 DB_PATH = os.getenv("DB_PATH", "db/trades.db")
 
+# Dynamic watchlist (written by the nightly agent, read by the bot at startup) — lives
+# next to the DB so it follows $DB_PATH instead of being hardcoded per-module.
+DYNAMIC_WATCHLIST_PATH = os.path.join(os.path.dirname(DB_PATH) or "db", "dynamic_watchlist.json")
+
+# Single User-Agent for all outbound scrapers (NSE/holidays/news/macro/fundamentals) —
+# was duplicated (and slightly inconsistent) across ~6 modules.
+HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
 # ─────────────────────────────────────────
 # DASHBOARD / API
 # ─────────────────────────────────────────
