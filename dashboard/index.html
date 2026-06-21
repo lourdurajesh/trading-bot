@@ -214,6 +214,16 @@ const WS_LOGS  = _WS_BASE + "/ws/logs";
 const getApiKey = () => localStorage.getItem("dashboardApiKey") || "";
 const setApiKey = (k) => localStorage.setItem("dashboardApiKey", k.trim());
 
+/* Global injection: every request carries X-API-Key, so all mutating endpoints
+   (now enforced server-side for POST/PUT/DELETE) work without per-call wiring.
+   Harmless on GETs. The 403-retry prompt still lives in authedFetch below. */
+const _nativeFetch = window.fetch.bind(window);
+window.fetch = (url, opts = {}) => {
+  const key = getApiKey();
+  if (!key) return _nativeFetch(url, opts);
+  return _nativeFetch(url, {...opts, headers: {...(opts.headers || {}), "X-API-Key": key}});
+};
+
 /**
  * Authenticated fetch for mutating endpoints that require X-API-Key.
  * On 403: prompts the user for the key, saves it, and retries once.

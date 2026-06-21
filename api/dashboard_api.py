@@ -71,14 +71,32 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AlphaLens Trading Bot", version="1.0")
 
-# Allow React dev server
+# CORS: explicit allow-list (never "*" with credentials). Default is localhost only;
+# the dashboard is same-origin when served by this app, so this mainly blocks other
+# sites from scripting the API through a logged-in browser.
+from config.settings import DASHBOARD_ALLOWED_ORIGINS as _ALLOWED_ORIGINS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Defense-in-depth: enforce the API key on EVERY mutating request (POST/PUT/DELETE/PATCH)
+# in one place, so a newly added write endpoint can't accidentally ship unauthenticated.
+# Reads (GET/HEAD) and the WebSocket upgrade (GET) pass through. If DASHBOARD_API_KEY is
+# unset we warn-and-allow (avoid lockout) — but the loopback bind (API_HOST=127.0.0.1)
+# is the primary protection, this is the second layer.
+@app.middleware("http")
+async def _enforce_write_auth(request, call_next):
+    if request.method in ("POST", "PUT", "DELETE", "PATCH") and _DASHBOARD_API_KEY:
+        if request.headers.get("X-API-Key") != _DASHBOARD_API_KEY:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=403,
+                                content={"detail": "Invalid or missing API key"})
+    return await call_next(request)
 
 # Track connected WebSocket clients
 _ws_clients: list[WebSocket] = []

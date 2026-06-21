@@ -213,9 +213,19 @@ DB_PATH = os.getenv("DB_PATH", "db/trades.db")
 # DASHBOARD / API
 # ─────────────────────────────────────────
 
-API_HOST          = os.getenv("API_HOST", "0.0.0.0")
+# Secure by default: bind to loopback only. Access the dashboard via an SSH tunnel
+# (ssh -L 8000:127.0.0.1:8000 user@host). Set API_HOST=0.0.0.0 in .env ONLY if you
+# intentionally want it reachable on all interfaces (and then put it behind auth/TLS).
+API_HOST          = os.getenv("API_HOST", "127.0.0.1")
 API_PORT          = int(os.getenv("API_PORT", "8000"))
 DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY", "")   # Bug 13: set a strong secret in .env
+# CORS: explicit allow-list (never "*" with credentials). Dashboard is same-origin when
+# served by this app; override via env for any additional trusted origins.
+DASHBOARD_ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv(
+        "DASHBOARD_ALLOWED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000"
+    ).split(",") if o.strip()
+]
 
 # ─────────────────────────────────────────
 # NOTIFICATIONS
