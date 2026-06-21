@@ -37,3 +37,9 @@ db/journal_reports/
 # OS
 .DS_Store
 Thumbs.db
+# Local backups (DB / .env snapshots) — never commit
+*.bak
+*.bak-*
+.env.bak-*
+# Runtime-mutable config (edited via dashboard, server-specific state)
+config/commodity_strategy_config.json
