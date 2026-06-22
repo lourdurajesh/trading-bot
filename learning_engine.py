@@ -49,6 +49,7 @@ SLIPPAGE_OPTIONS = 0.003    # 0.30% — accounts for bid-ask spread on options
 # Round trip = entry order + exit order = ₹40 flat regardless of lot count.
 FEES_EQUITY_FLAT   = 40.0   # ₹40 per equity/futures round trip
 FEES_OPTIONS_FLAT  = 40.0   # ₹40 per options round trip (₹20 × 2 orders, flat)
+FEE_PER_ORDER      = 20.0   # ₹20 per order (one leg) — open trades have paid entry only
 
 # ── Swing vs intraday hold classification ─────────────────────────
 # Swing strategies are NOT forced to close at EOD; they run until
@@ -1118,8 +1119,9 @@ class LearningEngine:
                 risk    = entry - stop          # long premium: stop < entry
                 pnl_pts = ltp - entry           # premium move per unit
                 # ₹ P&L uses the ACTUAL executed qty (lots × lot_size), same as Paper.
+                # Open position: only the entry-leg fee has been incurred (₹20).
                 qty     = self._real_qty(trade)
-                pnl_inr = round(pnl_pts * qty - float(trade.get("fees") or 0), 2) if qty else None
+                pnl_inr = round(pnl_pts * qty - FEE_PER_ORDER, 2) if qty else None
             else:
                 ltp = store.get_ltp(trade.get("symbol"))
                 if not ltp or ltp <= 0:
@@ -1130,9 +1132,10 @@ class LearningEngine:
                     pnl_pts = entry - ltp
                 # ₹ P&L uses the ACTUAL executed share qty (same as Paper widget);
                 # R is still risk-based, so keep risk from the original stop distance.
+                # Open position: only the entry-leg fee has been incurred (₹20).
                 risk = float(meta.get("risk_pts") or 0) or abs(entry - stop)
                 qty     = self._real_qty(trade)
-                pnl_inr = round(pnl_pts * qty - FEES_EQUITY_FLAT, 2) if qty else None
+                pnl_inr = round(pnl_pts * qty - FEE_PER_ORDER, 2) if qty else None
 
             pnl_r = round(pnl_pts / risk, 2) if risk and risk > 0 else 0.0
             return {"ltp": round(ltp, 2), "pnl_pts": round(pnl_pts, 2),

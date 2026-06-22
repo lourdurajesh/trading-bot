@@ -388,7 +388,7 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
                 : null;
               // Real executed qty (options: lots×lot_size, equity: shares) — set by backend.
               const lotSize  = t.qty || (isOpts ? (meta.lot_size || 1) : 1);
-              const liveFees = isOpts ? (meta.fees_flat || 40) : 40;
+              const liveFees = 20;  // open position: entry-leg fee only (₹20/order), matches Paper
               const liveInr  = livePts != null ? (livePts * lotSize - liveFees) : null;
               const ltpColor = ltp == null ? "#64748b"
                 : livePts > 0 ? "#22c55e"
@@ -551,7 +551,7 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
     const lot = t.qty || (isO ? (m.lot_size || 1) : 0);  // real executed qty from backend
     if (!lot) return null;
     const livePts = (isO || t.direction === "LONG") ? (ltp - t.entry_price) : (t.entry_price - ltp);
-    const fees = isO ? (m.fees_flat || 40) : 40;
+    const fees = 20;  // open position: entry-leg fee only (₹20/order), matches Paper
     return livePts * lot - fees;
   };
   const closedPnlInr = closedF.reduce((s,t)=>s+(t.pnl_inr||0), 0);

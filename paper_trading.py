@@ -45,7 +45,11 @@ MIN_PAPER_BALANCE      = 25_000.0    # stop new paper trades below this floor
 
 # Realistic simulation parameters
 SLIPPAGE_PCT  = 0.05    # 0.05% slippage on fills
-BROKERAGE_PCT = 0.03    # 0.03% per leg brokerage
+BROKERAGE_PCT = 0.03    # 0.03% per leg (legacy; superseded by flat fee below)
+# Fyers charges ₹20 flat per order regardless of size — NOT a percentage. Use a flat
+# fee so paper P&L matches the learning lab and reality (a 0.03% model overcharges
+# large positions, e.g. ₹116 on a ₹386k trade vs the real ₹20). Round trip = ₹40.
+FEE_PER_ORDER = 20.0    # ₹ per order (one leg)
 
 
 class PaperTradingEngine:
@@ -280,8 +284,8 @@ class PaperTradingEngine:
                     ltp        = raw_ltp if raw_ltp <= entry * 20 else entry
                     unrealised = (ltp - entry) * size if direction == "LONG" else (entry - ltp) * size
 
-                # Deduct brokerage
-                brokerage  = entry * size * BROKERAGE_PCT / 100
+                # Deduct entry-leg fee only (exit not yet incurred on an open position)
+                brokerage  = FEE_PER_ORDER
                 net_pnl    = unrealised - brokerage
 
                 positions.append({
@@ -485,8 +489,8 @@ class PaperTradingEngine:
             else:
                 gross_pnl = (entry - exit_price) * size
 
-            # Deduct brokerage both legs
-            brokerage = (entry + exit_price) * size * BROKERAGE_PCT / 100
+            # Deduct brokerage both legs (entry + exit), flat per order
+            brokerage = 2 * FEE_PER_ORDER
             pnl       = round(gross_pnl - brokerage, 2)
 
             conn.execute("""
@@ -644,7 +648,7 @@ class PaperTradingEngine:
                 else:
                     gross_pnl = (entry - exit_price) * size
 
-                brokerage = (entry + exit_price) * size * BROKERAGE_PCT / 100
+                brokerage = 2 * FEE_PER_ORDER   # entry + exit, flat per order
                 pnl       = round(gross_pnl - brokerage, 2)
 
                 conn.execute("""
