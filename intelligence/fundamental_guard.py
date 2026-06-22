@@ -13,6 +13,7 @@ Returns a FundamentalRisk dataclass with a veto flag and reason.
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -25,7 +26,9 @@ import requests
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT  = 8
-EARNINGS_GUARD_DAYS = 2     # block trades within this many days of earnings (was 5 — too broad during Q4 season)
+# Earnings guard — env-tunable so it can be relaxed/disabled without a code change.
+EARNINGS_GUARD_ENABLED = os.getenv("EARNINGS_GUARD_ENABLED", "true").lower() != "false"
+EARNINGS_GUARD_DAYS    = int(os.getenv("EARNINGS_GUARD_DAYS", "2"))   # block within this many days of RESULTS
 
 from config.settings import HTTP_USER_AGENT
 HEADERS = {"User-Agent": HTTP_USER_AGENT}
@@ -124,8 +127,16 @@ class FundamentalGuard:
 
             now = datetime.now(tz=IST)
             for event in data:
+                # CRITICAL: NSE ignores the ?index= param and returns the FULL market
+                # board-meeting calendar (~33 events for ALL companies). Keep only THIS
+                # symbol's events — otherwise every stock is vetoed by other companies'
+                # results (the mass "all equity blocked, same date" bug).
+                if (event.get("symbol") or "").upper() != ticker.upper():
+                    continue
                 purpose = event.get("purpose", "").lower()
-                if "result" in purpose or "dividend" in purpose or "quarterly" in purpose:
+                # Only actual financial RESULTS block a swing trade. Dividends / AGMs /
+                # buybacks / record dates are NOT earnings.
+                if "result" in purpose:
                     date_str = event.get("date", "")
                     try:
                         event_dt = datetime.strptime(date_str, "%d-%b-%Y").replace(tzinfo=IST)
@@ -151,8 +162,8 @@ class FundamentalGuard:
             except Exception:
                 pass
 
-        # Apply guard
-        if risk.days_to_earnings <= EARNINGS_GUARD_DAYS:
+        # Apply guard (disable instantly with EARNINGS_GUARD_ENABLED=false in .env)
+        if EARNINGS_GUARD_ENABLED and risk.days_to_earnings <= EARNINGS_GUARD_DAYS:
             risk.earnings_warning = True
             risk.veto             = True
             risk.veto_reason      = (
