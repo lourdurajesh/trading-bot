@@ -288,10 +288,16 @@ class LearningEngine:
             f"T {signal['target']:.2f} | R:R {signal['rr']:.1f}"
         )
 
-        # Mirror to paper wallet — capital-limited; options use lot-based sizing
+        # Mirror to paper wallet — capital-limited; options use lot-based sizing.
+        # Persist the REAL executed quantity on the trade so P&L everywhere is
+        # (LTP − entry) × qty − fees, identical to the Paper Positions widget
+        # and the live portfolio (no risk-amount proxy).
         try:
             from paper_trading import paper_trading_engine
-            paper_trading_engine.mirror_learning_open(trade)
+            exec_qty = paper_trading_engine.mirror_learning_open(trade)
+            if exec_qty and instrument_type != "nse_options":
+                meta["position_size"] = int(exec_qty)
+                self._db_update_metadata(trade_id, meta)
         except Exception as exc:
             logger.debug(f"[Learning] Paper mirror open error: {exc}")
 
@@ -1025,21 +1031,12 @@ class LearningEngine:
                 fees     = float(d.get("fees") or 0)
                 d["pnl_inr"] = round((d.get("pnl_pts") or 0) * lot_size - fees, 2)
             else:
-                # Equity: size to fixed risk-per-trade so ₹ P&L tracks R.
-                # Priority for original risk-per-share (rps):
-                #   1. meta["risk_pts"] — stored at open time, unaffected by trailing stop
-                #   2. |pnl_pts/pnl_r|  — back-calculated from closed-trade R (accurate)
-                #   3. current stop distance — last resort, can be tiny after trailing
+                # Equity: P&L = (price move) × ACTUAL share qty − fees. The qty is the
+                # real executed order size — same number the Paper Positions widget and
+                # the live portfolio use — never a risk-amount proxy.
                 _pts = float(d.get("pnl_pts") or 0)
-                _r   = float(d.get("pnl_r") or 0)
-                meta_d = d.get("metadata") or {}
-                rps = float(meta_d.get("risk_pts") or 0)
-                if not rps and _pts != 0 and _r != 0:
-                    rps = abs(_pts / _r)
-                if not rps:
-                    rps = abs(float(d.get("entry_price") or 0) - float(d.get("stop_loss") or 0))
-                qty  = round(LEARNING_RISK_RUPEES / rps) if rps > 0 else 0
                 fees = float(d.get("fees") or 0)
+                qty  = self._equity_qty(d)
                 d["qty"]     = qty
                 d["pnl_inr"] = round(_pts * qty - fees, 2) if qty else None
             # Live mark-to-market for OPEN trades so the dashboard summary reflects
@@ -1057,6 +1054,47 @@ class LearningEngine:
             d = _sanitize_for_json(d)
             result.append(d)
         return result
+
+    def _paper_position_size(self, trade_id: str) -> int:
+        """Read the REAL executed share qty from the mirrored paper trade
+        (PAPER-LRN-<id>). This is the authoritative order size for legacy trades
+        opened before position_size was stored on the learning row itself."""
+        try:
+            paper_id = f"PAPER-LRN-{trade_id[-8:]}"
+            with sqlite3.connect(DB_PATH) as conn:
+                row = conn.execute(
+                    "SELECT position_size FROM paper_trades WHERE id=?", (paper_id,)
+                ).fetchone()
+            return int(row[0]) if row and row[0] else 0
+        except Exception:
+            return 0
+
+    def _equity_qty(self, trade: dict) -> int:
+        """The actual executed share quantity for an equity learning trade — the
+        number P&L is computed against, identical to the Paper Positions widget.
+        Priority:
+          1. metadata["position_size"] — stored at open from the paper mirror (new trades)
+          2. paper_trades.position_size  — looked up by id (legacy trades)
+          3. risk-based fallback         — LEARNING_RISK_RUPEES / original risk_pts
+        """
+        meta = trade.get("metadata") or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        qty = int(meta.get("position_size") or 0)
+        if qty:
+            return qty
+        qty = self._paper_position_size(str(trade.get("id") or ""))
+        if qty:
+            return qty
+        # Last-resort fallback: size to fixed per-trade risk on the original stop.
+        _pts = float(trade.get("pnl_pts") or 0)
+        _r   = float(trade.get("pnl_r") or 0)
+        rps = float(meta.get("risk_pts") or 0)
+        if not rps and _pts != 0 and _r != 0:
+            rps = abs(_pts / _r)
+        if not rps:
+            rps = abs(float(trade.get("entry_price") or 0) - float(trade.get("stop_loss") or 0))
+        return round(LEARNING_RISK_RUPEES / rps) if rps > 0 else 0
 
     def _unrealized(self, trade: dict) -> Optional[dict]:
         """
@@ -1090,10 +1128,10 @@ class LearningEngine:
                     pnl_pts = ltp - entry
                 else:
                     pnl_pts = entry - ltp
-                # Use original risk_pts (stored at open time) so qty is stable even
-                # when the trailing stop has moved close to entry.
+                # ₹ P&L uses the ACTUAL executed share qty (same as Paper widget);
+                # R is still risk-based, so keep risk from the original stop distance.
                 risk = float(meta.get("risk_pts") or 0) or abs(entry - stop)
-                qty     = round(LEARNING_RISK_RUPEES / risk) if risk > 0 else 0
+                qty     = self._equity_qty(trade)
                 pnl_inr = round(pnl_pts * qty - FEES_EQUITY_FLAT, 2) if qty else None
 
             pnl_r = round(pnl_pts / risk, 2) if risk and risk > 0 else 0.0

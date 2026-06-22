@@ -497,13 +497,16 @@ class PaperTradingEngine:
     # LEARNING MIRROR — every learning trade also becomes a paper trade
     # ─────────────────────────────────────────────────────────────
 
-    def mirror_learning_open(self, trade: dict) -> Optional[str]:
+    def mirror_learning_open(self, trade: dict) -> Optional[int]:
         """
         Called by LearningEngine when it opens a trade.
         Mirrors it to paper_trades using a 1% risk position-sizing rule.
         Always active regardless of PAPER_TRADING env var — learning mirrors
         run independently of full paper trading mode.
-        Returns the paper trade ID, or None if capital is insufficient.
+        Returns the executed quantity (shares for equity, lots×lot_size for
+        options) so the caller can store the real order size on the learning
+        trade and derive P&L as (LTP − entry) × qty − fees. None if capital
+        is insufficient / trade rejected.
 
         Position sizing: risk 1% of current paper balance.
           stop_distance = abs(entry - stop_loss)
@@ -588,7 +591,7 @@ class PaperTradingEngine:
             self._credit(capital_req)   # undo deduction on failure
             return None
 
-        return order_id
+        return qty
 
     def mirror_learning_close(
         self,
