@@ -27,6 +27,11 @@ import requests
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger(__name__)
 
+# When the day's delta CONTRADICTS a heavily NET-positioned book (e.g. a bullish daily
+# delta on a deeply net-short book), the delta is likely short-covering / positioning
+# noise rather than conviction — so cap the score magnitude at ±1 in that case. Tunable.
+FII_NET_STRONG = int(os.getenv("FII_NET_STRONG", "100000"))
+
 _DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "fii_fo_history.json")
 
 # NSE CSV archive — more reliable than the JSON API which needs a live session cookie
@@ -165,16 +170,24 @@ class NSEParticipantCollector:
                     f"run scripts/seed_fii_history.py or check 17:30 IST cron"
                 )
 
-        if change > 10_000:
-            return 3, f"FII bought {change:+,} {symbol} futures | net={net:+,} (strongly bullish)"
-        elif change > 5_000:
-            return 2, f"FII bought {change:+,} {symbol} futures | net={net:+,} (moderately bullish)"
-        elif change < -10_000:
-            return -3, f"FII sold {change:+,} {symbol} futures | net={net:+,} (strongly bearish)"
-        elif change < -5_000:
-            return -2, f"FII sold {change:+,} {symbol} futures | net={net:+,} (moderately bearish)"
-        else:
-            return 0, f"FII net change {change:+,} {symbol} futures | net={net:+,} (neutral)"
+        # Base score from the day-over-day delta (fresh positioning direction).
+        if change > 10_000:    base, tag = 3, "strongly bullish"
+        elif change > 5_000:   base, tag = 2, "moderately bullish"
+        elif change < -10_000: base, tag = -3, "strongly bearish"
+        elif change < -5_000:  base, tag = -2, "moderately bearish"
+        else:                  base, tag = 0, "neutral"
+
+        # Net-position context: the delta is ONE day's flow; `net` is the standing book.
+        # A bullish delta on a heavily net-SHORT book (or vice-versa) is likely
+        # short-covering / positioning noise, not conviction — cap magnitude at ±1.
+        damp = ""
+        if base > 0 and net < -FII_NET_STRONG:
+            base = min(base, 1); tag += f", net {net:+,} heavily short → dampened"; damp = "*"
+        elif base < 0 and net > FII_NET_STRONG:
+            base = max(base, -1); tag += f", net {net:+,} heavily long → dampened"; damp = "*"
+
+        verb = "bought" if change > 0 else ("sold" if change < 0 else "net change")
+        return base, f"FII{damp} {verb} {change:+,} {symbol} futures | net={net:+,} ({tag})"
 
     def get_history_df(self, symbol: str = "INDEX", days: int = 30) -> list[dict]:
         """Return last N days of history for a symbol (for analysis/charts)."""

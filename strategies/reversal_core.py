@@ -14,17 +14,24 @@ The pattern/exit DECISION is exposed both as scalar predicates (for the vectoris
 backtests — fast) and as DataFrame helpers (for the live strategies). Both share the
 same predicate, so tuning a threshold here changes backtest + India + US at once.
 """
+import os
 from typing import Optional
 
 import pandas as pd
 
 from analysis.indicators import rsi as _rsi, relative_volume as _rvol
 
-# ── Tunable thresholds — change here, changes everywhere ──────────
-RSI_LOW  = 30.0
-RSI_HIGH = 70.0
-MIN_RVOL = 1.2
-MIN_BARS = 30
+# ── Tunable thresholds — change here (or via env), changes everywhere ──────────
+# RSI band for a LONG reclaim: fire only when RSI is rising AND between LOW and HIGH.
+# Kept HIGH=70: a 90-day, 3-index forward-return study (scripts/_archive) showed high-RSI
+# reclaims (65-70, 70+) perform AS WELL OR BETTER than mid-RSI — the reclaim is momentum
+# continuation in strength. The WEAK end is low RSI (30-50: 40% win, negative avg). So the
+# real future lever is RAISING LOW, not lowering HIGH — left at 30 pending an option-P&L
+# backtest. Env-tunable so that experiment needs no code change.
+RSI_LOW  = float(os.getenv("REVERSAL_RSI_LOW",  "30"))
+RSI_HIGH = float(os.getenv("REVERSAL_RSI_HIGH", "70"))
+MIN_RVOL = float(os.getenv("REVERSAL_MIN_RVOL", "1.2"))
+MIN_BARS = int(os.getenv("REVERSAL_MIN_BARS",  "30"))
 
 
 # ── Scalar predicates (the actual logic) ─────────────────────────
