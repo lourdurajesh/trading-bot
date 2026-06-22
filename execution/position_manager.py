@@ -414,26 +414,29 @@ class PositionManager:
             f"[PositionManager] OPTIONS EXIT {symbol} × {size} — {reason}"
         )
 
+        # Resolve the option's OWN premium for an accurate exit price (never the index spot)
+        pos_dict_for_ltp = {
+            "monitor_symbol": pos.monitor_symbol or pos.symbol,
+            "options_meta":   options_meta,
+        }
+        exit_ltp   = self._get_monitor_ltp(pos_dict_for_ltp)
+        exit_price = exit_ltp if exit_ltp and exit_ltp > 0 else pos.entry_price
+
         if PAPER_TRADING:
             from paper_trading import paper_trading_engine
             paper_trading_engine.close_order(
-                symbol    = symbol,
-                qty       = size,
-                direction = pos.direction,
-                reason    = reason,
+                symbol     = symbol,
+                qty        = size,
+                direction  = pos.direction,
+                reason     = reason,
+                exit_price = exit_price,   # option premium, not index spot
             )
             order_id = "PAPER-OPT-EXIT"
         else:
             order_id = self._place_options_exit_orders(pos, size, options_meta)
 
         if order_id:
-            # Use live monitor LTP for exit price so P&L is accurate
-            pos_dict_for_ltp = {
-                "monitor_symbol": pos.monitor_symbol or pos.symbol,
-                "options_meta":   options_meta,
-            }
-            exit_ltp   = self._get_monitor_ltp(pos_dict_for_ltp)
-            exit_price = exit_ltp if exit_ltp and exit_ltp > 0 else pos.entry_price
+            # exit_price (option premium) already resolved above — reuse it.
             closed = portfolio_tracker.close_position(symbol, exit_price, reason)
             if closed:
                 # Notify options risk gate of the P&L

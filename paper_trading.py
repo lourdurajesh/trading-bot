@@ -197,13 +197,18 @@ class PaperTradingEngine:
 
     def close_order(
         self,
-        symbol:    str,
-        qty:       int,
-        direction: str,
-        reason:    str = "manual",
+        symbol:     str,
+        qty:        int,
+        direction:  str,
+        reason:     str = "manual",
+        exit_price: Optional[float] = None,
     ) -> Optional[str]:
-        """Simulate closing a paper position."""
-        ltp = store.get_ltp(symbol)
+        """Simulate closing a paper position.
+
+        exit_price: pass the instrument's OWN traded price (e.g. the option premium
+        via its NFO symbol) when `symbol` is not the tradable (index options store the
+        index as `symbol`). When omitted, falls back to store.get_ltp(symbol)."""
+        ltp = exit_price if (exit_price and exit_price > 0) else store.get_ltp(symbol)
         if not ltp:
             return None
 
@@ -452,11 +457,19 @@ class PaperTradingEngine:
             ))
 
     def _record_exit(self, symbol: str, exit_price: float, reason: str) -> float:
-        """Close paper position, calculate P&L, return capital to wallet. Returns realised P&L."""
+        """Close paper position, calculate P&L, return capital to wallet. Returns realised P&L.
+
+        Only closes LIVE paper trades — never learning mirrors (PAPER-LRN-*), which are
+        closed exclusively by mirror_learning_close() with the option's own premium.
+        For index options the position symbol is the INDEX (e.g. NSE:NIFTY50-INDEX), so
+        without this exclusion a live index-options exit (priced at the index spot) would
+        match the learning mirror by symbol and book a catastrophic phantom P&L.
+        """
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
-                "SELECT * FROM paper_trades WHERE symbol=? AND status='OPEN'",
+                "SELECT * FROM paper_trades WHERE symbol=? AND status='OPEN' "
+                "AND id NOT LIKE 'PAPER-LRN-%' ORDER BY entry_time LIMIT 1",
                 (symbol,)
             ).fetchone()
 
@@ -480,11 +493,11 @@ class PaperTradingEngine:
                 UPDATE paper_trades
                 SET status='CLOSED', exit_price=?, realised_pnl=?,
                     exit_reason=?, exit_time=?
-                WHERE symbol=? AND status='OPEN'
+                WHERE id=?
             """, (
                 exit_price, pnl, reason,
                 datetime.now(tz=IST).isoformat(),
-                symbol,
+                row["id"],
             ))
 
         # Return deployed capital + net P&L back to wallet
