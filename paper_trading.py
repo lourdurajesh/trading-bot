@@ -270,7 +270,8 @@ class PaperTradingEngine:
 
                 # Options: use nfo_symbol for LTP. If none stored (old stuck trade), show zero P&L
                 if instr_type == "nse_options":
-                    ltp = store.get_ltp(nfo_sym) if nfo_sym else None
+                    # Display price: live LTP, else last candle close (survives close/restart)
+                    ltp = store.get_last_price(nfo_sym) if nfo_sym else None
                     if ltp is None:
                         # Stuck trade — no contract symbol, cannot get real LTP
                         unrealised = 0.0
@@ -278,7 +279,7 @@ class PaperTradingEngine:
                     else:
                         unrealised = (ltp - entry) * size
                 else:
-                    raw_ltp = store.get_ltp(symbol) or entry
+                    raw_ltp = store.get_last_price(symbol) or entry
                     # Safety: if LTP is 20× the entry, it's an index being used instead of
                     # an option premium (old stuck mirror trade) — show zero P&L
                     ltp        = raw_ltp if raw_ltp <= entry * 20 else entry

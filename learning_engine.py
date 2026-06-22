@@ -1113,7 +1113,8 @@ class LearningEngine:
                 return None
 
             if meta.get("instrument_type") == "nse_options":
-                ltp = store.get_ltp(meta.get("nfo_symbol"))
+                # Display price: live LTP, else last candle close (survives market close / restart)
+                ltp = store.get_last_price(meta.get("nfo_symbol"))
                 if not ltp or ltp <= 0:
                     return None
                 risk    = entry - stop          # long premium: stop < entry
@@ -1123,7 +1124,7 @@ class LearningEngine:
                 qty     = self._real_qty(trade)
                 pnl_inr = round(pnl_pts * qty - FEE_PER_ORDER, 2) if qty else None
             else:
-                ltp = store.get_ltp(trade.get("symbol"))
+                ltp = store.get_last_price(trade.get("symbol"))
                 if not ltp or ltp <= 0:
                     return None
                 if trade.get("direction") == "LONG":

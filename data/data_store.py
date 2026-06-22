@@ -170,6 +170,40 @@ class DataStore:
         with self._lock:
             return self._ltp.get(symbol)
 
+    def get_last_price(self, symbol: str) -> Optional[float]:
+        """Display-only price: live LTP, or the most recent candle close when no live
+        tick exists (e.g. market closed, or right after a restart before ticks arrive).
+
+        Use this for P&L DISPLAY so closed-market / post-restart views still show a
+        value from the last traded price (persisted via the candle snapshot). Do NOT
+        use it for trading decisions — those must use get_ltp(), which returns None
+        when data is stale so strategies never act on a frozen price.
+        """
+        live = self.get_ltp(symbol)
+        if live and live > 0:
+            return live
+        with self._lock:
+            best_ts = None
+            best_close = None
+            tf_map = self._candles.get(symbol, {}) if hasattr(self._candles, "get") else self._candles[symbol]
+            open_map = self._open_candle[symbol]
+            for tf in TF_SECONDS:
+                candidates = []
+                cl = tf_map.get(tf) if tf_map else None
+                if cl:
+                    candidates.append(cl[-1])
+                oc = open_map.get(tf)
+                if oc:
+                    candidates.append(oc)
+                for c in candidates:
+                    ts = c.get("timestamp")
+                    close = c.get("close")
+                    if close is None:
+                        continue
+                    if best_ts is None or (ts is not None and ts > best_ts):
+                        best_ts, best_close = ts, close
+        return float(best_close) if best_close is not None else None
+
     def get_latest_tick(self, symbol: str) -> Optional[dict]:
         """Returns the most recent raw tick for a symbol."""
         with self._lock:
