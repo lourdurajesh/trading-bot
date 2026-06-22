@@ -386,7 +386,8 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
               const livePts  = ltp != null
                 ? (isOpts || t.direction==="LONG" ? ltp - t.entry_price : t.entry_price - ltp)
                 : null;
-              const lotSize  = isOpts ? (meta.lot_size || 1) : (t.qty || 1);
+              // Real executed qty (options: lots×lot_size, equity: shares) — set by backend.
+              const lotSize  = t.qty || (isOpts ? (meta.lot_size || 1) : 1);
               const liveFees = isOpts ? (meta.fees_flat || 40) : 40;
               const liveInr  = livePts != null ? (livePts * lotSize - liveFees) : null;
               const ltpColor = ltp == null ? "#64748b"
@@ -547,7 +548,7 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
     const key = isO ? m.nfo_symbol : t.symbol;
     const ltp = key ? (ltps[key] ?? null) : null;
     if (ltp == null) return null;
-    const lot = isO ? (m.lot_size || 1) : (t.qty || 0);
+    const lot = t.qty || (isO ? (m.lot_size || 1) : 0);  // real executed qty from backend
     if (!lot) return null;
     const livePts = (isO || t.direction === "LONG") ? (ltp - t.entry_price) : (t.entry_price - ltp);
     const fees = isO ? (m.fees_flat || 40) : 40;

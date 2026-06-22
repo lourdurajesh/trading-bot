@@ -295,7 +295,8 @@ class LearningEngine:
         try:
             from paper_trading import paper_trading_engine
             exec_qty = paper_trading_engine.mirror_learning_open(trade)
-            if exec_qty and instrument_type != "nse_options":
+            if exec_qty:
+                # equity: shares; options: lots × lot_size — the real order size
                 meta["position_size"] = int(exec_qty)
                 self._db_update_metadata(trade_id, meta)
         except Exception as exc:
@@ -1025,20 +1026,15 @@ class LearningEngine:
                 d["metadata"] = json.loads(d.get("metadata") or "{}")
             except Exception:
                 d["metadata"] = {}
-            # Compute monetary P&L for options: pnl_pts (per-unit premium move) × lot_size − fees
-            if d.get("metadata", {}).get("instrument_type") == "nse_options":
-                lot_size = int(d["metadata"].get("lot_size") or 1)
-                fees     = float(d.get("fees") or 0)
-                d["pnl_inr"] = round((d.get("pnl_pts") or 0) * lot_size - fees, 2)
-            else:
-                # Equity: P&L = (price move) × ACTUAL share qty − fees. The qty is the
-                # real executed order size — same number the Paper Positions widget and
-                # the live portfolio use — never a risk-amount proxy.
-                _pts = float(d.get("pnl_pts") or 0)
-                fees = float(d.get("fees") or 0)
-                qty  = self._equity_qty(d)
-                d["qty"]     = qty
-                d["pnl_inr"] = round(_pts * qty - fees, 2) if qty else None
+            # Monetary P&L = (per-unit move) × ACTUAL executed qty − fees, for both
+            # options (lots × lot_size) and equity (shares). The qty is the real order
+            # size — same number the Paper Positions widget and live portfolio use,
+            # never a risk-amount proxy.
+            _pts = float(d.get("pnl_pts") or 0)
+            fees = float(d.get("fees") or 0)
+            qty  = self._real_qty(d)
+            d["qty"]     = qty
+            d["pnl_inr"] = round(_pts * qty - fees, 2) if qty else None
             # Live mark-to-market for OPEN trades so the dashboard summary reflects
             # unrealized P&L instead of only updating when a trade closes.
             if d.get("status") == "OPEN":
@@ -1069,13 +1065,13 @@ class LearningEngine:
         except Exception:
             return 0
 
-    def _equity_qty(self, trade: dict) -> int:
-        """The actual executed share quantity for an equity learning trade — the
-        number P&L is computed against, identical to the Paper Positions widget.
-        Priority:
+    def _real_qty(self, trade: dict) -> int:
+        """The actual executed quantity P&L is computed against — identical to the
+        Paper Positions widget and the live portfolio. Shares for equity, lots ×
+        lot_size for options. Priority:
           1. metadata["position_size"] — stored at open from the paper mirror (new trades)
           2. paper_trades.position_size  — looked up by id (legacy trades)
-          3. risk-based fallback         — LEARNING_RISK_RUPEES / original risk_pts
+          3. fallback — options: lot_size (1 lot); equity: LEARNING_RISK_RUPEES / risk_pts
         """
         meta = trade.get("metadata") or {}
         if not isinstance(meta, dict):
@@ -1086,7 +1082,10 @@ class LearningEngine:
         qty = self._paper_position_size(str(trade.get("id") or ""))
         if qty:
             return qty
-        # Last-resort fallback: size to fixed per-trade risk on the original stop.
+        if meta.get("instrument_type") == "nse_options":
+            # Legacy option trade with no stored size — fall back to one lot.
+            return int(meta.get("lot_size") or 1) or 1
+        # Equity last resort: size to fixed per-trade risk on the ORIGINAL stop.
         _pts = float(trade.get("pnl_pts") or 0)
         _r   = float(trade.get("pnl_r") or 0)
         rps = float(meta.get("risk_pts") or 0)
@@ -1118,8 +1117,9 @@ class LearningEngine:
                     return None
                 risk    = entry - stop          # long premium: stop < entry
                 pnl_pts = ltp - entry           # premium move per unit
-                lot     = int(meta.get("lot_size") or 1) or 1
-                pnl_inr = round(pnl_pts * lot - float(trade.get("fees") or 0), 2)
+                # ₹ P&L uses the ACTUAL executed qty (lots × lot_size), same as Paper.
+                qty     = self._real_qty(trade)
+                pnl_inr = round(pnl_pts * qty - float(trade.get("fees") or 0), 2) if qty else None
             else:
                 ltp = store.get_ltp(trade.get("symbol"))
                 if not ltp or ltp <= 0:
@@ -1131,7 +1131,7 @@ class LearningEngine:
                 # ₹ P&L uses the ACTUAL executed share qty (same as Paper widget);
                 # R is still risk-based, so keep risk from the original stop distance.
                 risk = float(meta.get("risk_pts") or 0) or abs(entry - stop)
-                qty     = self._equity_qty(trade)
+                qty     = self._real_qty(trade)
                 pnl_inr = round(pnl_pts * qty - FEES_EQUITY_FLAT, 2) if qty else None
 
             pnl_r = round(pnl_pts / risk, 2) if risk and risk > 0 else 0.0
