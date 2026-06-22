@@ -21,6 +21,7 @@ Access results via:
 import json
 import logging
 import math
+import os
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
@@ -28,7 +29,13 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 IST    = ZoneInfo("Asia/Kolkata")
-from config.settings import DB_PATH   # single source — reads $DB_PATH (.env), default db/trades.db
+from config.settings import DB_PATH, TOTAL_CAPITAL, RISK_PER_TRADE_PCT  # single source for paths/sizing
+
+# Equity learning trades carry no lot size, so monetary P&L = pnl_pts × qty where qty is
+# sized to a fixed risk-per-trade (₹). This makes ₹ P&L track R (pnl_pts×qty == pnl_r×risk),
+# consistent with the lab's R metric and the system's fixed-fractional risk sizing. Tunable.
+LEARNING_RISK_RUPEES = float(os.getenv("LEARNING_RISK_RUPEES",
+                                       str(TOTAL_CAPITAL * RISK_PER_TRADE_PCT / 100)))
 
 logger = logging.getLogger(__name__)
 
@@ -1018,7 +1025,20 @@ class LearningEngine:
                 fees     = float(d.get("fees") or 0)
                 d["pnl_inr"] = round((d.get("pnl_pts") or 0) * lot_size - fees, 2)
             else:
-                d["pnl_inr"] = None
+                # Equity: size to fixed risk-per-trade so ₹ P&L tracks R. The stop TRAILS,
+                # so derive the original risk-per-share from the authoritative pnl_r when
+                # available (rps = |pnl_pts / pnl_r|); for open/scratch fall back to the
+                # current stop distance. qty = risk_₹ / rps → pnl_inr == pnl_r × risk_₹.
+                _pts = float(d.get("pnl_pts") or 0)
+                _r   = float(d.get("pnl_r") or 0)
+                if _pts != 0 and _r != 0:
+                    rps = abs(_pts / _r)
+                else:
+                    rps = abs(float(d.get("entry_price") or 0) - float(d.get("stop_loss") or 0))
+                qty  = round(LEARNING_RISK_RUPEES / rps) if rps > 0 else 0
+                fees = float(d.get("fees") or 0)
+                d["qty"]     = qty
+                d["pnl_inr"] = round(_pts * qty - fees, 2) if qty else None
             # Live mark-to-market for OPEN trades so the dashboard summary reflects
             # unrealized P&L instead of only updating when a trade closes.
             if d.get("status") == "OPEN":
@@ -1067,7 +1087,9 @@ class LearningEngine:
                     risk, pnl_pts = entry - stop, ltp - entry
                 else:
                     risk, pnl_pts = stop - entry, entry - ltp
-                pnl_inr = None
+                # Equity live ₹: same risk-sized qty as the closed-trade calc.
+                qty     = round(LEARNING_RISK_RUPEES / risk) if risk and risk > 0 else 0
+                pnl_inr = round(pnl_pts * qty - FEES_EQUITY_FLAT, 2) if qty else None
 
             pnl_r = round(pnl_pts / risk, 2) if risk and risk > 0 else 0.0
             return {"ltp": round(ltp, 2), "pnl_pts": round(pnl_pts, 2),

@@ -386,9 +386,9 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
               const livePts  = ltp != null
                 ? (isOpts || t.direction==="LONG" ? ltp - t.entry_price : t.entry_price - ltp)
                 : null;
-              const lotSize  = isOpts ? (meta.lot_size || 1) : 1;
-              const liveFees = isOpts ? (meta.fees_flat || 40) : 0;
-              const liveInr  = livePts != null ? (isOpts ? livePts * lotSize - liveFees : null) : null;
+              const lotSize  = isOpts ? (meta.lot_size || 1) : (t.qty || 1);
+              const liveFees = isOpts ? (meta.fees_flat || 40) : 40;
+              const liveInr  = livePts != null ? (livePts * lotSize - liveFees) : null;
               const ltpColor = ltp == null ? "#64748b"
                 : livePts > 0 ? "#22c55e"
                 : livePts < 0 ? "#ef4444"
@@ -539,6 +539,23 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
   const totalRF  = closedF.reduce((s,t)=>s+(t.pnl_r||0), 0);
   // Live unrealized R across open positions (backend marks each open row to market)
   const liveR    = openF.reduce((s,t)=>s+(t.unrealized_r||0), 0);
+  // Monetary overall P&L, per-tick — same as MCX: Σ closed ₹ + Σ open live ₹ (recomputed
+  // from the live LTP for each row, options via nfo_symbol / equity via symbol+qty).
+  const _liveInr = (t) => {
+    const m = t.metadata || {};
+    const isO = m.instrument_type === "nse_options";
+    const key = isO ? m.nfo_symbol : t.symbol;
+    const ltp = key ? (ltps[key] ?? null) : null;
+    if (ltp == null) return null;
+    const lot = isO ? (m.lot_size || 1) : (t.qty || 0);
+    if (!lot) return null;
+    const livePts = (isO || t.direction === "LONG") ? (ltp - t.entry_price) : (t.entry_price - ltp);
+    const fees = isO ? (m.fees_flat || 40) : 40;
+    return livePts * lot - fees;
+  };
+  const closedPnlInr = closedF.reduce((s,t)=>s+(t.pnl_inr||0), 0);
+  const openPnlInr   = openF.reduce((s,t)=>{ const v=_liveInr(t); return s+(v!=null?v:0); }, 0);
+  const totalPnlInr  = closedPnlInr + openPnlInr;
   const isFiltered = !!(filterSym || filterStrat!=="all" || filterDir!=="all" || filterStatus!=="all" || filterDate);
 
   const inputStyle = {
@@ -609,6 +626,12 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
           <div className={`val ${liveR>=0?"up":"down"}`}>
             {openF.length?`${liveR>=0?"+":""}${liveR.toFixed(2)}R`:"—"}
             {openF.length?<span style={{color:"#64748b",fontSize:11,marginLeft:6}}>({openF.length})</span>:null}
+          </div>
+        </div>
+        <div className="metric">
+          <div className="lbl">Overall P&L{openF.length>0?" (incl. live)":""}</div>
+          <div className={`val ${totalPnlInr>=0?"up":"down"}`}>
+            {(closedF.length||openF.length)?`${totalPnlInr>=0?"+₹":"-₹"}${Math.abs(totalPnlInr).toFixed(0)}`:"—"}
           </div>
         </div>
       </div>
