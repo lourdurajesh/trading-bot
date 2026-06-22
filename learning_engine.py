@@ -1025,15 +1025,18 @@ class LearningEngine:
                 fees     = float(d.get("fees") or 0)
                 d["pnl_inr"] = round((d.get("pnl_pts") or 0) * lot_size - fees, 2)
             else:
-                # Equity: size to fixed risk-per-trade so ₹ P&L tracks R. The stop TRAILS,
-                # so derive the original risk-per-share from the authoritative pnl_r when
-                # available (rps = |pnl_pts / pnl_r|); for open/scratch fall back to the
-                # current stop distance. qty = risk_₹ / rps → pnl_inr == pnl_r × risk_₹.
+                # Equity: size to fixed risk-per-trade so ₹ P&L tracks R.
+                # Priority for original risk-per-share (rps):
+                #   1. meta["risk_pts"] — stored at open time, unaffected by trailing stop
+                #   2. |pnl_pts/pnl_r|  — back-calculated from closed-trade R (accurate)
+                #   3. current stop distance — last resort, can be tiny after trailing
                 _pts = float(d.get("pnl_pts") or 0)
                 _r   = float(d.get("pnl_r") or 0)
-                if _pts != 0 and _r != 0:
+                meta_d = d.get("metadata") or {}
+                rps = float(meta_d.get("risk_pts") or 0)
+                if not rps and _pts != 0 and _r != 0:
                     rps = abs(_pts / _r)
-                else:
+                if not rps:
                     rps = abs(float(d.get("entry_price") or 0) - float(d.get("stop_loss") or 0))
                 qty  = round(LEARNING_RISK_RUPEES / rps) if rps > 0 else 0
                 fees = float(d.get("fees") or 0)
@@ -1084,11 +1087,13 @@ class LearningEngine:
                 if not ltp or ltp <= 0:
                     return None
                 if trade.get("direction") == "LONG":
-                    risk, pnl_pts = entry - stop, ltp - entry
+                    pnl_pts = ltp - entry
                 else:
-                    risk, pnl_pts = stop - entry, entry - ltp
-                # Equity live ₹: same risk-sized qty as the closed-trade calc.
-                qty     = round(LEARNING_RISK_RUPEES / risk) if risk and risk > 0 else 0
+                    pnl_pts = entry - ltp
+                # Use original risk_pts (stored at open time) so qty is stable even
+                # when the trailing stop has moved close to entry.
+                risk = float(meta.get("risk_pts") or 0) or abs(entry - stop)
+                qty     = round(LEARNING_RISK_RUPEES / risk) if risk > 0 else 0
                 pnl_inr = round(pnl_pts * qty - FEES_EQUITY_FLAT, 2) if qty else None
 
             pnl_r = round(pnl_pts / risk, 2) if risk and risk > 0 else 0.0

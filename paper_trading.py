@@ -523,7 +523,10 @@ class PaperTradingEngine:
             return None
 
         balance     = self.get_balance()
-        risk_amount = balance * 0.01  # 1% of current balance
+        # Cap risk at 1% of the fixed starting corpus so position sizes don't
+        # explode as the paper wallet compounds. Without this cap a ₹66L wallet
+        # would risk ₹66k/trade → capital_req > balance → all trades rejected.
+        risk_amount = min(balance, PAPER_STARTING_CAPITAL) * 0.01
 
         if instrument_type == "nse_options":
             # Options: full premium upfront (no intraday margin on option buying)
