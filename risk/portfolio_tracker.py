@@ -20,6 +20,11 @@ IST = ZoneInfo("Asia/Kolkata")
 
 from config.settings import DB_PATH, TOTAL_CAPITAL
 from data.data_store import store
+from execution import fees as txn_fees  # single source for transaction costs
+
+
+def _fee_segment(signal_type: str) -> str:
+    return "OPTIONS" if signal_type == "OPTIONS" else "EQUITY"
 from strategies.base_strategy import Direction, Signal
 
 logger = logging.getLogger(__name__)
@@ -153,11 +158,14 @@ class PortfolioTracker:
         position.exit_reason = reason
         position.status      = "CLOSED"
 
-        # Calculate P&L
+        # Calculate P&L net of round-trip transaction cost (single source)
         if position.direction == "LONG":
-            position.realised_pnl = (fill_price - position.entry_price) * position.position_size
+            gross = (fill_price - position.entry_price) * position.position_size
         else:
-            position.realised_pnl = (position.entry_price - fill_price) * position.position_size
+            gross = (position.entry_price - fill_price) * position.position_size
+        fee = txn_fees.round_trip(_fee_segment(position.signal_type),
+                                  position.entry_price, fill_price, position.position_size)
+        position.realised_pnl = round(gross - fee, 2)
 
         self._closed_trades.append(position)
         self._update_position_db(position)
@@ -195,11 +203,15 @@ class PortfolioTracker:
         for symbol, pos in self._open_positions.items():
             options_meta = pos.options_meta or {}
             nfo_sym = options_meta.get("nfo_symbol") if pos.signal_type == "OPTIONS" else None
-            ltp = store.get_ltp(nfo_sym or symbol) or pos.entry_price
+            # Display price: live LTP, else last candle close (survives market close / restart)
+            ltp = store.get_last_price(nfo_sym or symbol) or pos.entry_price
             if pos.direction == "LONG":
-                unrealised = (ltp - pos.entry_price) * pos.position_size
+                gross = (ltp - pos.entry_price) * pos.position_size
             else:
-                unrealised = (pos.entry_price - ltp) * pos.position_size
+                gross = (pos.entry_price - ltp) * pos.position_size
+            # Entry-leg cost from the single source — same model as paper & learning
+            fee = txn_fees.open_leg(_fee_segment(pos.signal_type), pos.entry_price, pos.position_size)
+            unrealised = gross - fee
 
             result.append({
                 "id":              pos.id,
