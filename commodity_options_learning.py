@@ -489,7 +489,22 @@ class CommodityOptionsLearning:
     def get_trade_mode(self) -> str:
         return self._trade_mode
 
+    def effective_mode(self) -> str:
+        """The mode MCX actually executes in, after the global RUN_MODE master switch.
+        Global PAPER forces PAPER (the whole book simulates); only global LIVE lets the
+        per-segment MCX arm (_trade_mode=REAL) place real orders."""
+        return "REAL" if self._is_real() else "PAPER"
+
     def _is_real(self) -> bool:
+        """MCX places REAL orders only when BOTH the global book is LIVE
+        (run_context) AND MCX is armed REAL. Global PAPER => MCX simulates, so MCX
+        obeys the one mutually-exclusive RUN_MODE like every other segment (Stage 5)."""
+        try:
+            from execution.run_context import is_live
+            if not is_live():
+                return False
+        except Exception:
+            return False
         return self._trade_mode == "REAL"
 
     # ─────────────────────────────────────────────────────────────

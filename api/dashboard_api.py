@@ -825,10 +825,13 @@ def commodity_disable_instrument(name: str):
 
 @app.get("/commodity/trade-mode")
 def commodity_get_trade_mode():
-    """Return current MCX trade mode (PAPER or REAL)."""
+    """MCX arm (PAPER/REAL) plus the EFFECTIVE mode after the global RUN_MODE master
+    switch — global PAPER forces MCX to simulate regardless of the arm (Stage 5)."""
     try:
         from commodity_options_learning import commodity_options
-        return {"mode": commodity_options.get_trade_mode()}
+        return {"mode": commodity_options.get_trade_mode(),
+                "effective_mode": commodity_options.effective_mode(),
+                "run_mode": _run_mode()}
     except Exception as e:
         return {"error": str(e)}
 
