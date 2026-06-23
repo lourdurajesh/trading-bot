@@ -519,6 +519,87 @@ const MCX_RISK_META = {
    LearningTabContent — owns filter state; stats widgets update
    with the active filter. React.memo shields from 2 s WS ticks.
 ───────────────────────────────────────────────────────────── */
+// ── Unified trades table (Phase V) — one component for every book/segment ──────
+// Renders the common book_trades schema; OPEN rows take live ltp/P&L from
+// book_positions (bookById) so they match the positions view exactly.
+const TradesTable = React.memo(function TradesTable({trades, bookById={}, onClose, showBook=true}) {
+  if (!trades || !trades.length) return <div className="empty">No trades</div>;
+  const bookColor = b => b==="LEARNING" ? "#a78bfa" : (b==="LIVE" ? "#22c55e" : "#38bdf8");
+  const num = v => (v==null ? "—" : (Math.abs(v)>=1000 ? Math.round(v).toLocaleString("en-IN") : (+v).toFixed(2)));
+  return (
+    <table className="data-table">
+      <thead><tr>
+        {showBook && <th>Book</th>}
+        <th>Seg</th><th>Strategy</th><th>Symbol</th><th>Dir</th><th>Status</th>
+        <th>Entry</th><th>Exit / LTP</th><th>Qty</th><th>P&L (₹)</th><th>R</th><th>Reason</th>
+        {onClose && <th></th>}
+      </tr></thead>
+      <tbody>
+        {trades.map((t,i)=>{
+          const open = t.status==="OPEN";
+          const live = open ? bookById[t.id] : null;
+          const ltp  = live && live.ltp!=null ? live.ltp : t.exit;
+          const pnl  = open ? (live && live.unrealized_pnl!=null ? live.unrealized_pnl : t.pnl_inr) : t.pnl_inr;
+          const sym  = (t.instrument || t.symbol || "").replace("NSE:","").replace("-EQ","").replace("MCX:","");
+          return (
+          <tr key={t.id||i}>
+            {showBook && <td><span style={{fontSize:9,fontWeight:600,color:bookColor(t.book)}}>{t.book}</span></td>}
+            <td style={{fontSize:10,color:"#94a3b8"}}>{t.segment}</td>
+            <td style={{fontSize:10,color:"#93c5fd"}}>{t.strategy}</td>
+            <td className="sym" style={{fontFamily:"monospace"}}>{sym}</td>
+            <td><span className={`badge ${(t.direction||"").toLowerCase()}`}>{t.direction}</span></td>
+            <td style={{fontSize:10,color:open?"#22c55e":"#94a3b8"}}>{t.status}</td>
+            <td style={{fontFamily:"monospace"}}>{num(t.entry)}</td>
+            <td style={{fontFamily:"monospace",color:open?"#f59e0b":"#94a3b8"}}>{num(ltp)}</td>
+            <td style={{fontFamily:"monospace"}}>{t.qty==null?"—":t.qty}</td>
+            <td className={pnl==null?"":(pnl>=0?"good":"bad")} style={{fontFamily:"monospace",fontWeight:600}}>
+              {pnl==null?"—":`${pnl>=0?"₹+":"₹"}${num(Math.abs(pnl))}`}
+            </td>
+            <td className={t.pnl_r==null?"":(t.pnl_r>=0?"good":"bad")} style={{fontFamily:"monospace",fontSize:10}}>
+              {t.pnl_r==null?"—":`${t.pnl_r>=0?"+":""}${(+t.pnl_r).toFixed(2)}R`}
+            </td>
+            <td style={{fontSize:10,color:"#94a3b8"}}>{t.exit_reason || (open?"open":"")}</td>
+            {onClose && <td>{open && <button onClick={()=>onClose(t)} title="Close this trade"
+              style={{background:"transparent",border:"1px solid #7f1d1d",color:"#f87171",borderRadius:3,fontSize:9,padding:"2px 7px",cursor:"pointer"}}>× Close</button>}</td>}
+          </tr>);
+        })}
+      </tbody>
+    </table>
+  );
+});
+
+// ── Unified "Trades" tab — every book/segment in one filterable table ──────────
+const AllTradesTab = React.memo(function AllTradesTab({trades, bookById={}}) {
+  const [fBook, setFBook]     = React.useState("all");
+  const [fSeg, setFSeg]       = React.useState("all");
+  const [fStatus, setFStatus] = React.useState("all");
+  const selStyle = {background:"#0f1623",border:"1px solid #1e2433",borderRadius:4,color:"#e2e8f0",padding:"3px 7px",fontSize:11};
+  const Sel = ({value,set,opts}) => (
+    <select value={value} onChange={e=>set(e.target.value)} style={selStyle}>
+      {opts.map(o=><option key={o} value={o}>{o}</option>)}
+    </select>);
+  const list = (trades||[]).filter(t =>
+    (fBook==="all"||t.book===fBook) && (fSeg==="all"||t.segment===fSeg) && (fStatus==="all"||t.status===fStatus));
+  const openN = (trades||[]).filter(t=>t.status==="OPEN").length;
+  const totalInr = list.reduce((s,t)=>{
+    const live = t.status==="OPEN" ? bookById[t.id] : null;
+    const v = t.status==="OPEN" ? (live&&live.unrealized_pnl!=null?live.unrealized_pnl:(t.pnl_inr||0)) : (t.pnl_inr||0);
+    return s+(v||0);
+  },0);
+  return (
+    <div className="card">
+      <h2>All trades <span style={{fontSize:11,color:"#94a3b8",fontWeight:400}}>· {list.length} shown · {openN} open · one source (every book + segment)</span></h2>
+      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:10,fontSize:11,color:"#94a3b8"}}>
+        Book <Sel value={fBook} set={setFBook} opts={["all","PAPER","LIVE","LEARNING"]}/>
+        Segment <Sel value={fSeg} set={setFSeg} opts={["all","EQUITY","OPTIONS","MCX","US"]}/>
+        Status <Sel value={fStatus} set={setFStatus} opts={["all","OPEN","CLOSED"]}/>
+        <span style={{marginLeft:"auto"}}>Net P&L: <span className={totalInr>=0?"good":"bad"} style={{fontWeight:600}}>{totalInr>=0?"₹+":"₹"}{fmt(Math.abs(totalInr))}</span></span>
+      </div>
+      <TradesTable trades={list} bookById={bookById}/>
+    </div>
+  );
+});
+
 const LearningTabContent = React.memo(function LearningTabContent({trades, ltps, learnStats, bookById={}}) {
   const [filterSym,    setFilterSym]    = React.useState("");
   const [filterStrat,  setFilterStrat]  = React.useState("all");
@@ -2103,6 +2184,7 @@ function App() {
   const [btStrat, setBtStrat]         = React.useState(null);
   const [paperStats, setPaperStats]   = React.useState(null);
   const [paperPos, setPaperPos]       = React.useState([]);
+  const [bookTrades, setBookTrades]   = React.useState([]);   // unified trade history (all books)
 
   /* system alerts */
   const [sysAlerts, setSysAlerts]     = React.useState([]);
@@ -2194,6 +2276,7 @@ function App() {
     const loadPaper = () => {
       fetch(`${API}/paper/stats`).then(r=>r.json()).then(setPaperStats).catch(()=>{});
       fetch(`${API}/paper/positions`).then(r=>r.json()).then(setPaperPos).catch(()=>{});
+      fetch(`${API}/book/trades?limit=300`).then(r=>r.json()).then(d=>{if(d.trades)setBookTrades(d.trades);}).catch(()=>{});
     };
     const loadDrought = () =>
       fetch(`${API}/signals/drought`).then(r=>r.json()).then(setDrought).catch(()=>{});
@@ -2390,7 +2473,7 @@ function App() {
 
       {/* ── Tabs ── */}
       <div className="tabs">
-        {[["trading","Trading"],["journal","Daily Journal"],["paper","Paper P&L"],["learning","Learning"],["commodity","MCX Options"],["logs","Live Logs"],["services","Services"],["backtest","Backtest"],["config","Strategy Config"]].map(([id,label])=>(
+        {[["trading","Trading"],["alltrades","Trades"],["journal","Daily Journal"],["paper","Paper P&L"],["learning","Learning"],["commodity","MCX Options"],["logs","Live Logs"],["services","Services"],["backtest","Backtest"],["config","Strategy Config"]].map(([id,label])=>(
           <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>{label}</button>
         ))}
       </div>
@@ -2398,6 +2481,8 @@ function App() {
       {/* ════════════════════════════════════════
           TRADING TAB
       ════════════════════════════════════════ */}
+      {tab==="alltrades" && <AllTradesTab trades={bookTrades} bookById={bookById}/>}
+
       {tab==="trading" && (
         <div>
           {risk?.kill_switch_active && (
