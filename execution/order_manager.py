@@ -43,9 +43,27 @@ class OrderManager:
 
     def submit(self, signal: Signal) -> Optional[str]:
         """
-        Entry point for all signals.
-        Runs risk + profit validation, then routes to AUTO or MANUAL.
+        Entry point for all LIVE/PAPER signals (the real book).
+        Runs strategy-enablement + risk + profit validation, then routes to AUTO/MANUAL.
+        LEARNING signals do NOT come here — they run all strategies via learning_engine.
         """
+        # Strategy enablement — the active book (LIVE/PAPER) trades only the curated
+        # LIVE_STRATEGIES set (config). Single source: execution/run_context.
+        from execution.run_context import active_context
+        ctx = active_context()
+        if not ctx.trades_strategy(signal.strategy):
+            logger.info(
+                f"[OrderManager] SKIP {signal.symbol}: strategy '{signal.strategy}' "
+                f"not enabled in {ctx.mode} (set={ctx.strategy_set or 'all'})"
+            )
+            try:
+                from audit_log import audit_log
+                audit_log.rejection(signal, reason=f"strategy not enabled in {ctx.mode}",
+                                    layer="strategy_enablement")
+            except Exception:
+                pass
+            return None
+
         # Risk validation
         open_positions = portfolio_tracker.get_open_positions()
         decision       = risk_manager.validate(signal, open_positions)

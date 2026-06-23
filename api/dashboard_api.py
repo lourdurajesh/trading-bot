@@ -329,6 +329,7 @@ def daily_decisions(date: str = None):
         "session": {
             "bot_started":           bot_start,
             "mode":                  mode,
+            "run_mode":              _run_mode(),
             "total_symbols_active":  len(sym_map),
             "total_signals_generated": sum(
                 1 for e in events if e["event_type"] == "SIGNAL_GENERATED"
@@ -367,6 +368,26 @@ def get_options_chain(symbol: str):
         }
     except Exception as e:
         return {"available": False, "error": str(e)}
+
+
+def _run_mode() -> str:
+    """Active execution book — LIVE or PAPER (single source: run_context)."""
+    try:
+        from execution.run_context import active_context
+        return active_context().mode
+    except Exception:
+        return "PAPER"
+
+
+@app.get("/run-mode")
+def run_mode():
+    """Active execution book + the curated strategy set the live book trades."""
+    try:
+        from execution.run_context import active_context
+        ctx = active_context()
+        return {"run_mode": ctx.mode, "strategies": list(ctx.strategy_set) or "all"}
+    except Exception as e:
+        return {"run_mode": "PAPER", "error": str(e)}
 
 
 @app.get("/paper/stats")

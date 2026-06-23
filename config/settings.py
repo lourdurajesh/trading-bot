@@ -34,6 +34,11 @@ ALPACA_BASE_URL    = (
 # "MANUAL" → signals queue in dashboard, you confirm each trade
 BOT_MODE      = os.getenv("BOT_MODE", "MANUAL")   # start safe, switch to AUTO when confident
 PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"  # Bug 16: single source
+# RUN_MODE — the execution book: LIVE places real broker orders, PAPER simulates the
+# fill. Mutually exclusive (derived from PAPER_TRADING for backward compatibility).
+# LEARNING is a separate always-on sandbox (all strategies, no fund cap) handled by
+# learning_engine — it is NOT a RUN_MODE. Single source: execution/run_context.py.
+RUN_MODE      = "PAPER" if PAPER_TRADING else "LIVE"
 
 # ─────────────────────────────────────────
 # CAPITAL & RISK PARAMETERS
@@ -41,9 +46,13 @@ PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"  # Bug 16:
 
 TOTAL_CAPITAL         = float(os.getenv("TOTAL_CAPITAL", "500000"))   # INR (adjust to your capital)
 RISK_PER_TRADE_PCT    = float(os.getenv("RISK_PER_TRADE_PCT", "1.5")) # % of capital risked per trade
-# Curated strategies traded in LIVE/PAPER (real book). LEARNING runs ALL strategies.
-# Comma-separated; matched against strategy names (suffix-tolerant). Config-driven.
-LIVE_STRATEGIES       = os.getenv("LIVE_STRATEGIES", "TrendFollow,DirectionalOptions")
+# Curated strategies traded in LIVE/PAPER (the real book). LEARNING always runs ALL.
+# Comma-separated; matched against strategy names (suffix-tolerant). EMPTY = all enabled
+# (current behaviour — no suppression). Set e.g. "TrendFollow,DirectionalOptions" to
+# restrict the live book to a curated few. Available: TrendFollow, ShortTrend,
+# MeanReversion, OptionsIncome, DirectionalOptions, IronCondor, InstitutionalMomentum,
+# GapFade, MomentumReversal.
+LIVE_STRATEGIES       = os.getenv("LIVE_STRATEGIES", "")
 MAX_OPEN_POSITIONS    = int(os.getenv("MAX_OPEN_POSITIONS", "10"))
 MAX_PORTFOLIO_HEAT    = float(os.getenv("MAX_PORTFOLIO_HEAT", "60"))  # % — no new trades beyond this
 

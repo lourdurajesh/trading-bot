@@ -70,5 +70,21 @@ def learning_context() -> RunContext:
                       strategy_set=())
 
 
+def active_context() -> RunContext:
+    """The active execution book (LIVE or PAPER) per settings.RUN_MODE — the SINGLE
+    source for 'do we place real broker orders?'. LEARNING is parallel, not active."""
+    from config.settings import RUN_MODE
+    return paper_context() if RUN_MODE == PAPER else live_context()
+
+
+def is_paper() -> bool:
+    """True when the active book simulates fills (no broker call)."""
+    return not active_context().place_real_orders
+
+
+def is_live() -> bool:
+    return active_context().place_real_orders
+
+
 __all__ = ["RunContext", "live_context", "paper_context", "learning_context",
-           "LIVE", "PAPER", "LEARNING"]
+           "active_context", "is_paper", "is_live", "LIVE", "PAPER", "LEARNING"]
