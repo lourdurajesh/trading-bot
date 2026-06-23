@@ -499,6 +499,27 @@ class LearningEngine:
                 elif ltp <= final_target:
                     exit_reason, exit_price = final_reason, ltp
 
+            # ── Structural exits (single source: execution/exit_signals) ──────────
+            # Close a winner that is reversing/stalling BEFORE it round-trips to the
+            # SL — the "exit when the trend turns" logic. Evaluated on the UNDERLYING
+            # (index for options, the symbol for equity). Hard SL/target take priority;
+            # the module self-gates to fire only once the trade is in profit.
+            if exit_reason is None:
+                from execution.exit_signals import structural_exit, config as _xs_cfg
+                _tf = _xs_cfg().get("timeframe", "5m")
+                if instrument_type == "nse_options":
+                    und = metadata.get("underlying")
+                    ref = float(metadata.get("entry_spot") or 0)
+                    und_dir = "SHORT" if "PE" in (nfo_symbol or "").upper() else "LONG"
+                    if und and ref > 0:
+                        sx = structural_exit(store.get_ohlcv(und, _tf), und_dir, ref)
+                        if sx:
+                            exit_reason, exit_price = sx, ltp
+                else:
+                    sx = structural_exit(store.get_ohlcv(symbol, _tf), direction, entry)
+                    if sx:
+                        exit_reason, exit_price = sx, ltp
+
             # Signal reversal exit — only when profitable; let stop handle losses.
             # Firing on an unprofitable trade exits at a tiny gain while the stop was
             # still 1.5×ATR away — terrible risk/reward.

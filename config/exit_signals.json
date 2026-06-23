@@ -1,0 +1,12 @@
+{
+  "_comment": "Structural (market-structure) exits beyond SL/TP/EOD. Evaluated on the UNDERLYING OHLCV so a trade that went into profit but is reversing is closed before it round-trips to the stop. Each family is independently toggleable. Structural exits only ARM once the trade is in profit by arm_profit_pct (protect gains; never choke a fresh entry). Hard SL/target are unchanged. Edit here — no hard-coding in code.",
+  "enabled": true,
+  "timeframe": "5m",
+  "min_bars": 20,
+  "arm_profit_pct": 0.0015,
+  "atr_trail":     {"enabled": true,  "period": 14, "mult": 2.5, "peak_window": 40},
+  "swing_break":   {"enabled": true,  "lookback": 5},
+  "trend_break":   {"enabled": true,  "ema": 9},
+  "momentum_fade": {"enabled": true,  "rsi_high": 60.0, "roll_bars": 2},
+  "stagnation":    {"enabled": false, "bars": 8}
+}
