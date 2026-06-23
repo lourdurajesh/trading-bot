@@ -1,9 +1,12 @@
 # File Index
 
-> Every module and what it does, grouped by role. Updated 2026-06-21 (audit: root decluttered,
-> backtest runners moved to `scripts/`, one-off dev backtests archived, Phase-U unification
-> modules added — `execution/{sizing,ledger,exit_rules,order_router}.py`, `api/segment_readers.py`,
-> `strategies/reversal_core.py`).
+> Every module and what it does, grouped by role. Updated 2026-06-23 (Phase-U + Phase-V
+> unification complete: one `TradingOrchestrator` over all segments; single sources for
+> sizing/fees/exit-policy/run-mode/strategy-toggles; one positions+trades feed and one
+> dashboard table. New modules: `execution/{fees,run_context,exit_policy,exit_signals,orchestrator}.py`,
+> `config/strategy_toggles.py`. Prior (2026-06-21): `execution/{sizing,ledger,exit_rules,order_router}.py`,
+> `api/segment_readers.py`, `strategies/reversal_core.py`. See `docs/UNIFIED_EXECUTION_SPEC.md`
+> and `docs/REFINEMENT_PLAN.md`.
 
 **Entry points (how the bot actually runs):**
 - `watchdog.py` → systemd `trading-bot.service`; supervises and restarts `main.py`.
@@ -17,11 +20,11 @@
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Master loop: boot brokers/streams, run strategy_selector + learning + commodity cycles, scheduled hooks (conviction score, OI snapshot, FII collect, token refresh). |
+| `main.py` | Master loop: boot brokers/streams, then drive ALL segments via one `TradingOrchestrator` (`run_generation`/`run_fast_monitors`) instead of separate engine calls; scheduled hooks (conviction score, OI snapshot, FII collect, token refresh). |
 | `watchdog.py` | Process supervisor (systemd entry) — keeps `main.py` alive. |
 | `learning_engine.py` | Paper "learning lab": runs simple equity strategies + index-options path on a watchlist, logs labeled trades. |
 | `commodity_options_learning.py` | MCX commodity-options engine: signals, spread construction, exits, P&L for `strategies/mcx/`. |
-| `us_reversal.py` | US index-ETF (SPY/QQQ) Reversal options PAPER engine; logic shared via `strategies/reversal_core.py`; a segment of the unified ledger (folds fully into the pipeline at U6/U7). |
+| `us_reversal.py` | US index-ETF (SPY/QQQ) Reversal options PAPER engine; logic shared via `strategies/reversal_core.py`; now a `US` segment adapter under `execution/orchestrator.py`. |
 | `token_manager.py` | Fyers token lifecycle — refresh, health check, proactive pre-6 AM renewal. |
 | `generate_token.py` | One-time/daily Fyers auth token generation (cron). |
 | `audit_log.py` | Append-only audit trail (bot events, rejections). |
@@ -81,6 +84,11 @@
 | `order_router.py` | **ONE** broker-selection + place/cancel entry — Fyers (NSE/MCX) / Alpaca (US) (U5). |
 | `sizing.py` | **ONE** size-to-fit sizer — lots/shares for every asset class (U4). |
 | `ledger.py` | **ONE** trades store: the `ledger` table (+ `segment`) behind read-only compat views `learning_trades`/`commodity_learning_trades`/`us_reversal_trades` (U5-slice-2). |
+| `fees.py` | **ONE** transaction-cost facade over `analysis/cost_model.py` + `config/cost_rates.json` — `round_trip()`/`open_leg()`; every engine + dashboard P&L use it (Stage 1). |
+| `run_context.py` | **ONE** source for run mode — `RunContext` (LIVE/PAPER/LEARNING): `place_real_orders`, `enforce_funds`, `strategy_set`, `risk_budget`; `active_context()`/`is_paper()` (Stage 2–3). |
+| `exit_policy.py` | **ONE** strategy→exit-style map (trend_trail / mean_reversion_target / convex_trail) from `config/strategy_exits.json`; used by both learning + position_manager exits. |
+| `exit_signals.py` | **ONE** structural-exit decision (ATR trail, swing break, trend break, momentum fade, stagnation) on the underlying; config `config/exit_signals.json`; arms only in profit. |
+| `orchestrator.py` | **ONE** `TradingOrchestrator` + per-segment adapters (NSE-main/NSE-learning/MCX/US) — owns the cycle, session gate, error isolation; replaces main.py's 4 run_cycles (U6/V4). |
 
 ## `data/` — market data
 
@@ -95,6 +103,7 @@
 | File | Purpose |
 |------|---------|
 | `indicators.py` | TA indicators (EMA, RSI, ATR, ADX, Bollinger, RVOL, etc.). |
+| `cost_model.py` | **SINGLE SOURCE** for transaction costs (brokerage + STT/CTT + exchange + SEBI + stamp + GST) from `config/cost_rates.json`; wrapped by `execution/fees.py`. |
 | `regime_detector.py` | Market regime classification (**used by trading**). |
 | `regime_engine.py` | Regime analytics for dashboard (consolidation candidate C1). |
 | `options_engine.py` | IV rank / options analytics. |
@@ -129,10 +138,14 @@
 
 | File | Purpose |
 |------|---------|
-| `settings.py` | Central env-backed config (all tunables). |
+| `settings.py` | Central env-backed config (all tunables) — incl. `RUN_MODE` (LIVE/PAPER), `LIVE_STRATEGIES`. |
 | `nse_instruments.json` + `scripts/fetch_lot_sizes.py` | F&O lot sizes / strike steps (auto-refreshable). |
 | `watchlist.py` · `learning_watchlist.py` | NSE/US universe · learning-lab universe. |
-| `strategy_config.py` · `strategy_matrix.py` | Per-strategy overrides · strategy/regime matrix (dashboard). |
+| `strategy_config.py` · `strategy_matrix.py` | Per-strategy param overrides · strategy/regime matrix (dashboard). |
+| `strategy_toggles.py` | **ONE** per-strategy on/off source (`strategy_settings` table) — UI `/strategies`; gated at every generation point. |
+| `strategy_exits.json` | Strategy→exit-style map for `execution/exit_policy.py`. |
+| `exit_signals.json` | Structural-exit thresholds for `execution/exit_signals.py`. |
+| `cost_rates.json` | Transaction-cost rates for `analysis/cost_model.py` (edit here — no hard-coded fees). |
 | `market_holidays.py` · `mcx_calendar.py` | NSE holidays · MCX session calendar. |
 | `mcx_engine_settings.py` | MCX engine tunables. |
 | `logging_ist.py` | IST-timestamped logging setup. |
@@ -158,9 +171,16 @@
 | `tests/test_pipeline.py` | Pipeline smoke test. |
 | `tests/test_sizing.py` | U4 sizing regression (new == old across a grid). |
 | `deploy/trading-bot.service` | systemd unit. |
-| `scripts/` | Manual runners — `run_backtest.py`, `run_full_backtest.py`, `run_analysis.py`; ops — `fetch_lot_sizes.py`, `migrate_unified_ledger.py`. `_archive/` holds one-off dev backtests (`backtest_reversal_*`, `diagnose_equity`, `backtest_equity_exit`) + old migrations. |
+| `scripts/` | Manual runners — `run_backtest.py`, `run_full_backtest.py`, `run_analysis.py`; analysis — `strategy_pnl.py` (epoch-aware strategy ranking); ops/one-offs — `fetch_lot_sizes.py`, `migrate_unified_ledger.py`, `repair_paper_wallet.py`, `resize_open_learning_unified.py`, `seed_test_trades.py` (sandbox seeding `--clean`), `backup_db.sh`. `_archive/` holds one-off dev backtests. |
 
 ---
+
+## Cleanup done (2026-06-23)
+
+- Phase-U + Phase-V unification modules added (see header). FILE_INDEX refreshed.
+- Removed stale git worktree `.claude/worktrees/modest-gauss-007baa` (duplicate checkout).
+- New docs: `UNIFIED_EXECUTION_SPEC.md` (architecture), `REFINEMENT_PLAN.md` (backtest-first edge plan).
+- Trade history reset to a clean post-fix baseline (`app_meta.analysis_epoch`); DB backups in `db/backups/`.
 
 ## Cleanup done (2026-06-21 audit)
 

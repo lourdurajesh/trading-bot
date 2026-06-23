@@ -1,8 +1,18 @@
 # Architecture Audit — Pipeline Duplication Map
 
+> ✅ **RESOLVED (2026-06-23) — kept for history.** The duplication mapped below has been
+> unified across Phase U + Phase V: one `execution/orchestrator.py` (`TradingOrchestrator`)
+> drives all segments; single sources now exist for sizing (`execution/sizing.py`), costs
+> (`execution/fees.py`), exits (`execution/exit_rules.py` + `exit_policy.py` + `exit_signals.py`),
+> order routing (`execution/order_router.py`), run mode (`execution/run_context.py`), the
+> trades store (`execution/ledger.py`), and strategy on/off (`config/strategy_toggles.py`),
+> with one positions/trades dashboard feed. The per-engine `run_cycle`s now delegate to the
+> orchestrator's segment adapters. See `docs/UNIFIED_EXECUTION_SPEC.md`. The map below is the
+> ORIGINAL 2026-06-17 finding.
+
 > Requested 2026-06-17: is Equity / Index-Options / MCX one unified pipeline, or three?
-> **Verdict: three separate pipelines with duplicated logic.** This maps every divergence
-> with file:line refs so the unification scope is concrete. Evidence-based, not from memory.
+> **Verdict (2026-06-17): three separate pipelines with duplicated logic.** This maps every
+> divergence with file:line refs so the unification scope is concrete. Evidence-based, not from memory.
 
 ## TL;DR
 
