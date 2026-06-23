@@ -1,0 +1,13 @@
+{
+  "_comment": "Strategy-aware exit style. Trend/momentum entries let winners run (Chandelier trail + 1R partial + run to T2). Mean-reversion entries take a hard full exit at the target (the snap-back reverts). Options buying is convex (wide trail + EOD, no fixed target). Keyed by strategy name WITHOUT any _LRN suffix. Edit here — no hard-coding in code.",
+  "_styles": ["trend_trail", "mean_reversion_target", "convex_trail"],
+  "_default": "trend_trail",
+  "TrendFollow":           "trend_trail",
+  "SimpleMomentum":        "trend_trail",
+  "InstitutionalMomentum": "trend_trail",
+  "MeanReversion":         "mean_reversion_target",
+  "SimpleRSI":             "mean_reversion_target",
+  "Reversal3m":            "mean_reversion_target",
+  "Reversal5m":            "mean_reversion_target",
+  "DirectionalOptions":    "convex_trail"
+}

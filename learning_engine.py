@@ -424,22 +424,46 @@ class LearningEngine:
             else:
                 adverse    = ltp - entry
                 favourable = entry - ltp
+            _prev_mae, _prev_mfe = trade["mae_pts"], trade["mfe_pts"]
             trade["mae_pts"] = max(trade["mae_pts"], adverse)
             trade["mfe_pts"] = max(trade["mfe_pts"], favourable)
+            # Persist MAE/MFE when they advance so a restart resumes the true
+            # excursion (and the Chandelier peak derived from it) instead of
+            # resetting to entry. Only writes on a new high/low — not every cycle.
+            if trade["mae_pts"] > _prev_mae + 1e-9 or trade["mfe_pts"] > _prev_mfe + 1e-9:
+                try:
+                    ledger.update_fields("nse", trade["id"],
+                                         mae_pts=round(trade["mae_pts"], 2),
+                                         mfe_pts=round(trade["mfe_pts"], 2))
+                except Exception as exc:
+                    logger.debug(f"[Learning] MAE/MFE persist error {trade['id']}: {exc}")
 
-            # Trail, protect, and partial-book (equity/futures only)
+            # Strategy-aware exit style (single source: execution/exit_policy + config).
+            #   trend_trail           → Chandelier trail + 1R partial + run to T2 (let it run)
+            #   mean_reversion_target → hard FULL exit at the target (snap-back reverts)
+            from execution.exit_policy import exit_style, MEAN_REVERSION
+            style = exit_style(trade.get("strategy", ""))
+            is_mean_rev = (style == MEAN_REVERSION)
+
+            # Trail and protect (equity/futures only). Partial booking + run-to-T2 is
+            # a TREND tactic; mean-reversion takes the whole target, so no partial.
             if instrument_type != "nse_options":
                 self._update_chandelier_stop(trade, ltp)
                 self._apply_time_tightening(trade, ltp)
-                self._check_partial_booking(trade, ltp)
+                if not is_mean_rev:
+                    self._check_partial_booking(trade, ltp)
 
             # Read stop/target AFTER all trail updates
             stop        = trade["stop_loss"]
             target      = trade["target"]
             target_2    = trade.get("target_2", 0)
-            # Use T2 as final exit when present, else T1
-            final_target = target_2 if target_2 > 0 else target
-            final_reason = "TARGET2" if target_2 > 0 else "TARGET"
+            # Trend: run to T2 when present. Mean-reversion: hard exit at T1 (target).
+            if is_mean_rev or target_2 <= 0:
+                final_target = target
+                final_reason = "TARGET"
+            else:
+                final_target = target_2
+                final_reason = "TARGET2"
             exit_reason = None
             exit_price  = None
 
