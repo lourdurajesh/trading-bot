@@ -452,6 +452,99 @@ def book_positions():
     return _collect_book_positions()
 
 
+def _collect_book_trades(limit: int = 300, status: str = None) -> dict:
+    """SINGLE source for the dashboard's TRADE HISTORY — every trade (open + closed),
+    all books/segments, in ONE common schema so one table can render them all (Stage V).
+    Live P&L for OPEN rows is overlaid in the UI from book_positions (by id); this feed
+    carries the static/closed fields.
+
+    Row: id, book, segment, strategy, symbol, instrument, direction, status, entry_time,
+    exit_time, entry, exit, qty, pnl_inr, pnl_r, sl, target, exit_reason.
+    """
+    import sqlite3
+    from config.settings import DB_PATH
+    mode = _run_mode()
+    rows = []
+
+    def _row(tid, book, seg, strat, sym, instr, direction, st, et, xt,
+             entry, exit_, qty, pnl_inr, pnl_r, sl, target, reason):
+        return {"id": tid, "book": book, "segment": seg, "strategy": strat or "",
+                "symbol": sym, "instrument": instr or sym, "direction": direction,
+                "status": st, "entry_time": et, "exit_time": xt, "entry": entry,
+                "exit": exit_, "qty": qty, "pnl_inr": pnl_inr, "pnl_r": pnl_r,
+                "sl": sl, "target": target, "exit_reason": reason}
+
+    # Learning NSE (equity + index options)
+    try:
+        from learning_engine import learning_engine
+        for t in learning_engine.get_trades(status=status, limit=limit):
+            m = t.get("metadata") or {}
+            seg = "OPTIONS" if m.get("instrument_type") == "nse_options" else "EQUITY"
+            openrow = t.get("status") == "OPEN"
+            rows.append(_row(t.get("id"), "LEARNING", seg, t.get("strategy"), t.get("symbol"),
+                             m.get("nfo_symbol"), t.get("direction"), t.get("status"),
+                             t.get("entry_time"), t.get("exit_time"), t.get("entry_price"),
+                             t.get("exit_price"), t.get("qty"),
+                             t.get("unrealized_inr") if openrow else t.get("pnl_inr"),
+                             t.get("unrealized_r") if openrow else t.get("pnl_r"),
+                             t.get("stop_loss"), t.get("target"), t.get("exit_reason")))
+    except Exception as e:
+        logger.error(f"[book_trades] learning: {e}")
+
+    # Learning MCX
+    try:
+        from commodity_options_learning import commodity_options
+        for t in commodity_options.get_trades(status=status, limit=limit):
+            qty = int(t.get("lots", 1) or 1) * int(t.get("lot_size", 1) or 1)
+            rows.append(_row(t.get("id"), "LEARNING", "MCX", t.get("strategy"), t.get("instrument"),
+                             t.get("symbol"), t.get("direction"), t.get("status"),
+                             t.get("entry_time"), t.get("exit_time"), t.get("net_debit"),
+                             None, qty, t.get("pnl_approx"), t.get("pnl_r"),
+                             None, None, t.get("exit_reason")))
+    except Exception as e:
+        logger.error(f"[book_trades] mcx: {e}")
+
+    # Learning US
+    try:
+        from us_reversal import us_reversal
+        for t in us_reversal.get_trades(status=status, limit=limit):
+            rows.append(_row(t.get("id"), "LEARNING", "US", t.get("strategy"), t.get("symbol"),
+                             t.get("symbol"), "LONG", t.get("status"), t.get("entry_time"),
+                             t.get("exit_time"), t.get("entry_premium"), t.get("exit_premium"),
+                             None, t.get("pnl"), None, None, None, t.get("exit_reason")))
+    except Exception as e:
+        logger.error(f"[book_trades] us: {e}")
+
+    # Main book (LIVE/PAPER) — trades table
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            if status:
+                cur = conn.execute("SELECT * FROM trades WHERE status=? ORDER BY entry_time DESC LIMIT ?",
+                                   (status.upper(), limit))
+            else:
+                cur = conn.execute("SELECT * FROM trades ORDER BY entry_time DESC LIMIT ?", (limit,))
+            for r in cur.fetchall():
+                d = dict(r)
+                seg = "OPTIONS" if (d.get("signal_type") == "OPTIONS") else "EQUITY"
+                rows.append(_row(d.get("id"), mode, seg, d.get("strategy"), d.get("symbol"),
+                                 None, d.get("direction"), d.get("status"), d.get("entry_time"),
+                                 d.get("exit_time"), d.get("entry_price"), d.get("exit_price"),
+                                 d.get("position_size"), d.get("realised_pnl"), None,
+                                 d.get("stop_loss"), d.get("target_1"), d.get("exit_reason")))
+    except Exception as e:
+        logger.error(f"[book_trades] main: {e}")
+
+    rows.sort(key=lambda x: (x.get("entry_time") or ""), reverse=True)
+    return {"run_mode": mode, "count": len(rows), "trades": rows[:limit]}
+
+
+@app.get("/book/trades")
+def book_trades(limit: int = 300, status: str = None):
+    """Unified trade history across every book/segment — one common schema."""
+    return _collect_book_trades(limit=limit, status=status)
+
+
 @app.get("/paper/stats")
 def get_paper_stats():
     try:
