@@ -2141,19 +2141,12 @@ function StrategyConfigPage({ config, onUpdate }) {
       </div>
       <div style={{display:"grid",gap:14}}>
         {Object.entries(config).map(([key, params]) => {
-          const isEnabled = params.enabled?.value ?? true;
+          // Enable/disable lives in the ONE source (Strategy on/off panel → strategy_toggles).
+          // This page is params only — no separate enable toggle (was a 2nd enable path).
           return (
-            <div key={key} className="card" style={{opacity:isEnabled?1:0.55}}>
+            <div key={key} className="card">
               <h2 style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
                 <span>{LABELS[key]||key}</span>
-                <label style={{cursor:"pointer",display:"flex",alignItems:"center",gap:5,fontSize:11,fontWeight:400,marginLeft:"auto"}}>
-                  <input type="checkbox" checked={isEnabled}
-                    onChange={e=>updateParam(key,"enabled",e.target.checked)}
-                    style={{cursor:"pointer"}} />
-                  {isEnabled
-                    ? <span style={{color:"#22c55e"}}>Enabled</span>
-                    : <span style={{color:"#ef4444"}}>Disabled</span>}
-                </label>
               </h2>
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:8,marginTop:8}}>
                 {Object.entries(params)
@@ -2163,7 +2156,7 @@ function StrategyConfigPage({ config, onUpdate }) {
                       entry={entry} onUpdate={updateParam}/>
                   ))}
                 {Object.keys(params).filter(k=>k!=="enabled").length===0 && (
-                  <div style={{fontSize:11,color:"#64748b"}}>No configurable params — toggle enabled above.</div>
+                  <div style={{fontSize:11,color:"#64748b"}}>No tunable parameters — enable/disable in the Strategy on/off panel above.</div>
                 )}
               </div>
             </div>
@@ -3263,7 +3256,7 @@ function App() {
             })()}
           </div>
           <div className="card" style={{marginTop:16}}>
-            <h2>NSE Strategy Configuration</h2>
+            <h2>Equity &amp; Index-Options — parameters <span style={{fontSize:11,color:"#94a3b8",fontWeight:400}}>· enable/disable above</span></h2>
             <StrategyConfigPage
               config={stratConfig}
               onUpdate={(strat, param, value) => {
@@ -3278,7 +3271,7 @@ function App() {
             />
           </div>
           <div className="card" style={{marginTop:16}}>
-            <h2>MCX Commodity Strategy Configuration</h2>
+            <h2>MCX — parameters <span style={{fontSize:11,color:"#94a3b8",fontWeight:400}}>· enable/disable above</span></h2>
             <McxConfigPage
               config={mcxConfig}
               onUpdate={(strat, param, value) => {
