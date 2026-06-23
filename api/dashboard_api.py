@@ -390,11 +390,11 @@ def run_mode():
         return {"run_mode": "PAPER", "error": str(e)}
 
 
-@app.get("/book/positions")
-def book_positions():
-    """SINGLE source for the dashboard's open positions — every book and segment in
-    ONE response, priced in the backend with the one cost source, so every page
-    renders the same trade identically and refreshes together (Stage 4).
+def _collect_book_positions() -> dict:
+    """SINGLE source for the dashboard's open positions — every book and segment,
+    priced in the BACKEND with the one cost source. Used by both GET /book/positions
+    and the /ws/live payload so every page renders the same trade identically and
+    refreshes together (Stage 4).
 
     Row: book (LIVE|PAPER|LEARNING), segment (EQUITY|OPTIONS|MCX), strategy, symbol,
     instrument, direction, qty, entry, ltp, unrealized_pnl.
@@ -445,6 +445,11 @@ def book_positions():
     total = round(sum((r["unrealized_pnl"] or 0) for r in rows), 2)
     return {"run_mode": mode, "count": len(rows),
             "total_unrealized": total, "positions": rows}
+
+
+@app.get("/book/positions")
+def book_positions():
+    return _collect_book_positions()
 
 
 @app.get("/paper/stats")
@@ -2311,9 +2316,11 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
     return {
         "timestamp":       datetime.now(tz=IST).isoformat(),
         "mode":            order_manager.mode,
+        "run_mode":        _run_mode(),
         "stats":           stats,
         "risk":            risk,
         "positions":       positions,
+        "book_positions":  _collect_book_positions(),
         "pending_signals": pending,
         "ltps":            ltps,
         "learning_ltps":   learning_ltps,

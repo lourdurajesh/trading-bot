@@ -2228,6 +2228,11 @@ function App() {
   const resetKill  = () => fetch(`${API}/kill-switch/reset`, {method:"POST"});
 
   const { stats, risk, positions, pending_signals, mode } = data || {};
+  /* Stage 4: ONE source for all open positions — every book/segment, backend-priced,
+     pushed in the same WS frame so every tab renders identically and refreshes together. */
+  const book = data?.book_positions || {};
+  const bookPositions = book.positions || [];
+  const runMode = data?.run_mode || "PAPER";
   const pnl    = stats?.total_pnl || 0;
   const pnlPct = stats?.total_pnl_pct || 0;
   const heat   = (positions||[]).reduce((s,p)=>s+(p.capital_at_risk||0),0) / ((stats?.total_capital||1)) * 100;
@@ -2401,44 +2406,48 @@ function App() {
 
           <div className="grid2">
             <div className="card">
-              <h2>Open positions ({positions?.length||0})</h2>
-              {!positions?.length ? <div className="empty">No open positions</div>
-              : positions.map(p=>{
-                const dispSym = ((p.options_meta||{}).nfo_symbol || p.symbol || "").replace("NSE:","").replace("-EQ","").replace("MCX:","");
-                const idxSym  = (p.options_meta||{}).nfo_symbol ? (p.symbol||"").replace("NSE:","").replace("-EQ","") : null;
+              <h2>Open positions ({bookPositions.length})
+                <span style={{fontSize:10,color:"#94a3b8",fontWeight:400,marginLeft:6}}>· {runMode} + LEARNING · all segments</span>
+              </h2>
+              {!bookPositions.length ? <div className="empty">No open positions</div>
+              : bookPositions.map((p,i)=>{
+                const dispSym = (p.instrument || p.symbol || "").replace("NSE:","").replace("-EQ","").replace("MCX:","");
+                const idxSym  = (p.instrument && p.instrument!==p.symbol) ? (p.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","") : null;
+                const pnl     = p.unrealized_pnl;
+                const bookColor = p.book==="LEARNING" ? "#a78bfa" : (p.book==="LIVE" ? "#22c55e" : "#38bdf8");
+                const unit    = p.segment==="EQUITY" ? "shares" : "units";
+                const canClose = p.book!=="LEARNING";   // only the live/paper main book is force-closable
                 const forceClose = () => {
                   if (!window.confirm(`Mark "${dispSym}" as closed?\n\nUse only if the broker already closed this position and the dashboard is showing stale data.`)) return;
                   fetch(`${API}/positions/force-close`, {
-                    method: "POST",
-                    headers: {"Content-Type":"application/json"},
+                    method: "POST", headers: {"Content-Type":"application/json"},
                     body: JSON.stringify({symbol: p.symbol, reason: "BROKER_CLOSED"}),
-                  })
-                    .then(r=>r.json())
-                    .then(d=>{
-                      if (d.success) setPositions(prev => prev.filter(x=>x.symbol!==p.symbol));
-                      else alert("Force close failed: " + (d.error||"unknown error"));
-                    })
+                  }).then(r=>r.json()).then(d=>{ if(!d.success) alert("Force close failed: "+(d.error||"unknown")); })
                     .catch(()=>alert("Request failed"));
                 };
                 return (
-                <div key={p.id} className="pos-row">
+                <div key={i} className="pos-row">
                   <div>
                     <span style={{fontWeight:600,fontFamily:"monospace",color:"#f1f5f9"}}>{dispSym}</span>
                     {idxSym && <span style={{fontSize:9,color:"#94a3b8",marginLeft:4}}>{idxSym}</span>}
-                    <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
-                    <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{p.strategy} · {p.position_size} {p.signal_type==="OPTIONS"?"units":"shares"}</div>
+                    <span className={`badge ${(p.direction||"").toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
+                    <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>
+                      <span style={{color:bookColor,fontWeight:600}}>{p.book}</span>
+                      <span style={{color:"#64748b"}}> · {p.segment} · </span>
+                      {p.strategy} · {p.qty} {unit}
+                    </div>
                   </div>
                   <div style={{textAlign:"right",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
-                    <div className={p.unrealised_pnl>=0?"up":"down"} style={{fontSize:15,fontWeight:600}}>
-                      {p.unrealised_pnl>=0?"+":""}₹{fmt(Math.abs(p.unrealised_pnl))}
+                    <div className={pnl>=0?"up":"down"} style={{fontSize:15,fontWeight:600}}>
+                      {pnl!=null ? `${pnl>=0?"+":""}₹${fmt(Math.abs(pnl))}` : "—"}
                     </div>
-                    <div style={{fontSize:10,color:"#94a3b8"}}>₹{p.entry_price} → ₹{p.ltp}</div>
-                    <button
+                    <div style={{fontSize:10,color:"#94a3b8"}}>₹{p.entry} → ₹{p.ltp}</div>
+                    {canClose && <button
                       onClick={forceClose}
                       title="Mark as closed — use when broker already closed this but dashboard shows stale data"
                       style={{background:"transparent",border:"1px solid #7f1d1d",color:"#f87171",borderRadius:3,fontSize:9,padding:"2px 7px",cursor:"pointer",lineHeight:"1.4",marginTop:2}}>
                       × Mark Closed
-                    </button>
+                    </button>}
                   </div>
                 </div>
               )})}
