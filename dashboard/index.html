@@ -569,7 +569,7 @@ const TradesTable = React.memo(function TradesTable({trades, bookById={}, onClos
 });
 
 // ── Unified "Trades" tab — every book/segment in one filterable table ──────────
-const AllTradesTab = React.memo(function AllTradesTab({trades, bookById={}}) {
+const AllTradesTab = React.memo(function AllTradesTab({trades, bookById={}, onClose}) {
   const [fBook, setFBook]     = React.useState("all");
   const [fSeg, setFSeg]       = React.useState("all");
   const [fStatus, setFStatus] = React.useState("all");
@@ -595,7 +595,7 @@ const AllTradesTab = React.memo(function AllTradesTab({trades, bookById={}}) {
         Status <Sel value={fStatus} set={setFStatus} opts={["all","OPEN","CLOSED"]}/>
         <span style={{marginLeft:"auto"}}>Net P&L: <span className={totalInr>=0?"good":"bad"} style={{fontWeight:600}}>{totalInr>=0?"₹+":"₹"}{fmt(Math.abs(totalInr))}</span></span>
       </div>
-      <TradesTable trades={list} bookById={bookById}/>
+      <TradesTable trades={list} bookById={bookById} onClose={onClose}/>
     </div>
   );
 });
@@ -2317,6 +2317,15 @@ function App() {
   },[tab]);
 
 
+  const closeTrade = (t) => {
+    const sym = (t.instrument||t.symbol||"").replace("NSE:","").replace("MCX:","");
+    if (!window.confirm(`Close ${sym}  (${t.book} · ${t.segment})?`)) return;
+    fetch(`${API}/book/trades/close`, {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({id:t.id, book:t.book, segment:t.segment, symbol:t.symbol, reason:"MANUAL"})})
+      .then(r=>r.json())
+      .then(d=>{ if(!d.success) alert("Close failed: "+(d.error||"unknown")); })
+      .catch(()=>alert("Request failed"));
+  };
   const switchMode = m => fetch(`${API}/mode/${m}`, {method:"POST"});
   const confirm    = id => fetch(`${API}/signals/${id}/confirm`, {method:"POST"});
   const reject     = id => fetch(`${API}/signals/${id}/reject`, {method:"POST"});
@@ -2481,7 +2490,7 @@ function App() {
       {/* ════════════════════════════════════════
           TRADING TAB
       ════════════════════════════════════════ */}
-      {tab==="alltrades" && <AllTradesTab trades={bookTrades} bookById={bookById}/>}
+      {tab==="alltrades" && <AllTradesTab trades={bookTrades} bookById={bookById} onClose={closeTrade}/>}
 
       {tab==="trading" && (
         <div>

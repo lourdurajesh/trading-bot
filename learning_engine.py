@@ -1048,6 +1048,41 @@ class LearningEngine:
             mae_pts=round(mae_pts, 2), mfe_pts=round(mfe_pts, 2),
             fees=round(fees, 2))
 
+    def manual_close(self, trade_id: str, reason: str = "MANUAL") -> bool:
+        """Close an OPEN learning trade now at its live price (dashboard manual close).
+        Uses the same close path as auto-exits (_db_close + paper mirror close)."""
+        trade, key = None, None
+        for k, t in self._open_positions.items():
+            if t.get("id") == trade_id:
+                trade, key = t, k
+                break
+        if trade is None:   # not in memory (e.g. reloaded/seeded) — read from DB
+            for t in self.get_trades(status="OPEN", limit=2000):
+                if t.get("id") == trade_id:
+                    trade = t
+                    break
+        if trade is None:
+            return False
+        u = self._unrealized(trade) or {}
+        entry = float(trade.get("entry_price") or 0)
+        ltp   = float(u.get("ltp") or entry)
+        meta  = trade.get("metadata") or {}
+        seg   = "OPTIONS" if meta.get("instrument_type") == "nse_options" else "EQUITY"
+        qty   = self._real_qty(trade)
+        fees  = txn_fees.round_trip(seg, entry, ltp, qty)
+        self._db_close(trade_id, ltp, reason, float(u.get("pnl_pts") or 0),
+                       float(u.get("pnl_r") or 0), float(trade.get("mae_pts") or 0),
+                       float(trade.get("mfe_pts") or 0), fees)
+        try:
+            from paper_trading import paper_trading_engine
+            paper_trading_engine.mirror_learning_close(trade_id, ltp, reason)
+        except Exception as exc:
+            logger.debug(f"[Learning] manual_close mirror error: {exc}")
+        if key:
+            self._open_positions.pop(key, None)
+        logger.info(f"[Learning] MANUAL CLOSE {trade_id} @ {ltp:.2f} ({reason})")
+        return True
+
     # ─────────────────────────────────────────────────────────────
     # READ API — used by dashboard
     # ─────────────────────────────────────────────────────────────

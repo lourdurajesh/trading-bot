@@ -1611,6 +1611,29 @@ def force_close_position(body: dict, _: None = Depends(_require_api_key)):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/book/trades/close")
+def book_trade_close(body: dict, _: None = Depends(_require_api_key)):
+    """Unified manual close — ONE action for every book/segment, routed to the owning
+    engine. Body: {id, book, segment, symbol, reason?}."""
+    tid    = (body.get("id") or "").strip()
+    book   = (body.get("book") or "").upper()
+    seg    = (body.get("segment") or "").upper()
+    symbol = (body.get("symbol") or "").strip()
+    reason = (body.get("reason") or "MANUAL").strip()
+    try:
+        if seg == "MCX":
+            return {"success": bool(commodity_manual_close(tid).get("success")), "id": tid}
+        if seg == "US":
+            return {"success": False, "error": "US manual close not supported yet", "id": tid}
+        if book == "LEARNING":
+            from learning_engine import learning_engine
+            return {"success": bool(learning_engine.manual_close(tid, reason)), "id": tid}
+        # LIVE / PAPER main book — close by symbol
+        return {"success": bool(portfolio_tracker.force_close(symbol, reason=reason)), "id": tid}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/commodity/trades/{trade_id}/close")
 def commodity_manual_close(trade_id: str):
     """
