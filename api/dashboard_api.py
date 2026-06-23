@@ -402,8 +402,8 @@ def _collect_book_positions() -> dict:
     mode = _run_mode()
     rows = []
 
-    def _row(book, segment, strategy, symbol, instrument, direction, qty, entry, ltp, pnl):
-        return {"book": book, "segment": segment, "strategy": strategy or "",
+    def _row(tid, book, segment, strategy, symbol, instrument, direction, qty, entry, ltp, pnl):
+        return {"id": tid, "book": book, "segment": segment, "strategy": strategy or "",
                 "symbol": symbol, "instrument": instrument or symbol,
                 "direction": direction, "qty": qty, "entry": entry,
                 "ltp": ltp, "unrealized_pnl": pnl}
@@ -414,7 +414,7 @@ def _collect_book_positions() -> dict:
         for p in portfolio_tracker.get_open_positions():
             seg = "OPTIONS" if p.get("signal_type") == "OPTIONS" else "EQUITY"
             nfo = (p.get("options_meta") or {}).get("nfo_symbol")
-            rows.append(_row(mode, seg, p.get("strategy"), p.get("symbol"), nfo,
+            rows.append(_row(p.get("id"), mode, seg, p.get("strategy"), p.get("symbol"), nfo,
                              p.get("direction"), p.get("position_size"),
                              p.get("entry_price"), p.get("ltp"), p.get("unrealised_pnl")))
     except Exception as e:
@@ -426,7 +426,7 @@ def _collect_book_positions() -> dict:
         for t in learning_engine.get_trades(status="OPEN", limit=500):
             m = t.get("metadata") or {}
             seg = "OPTIONS" if m.get("instrument_type") == "nse_options" else "EQUITY"
-            rows.append(_row("LEARNING", seg, t.get("strategy"), t.get("symbol"),
+            rows.append(_row(t.get("id"), "LEARNING", seg, t.get("strategy"), t.get("symbol"),
                              m.get("nfo_symbol"), t.get("direction"), t.get("qty"),
                              t.get("entry_price"), t.get("live_ltp"), t.get("unrealized_inr")))
     except Exception as e:
@@ -436,7 +436,7 @@ def _collect_book_positions() -> dict:
     try:
         from commodity_options_learning import commodity_options
         for t in commodity_options.get_open_positions():
-            rows.append(_row("LEARNING", "MCX", t.get("strategy"), t.get("instrument"),
+            rows.append(_row(t.get("id"), "LEARNING", "MCX", t.get("strategy"), t.get("instrument"),
                              t.get("symbol"), t.get("direction"), t.get("qty"),
                              t.get("net_debit"), t.get("spot"), t.get("unrealized_pnl")))
     except Exception as e:

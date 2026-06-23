@@ -263,7 +263,7 @@ const outcomeLabel = b => ({strong_win:"Strong Win",small_win:"Small Win",scratc
    focus from a date picker / text input.
    React.memo prevents re-renders unless the trades array changes.
 ───────────────────────────────────────────────────────────── */
-const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltps={}, showControls}) {
+const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltps={}, showControls, bookById={}}) {
   const [filterSym,    setFilterSym]    = React.useState("");
   const [filterStrat,  setFilterStrat]  = React.useState("all");
   const [filterDir,    setFilterDir]    = React.useState("all");
@@ -381,18 +381,23 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
               const meta     = t.metadata || {};
               const nfoSym   = meta.nfo_symbol || null;
               const isOpts   = meta.instrument_type === "nse_options";
-              // Open trades: prefer the BACKEND mark (live_ltp + unrealized_inr) so the whole
-              // row is internally consistent and matches the Paper widget — fees come from the
-              // single cost source (backend cost_model), never recomputed in the frontend.
-              // Fall back to the live ltps tick map only if the backend gave no price.
+              // Open trades: take the live mark from the ONE WS source (book_positions,
+              // keyed by id) so this row updates on the same cadence and shows the same
+              // backend-priced number as the Trading/Paper tabs (4c). Fall back to the
+              // trade's own backend mark, then the live ltps tick map.
+              const bp       = open ? (bookById[t.id] || null) : null;
               const ltp      = open
-                ? (t.live_ltp != null ? t.live_ltp
+                ? (bp && bp.ltp != null ? bp.ltp
+                   : t.live_ltp != null ? t.live_ltp
                    : (isOpts ? (nfoSym ? (ltps[nfoSym] || null) : null) : (ltps[t.symbol] || null)))
                 : null;
               const livePts  = ltp != null
                 ? (isOpts || t.direction==="LONG" ? ltp - t.entry_price : t.entry_price - ltp)
                 : null;
-              const liveInr  = open ? (t.unrealized_inr != null ? t.unrealized_inr : null) : null;
+              const liveInr  = open
+                ? (bp && bp.unrealized_pnl != null ? bp.unrealized_pnl
+                   : (t.unrealized_inr != null ? t.unrealized_inr : null))
+                : null;
               const ltpColor = ltp == null ? "#64748b"
                 : livePts > 0 ? "#22c55e"
                 : livePts < 0 ? "#ef4444"
@@ -514,7 +519,7 @@ const MCX_RISK_META = {
    LearningTabContent — owns filter state; stats widgets update
    with the active filter. React.memo shields from 2 s WS ticks.
 ───────────────────────────────────────────────────────────── */
-const LearningTabContent = React.memo(function LearningTabContent({trades, ltps, learnStats}) {
+const LearningTabContent = React.memo(function LearningTabContent({trades, ltps, learnStats, bookById={}}) {
   const [filterSym,    setFilterSym]    = React.useState("");
   const [filterStrat,  setFilterStrat]  = React.useState("all");
   const [filterDir,    setFilterDir]    = React.useState("all");
@@ -546,7 +551,12 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
   // Monetary overall P&L = Σ closed ₹ + Σ open live ₹. Both come from the BACKEND
   // (single cost source): closed = pnl_inr, open = unrealized_inr (cost_model marked).
   const closedPnlInr = closedF.reduce((s,t)=>s+(t.pnl_inr||0), 0);
-  const openPnlInr   = openF.reduce((s,t)=>s+(t.unrealized_inr||0), 0);
+  // open ₹ from the ONE WS source (book_positions by id), fallback to the row's mark
+  const openPnlInr   = openF.reduce((s,t)=>{
+    const bp = bookById[t.id];
+    const v = (bp && bp.unrealized_pnl != null) ? bp.unrealized_pnl : (t.unrealized_inr||0);
+    return s + (v||0);
+  }, 0);
   const totalPnlInr  = closedPnlInr + openPnlInr;
   const isFiltered = !!(filterSym || filterStrat!=="all" || filterDir!=="all" || filterStatus!=="all" || filterDate);
 
@@ -664,7 +674,7 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
             Trades
             {isFiltered && <span style={{marginLeft:6,fontWeight:400,color:"#f59e0b",fontSize:10,textTransform:"none",letterSpacing:0}}>· filter active</span>}
           </h2>
-          <LearningTradesTable trades={filtered} ltps={ltps} showControls={false}/>
+          <LearningTradesTable trades={filtered} ltps={ltps} bookById={bookById} showControls={false}/>
         </div>
       )}
 
@@ -2233,6 +2243,10 @@ function App() {
   const book = data?.book_positions || {};
   const bookPositions = book.positions || [];
   const runMode = data?.run_mode || "PAPER";
+  /* id → live position from the one WS source, so Paper/Learning tabs render the
+     SAME backend-priced number on the SAME cadence as the Trading tab (4c). */
+  const bookById = {};
+  bookPositions.forEach(p => { if (p.id) bookById[p.id] = p; });
   const pnl    = stats?.total_pnl || 0;
   const pnlPct = stats?.total_pnl_pct || 0;
   const heat   = (positions||[]).reduce((s,p)=>s+(p.capital_at_risk||0),0) / ((stats?.total_capital||1)) * 100;
@@ -2569,27 +2583,35 @@ function App() {
                   ))}
                 </div>
                 <div className="card">
-                  <h2>Open paper positions ({paperPos.length})</h2>
-                  {!paperPos.length ? <div className="empty">No open paper positions</div>
-                  : paperPos.map(p=>{
-                    const dispSym = (p.nfo_symbol || p.symbol || "").replace("NSE:","").replace("-EQ","").replace("MCX:","");
-                    const idxSym  = p.nfo_symbol ? (p.symbol||"").replace("NSE:","").replace("-EQ","") : null;
+                  {(() => {
+                    /* 4c: one source — the LEARNING rows of the unified WS feed */
+                    const learnPos = bookPositions.filter(p => p.book === "LEARNING");
+                    return (<>
+                  <h2>Open paper positions ({learnPos.length})</h2>
+                  {!learnPos.length ? <div className="empty">No open paper positions</div>
+                  : learnPos.map((p,i)=>{
+                    const dispSym = (p.instrument || p.symbol || "").replace("NSE:","").replace("-EQ","").replace("MCX:","");
+                    const idxSym  = (p.instrument && p.instrument!==p.symbol) ? (p.symbol||"").replace("NSE:","").replace("-EQ","").replace("MCX:","") : null;
+                    const pnl     = p.unrealized_pnl;
+                    const unit    = p.segment==="EQUITY" ? "shares" : "units";
                     return (
-                    <div key={p.id} className="pos-row">
+                    <div key={i} className="pos-row">
                       <div>
                         <span style={{fontWeight:600,fontFamily:"monospace"}}>{dispSym}</span>
                         {idxSym && <span style={{fontSize:9,color:"#94a3b8",marginLeft:4}}>{idxSym}</span>}
-                        <span className={`badge ${p.direction.toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
-                        <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{p.strategy} · <span style={{color:"#94a3b8"}}>{p.position_size} {p.instrument_type==="nse_options"?"units":"shares"}</span></div>
+                        <span className={`badge ${(p.direction||"").toLowerCase()}`} style={{marginLeft:6}}>{p.direction}</span>
+                        <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{p.segment} · {p.strategy} · <span style={{color:"#94a3b8"}}>{p.qty} {unit}</span></div>
                       </div>
                       <div style={{textAlign:"right"}}>
-                        <div className={p.unrealised_pnl>=0?"up":"down"} style={{fontWeight:600}}>
-                          {p.unrealised_pnl>=0?"+":""}₹{fmt(Math.abs(p.unrealised_pnl))}
+                        <div className={pnl>=0?"up":"down"} style={{fontWeight:600}}>
+                          {pnl!=null ? `${pnl>=0?"+":""}₹${fmt(Math.abs(pnl))}` : "—"}
                         </div>
-                        <div style={{fontSize:10,color:"#94a3b8"}}>₹{p.entry_price} → ₹{p.ltp}</div>
+                        <div style={{fontSize:10,color:"#94a3b8"}}>₹{p.entry} → ₹{p.ltp}</div>
                       </div>
                     </div>
                   )})}
+                    </>);
+                  })()}
                 </div>
               </div>
             </div>
@@ -2601,7 +2623,7 @@ function App() {
           LEARNING TAB
       ════════════════════════════════════════ */}
       <div style={{display: tab==="learning" ? "block" : "none"}}>
-        <LearningTabContent trades={learnTrades} ltps={learnLtps} learnStats={learnStats}/>
+        <LearningTabContent trades={learnTrades} ltps={learnLtps} learnStats={learnStats} bookById={bookById}/>
       </div>
 
       {/* ════════════════════════════════════════
