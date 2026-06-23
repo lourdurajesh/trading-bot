@@ -1316,8 +1316,11 @@ class CommodityOptionsLearning:
             return
 
         # Try strategies in priority order — first match wins
+        from config import strategy_toggles
         signal: Optional[Signal] = None
         for _strat in self._strategy_registry:
+            if not strategy_toggles.is_enabled(_strat.name):
+                continue  # disabled from the dashboard (single source)
             signal = _strat.evaluate(df, spot, now)
             if signal:
                 break

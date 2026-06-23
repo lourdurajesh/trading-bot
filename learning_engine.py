@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 IST    = ZoneInfo("Asia/Kolkata")
 from config.settings import DB_PATH, TOTAL_CAPITAL, RISK_PER_TRADE_PCT  # single source for paths/sizing
 from execution import fees as txn_fees  # single source for transaction costs (cost_model facade)
+from config import strategy_toggles      # single source for per-strategy on/off (UI)
 
 # Equity learning trades carry no lot size, so monetary P&L = pnl_pts × qty where qty is
 # sized to a fixed risk-per-trade (₹). This makes ₹ P&L track R (pnl_pts×qty == pnl_r×risk),
@@ -128,6 +129,8 @@ class LearningEngine:
                 continue
 
             for strat in equity_strategies:
+                if not strategy_toggles.is_enabled(strat.name):
+                    continue  # disabled from the dashboard (single source)
                 if f"{symbol}:{strat.name}" in self._open_positions:
                     continue  # already in this strategy's trade for this symbol
                 try:
@@ -215,6 +218,8 @@ class LearningEngine:
                 if self._is_on_cooldown(symbol):
                     continue
                 for strat in index_strategies:
+                    if not strategy_toggles.is_enabled(strat.name):
+                        continue  # disabled from the dashboard (single source)
                     strat_name = f"{strat.name}_LRN"
                     if f"{symbol}:{strat_name}" in self._open_positions:
                         continue

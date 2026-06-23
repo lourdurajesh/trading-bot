@@ -1906,6 +1906,30 @@ def get_param_changes(limit: int = 100, strategy: str = None):
         return {"changes": [], "error": str(e)}
 
 
+@app.get("/strategies")
+def list_strategies():
+    """All toggleable strategies with their on/off state, grouped-friendly
+    (segment label). Single source: config/strategy_toggles."""
+    try:
+        from config.strategy_toggles import all_states
+        return {"strategies": all_states()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/strategies/{name}/{enabled}")
+def set_strategy_enabled(name: str, enabled: str, _: None = Depends(_require_api_key)):
+    """Enable/disable a strategy across every book (live/paper/learning/MCX).
+    `enabled` ∈ {on,off,true,false,1,0}."""
+    try:
+        from config.strategy_toggles import set_enabled, is_enabled
+        on = enabled.lower() in ("on", "true", "1", "yes")
+        set_enabled(name, on)
+        return {"name": name, "enabled": is_enabled(name), "status": "ok"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/config/strategies")
 def get_strategy_config():
     """

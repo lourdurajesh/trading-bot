@@ -2124,6 +2124,7 @@ function App() {
 
   /* strategy config */
   const [stratConfig, setStratConfig] = React.useState(null);
+  const [strategies, setStrategies]   = React.useState([]);   // per-strategy on/off
   const [mcxConfig,   setMcxConfig]   = React.useState(null);
 
   /* conviction force override */
@@ -2203,6 +2204,7 @@ function App() {
     };
     const loadConfig = () =>
       fetch(`${API}/config/strategies`).then(r=>r.json()).then(d=>{if(d.config)setStratConfig(d.config);}).catch(()=>{});
+      fetch(`${API}/strategies`).then(r=>r.json()).then(d=>{if(d.strategies)setStrategies(d.strategies);}).catch(()=>{});
     const loadMcxConfig = () =>
       fetch(`${API}/commodity/config`).then(r=>r.json()).then(d=>{if(d.ok)setMcxConfig(d);}).catch(()=>{});
     const loadForceStatus = () =>
@@ -3131,6 +3133,42 @@ function App() {
       {tab==="config" && (
         <div>
           <div className="card">
+            <h2>Strategy on/off <span style={{fontSize:11,color:"#94a3b8",fontWeight:400}}>· disables across every book (live · paper · learning)</span></h2>
+            {(() => {
+              const toggle = (name, on) => {
+                fetch(`${API}/strategies/${name}/${on?"on":"off"}`, {method:"POST"})
+                  .then(r=>r.json())
+                  .then(()=> setStrategies(prev => prev.map(s => s.name===name ? {...s, enabled:on} : s)))
+                  .catch(()=>{});
+              };
+              const segs = ["EQUITY","OPTIONS","MCX"];
+              if (!strategies.length) return <div className="empty">Loading strategies…</div>;
+              return segs.map(seg => {
+                const list = strategies.filter(s => s.segment===seg);
+                if (!list.length) return null;
+                return (
+                  <div key={seg} style={{marginBottom:10}}>
+                    <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:1,margin:"6px 0 4px"}}>{seg}</div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+                      {list.map(s => (
+                        <label key={s.name} title={s.enabled?"Enabled — click to disable":"Disabled — click to enable"}
+                          style={{display:"flex",alignItems:"center",gap:6,background:"#0f1623",
+                            border:`1px solid ${s.enabled?"#16432a":"#3f1d1d"}`,borderRadius:6,
+                            padding:"5px 9px",cursor:"pointer",fontSize:12,opacity:s.enabled?1:0.65}}>
+                          <input type="checkbox" checked={!!s.enabled}
+                            onChange={e=>toggle(s.name, e.target.checked)}
+                            style={{accentColor:"#22c55e",cursor:"pointer"}}/>
+                          <span style={{fontFamily:"monospace",color:s.enabled?"#e2e8f0":"#94a3b8"}}>{s.name}</span>
+                          <span style={{fontSize:9,fontWeight:600,color:s.enabled?"#22c55e":"#ef4444"}}>{s.enabled?"ON":"OFF"}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+          </div>
+          <div className="card" style={{marginTop:16}}>
             <h2>NSE Strategy Configuration</h2>
             <StrategyConfigPage
               config={stratConfig}

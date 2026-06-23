@@ -409,6 +409,10 @@ class StrategySelector:
 
     def _try_strategy(self, strategy, symbol: str) -> Optional[Signal]:
         """Safely call a strategy's evaluate() method."""
+        # Per-strategy on/off (single source: config/strategy_toggles, UI-controlled).
+        from config.strategy_toggles import is_enabled
+        if not is_enabled(getattr(strategy, "name", "")):
+            return None
         try:
             signal = strategy.evaluate(symbol)
             if signal and signal.confidence >= MIN_SIGNAL_CONFIDENCE:
