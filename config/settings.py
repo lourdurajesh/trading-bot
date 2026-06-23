@@ -41,6 +41,9 @@ PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"  # Bug 16:
 
 TOTAL_CAPITAL         = float(os.getenv("TOTAL_CAPITAL", "500000"))   # INR (adjust to your capital)
 RISK_PER_TRADE_PCT    = float(os.getenv("RISK_PER_TRADE_PCT", "1.5")) # % of capital risked per trade
+# Curated strategies traded in LIVE/PAPER (real book). LEARNING runs ALL strategies.
+# Comma-separated; matched against strategy names (suffix-tolerant). Config-driven.
+LIVE_STRATEGIES       = os.getenv("LIVE_STRATEGIES", "TrendFollow,DirectionalOptions")
 MAX_OPEN_POSITIONS    = int(os.getenv("MAX_OPEN_POSITIONS", "10"))
 MAX_PORTFOLIO_HEAT    = float(os.getenv("MAX_PORTFOLIO_HEAT", "60"))  # % — no new trades beyond this
 

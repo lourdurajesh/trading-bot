@@ -42,6 +42,7 @@ PAPER_TRADING = os.getenv("PAPER_TRADING", "false").lower() == "true"
 
 PAPER_STARTING_CAPITAL = 500_000.0   # ₹5L paper wallet
 MIN_PAPER_BALANCE      = 25_000.0    # stop new paper trades below this floor
+MAX_LEARNING_LOTS      = int(os.getenv("MAX_LEARNING_LOTS", "10"))  # cap lots per learning option mirror
 
 # Realistic simulation parameters
 SLIPPAGE_PCT  = 0.05    # 0.05% slippage on fills
@@ -522,18 +523,14 @@ class PaperTradingEngine:
     def mirror_learning_open(self, trade: dict) -> Optional[int]:
         """
         Called by LearningEngine when it opens a trade.
-        Mirrors it to paper_trades using a 1% risk position-sizing rule.
-        Always active regardless of PAPER_TRADING env var — learning mirrors
-        run independently of full paper trading mode.
-        Returns the executed quantity (shares for equity, lots×lot_size for
-        options) so the caller can store the real order size on the learning
-        trade and derive P&L as (LTP − entry) × qty − fees. None if capital
-        is insufficient / trade rejected.
-
-        Position sizing: risk 1% of current paper balance.
-          stop_distance = abs(entry - stop_loss)
-          qty = int(risk_amount / stop_distance)  (min 1)
-          capital_deployed = qty * entry * 0.25   (25% intraday margin)
+        Mirrors it to paper_trades using the SHARED sizer (execution/sizing.py) with
+        the LEARNING run-context's risk budget — the SAME rule live uses
+        (TOTAL_CAPITAL × RISK_PER_TRADE_PCT), so a symbol sizes identically across
+        live / paper / learning. No more 1%-of-wallet divergence; the ₹5L wallet is
+        for P&L reporting only, never sizing.
+        Returns the executed quantity (shares for equity, lots×lot_size for options)
+        so the caller stores the real order size and derives P&L as
+        (LTP − entry) × qty − fees. None if the trade can't be sized.
         """
 
         symbol          = trade.get("symbol", "")
@@ -547,32 +544,31 @@ class PaperTradingEngine:
         if entry <= 0 or stop <= 0:
             return None
 
-        balance     = self.get_balance()
-        # Cap risk at 1% of the fixed starting corpus so position sizes don't
-        # explode as the paper wallet compounds. Without this cap a ₹66L wallet
-        # would risk ₹66k/trade → capital_req > balance → all trades rejected.
-        risk_amount = min(balance, PAPER_STARTING_CAPITAL) * 0.01
+        # Single sizer, single risk budget — identical to the live pipeline.
+        from execution.run_context import learning_context
+        from execution.sizing import shares_to_fit, lots_to_fit
+        risk_budget = learning_context().risk_budget   # TOTAL_CAPITAL × RISK_PER_TRADE_PCT/100
 
         if instrument_type == "nse_options":
-            # Options: full premium upfront (no intraday margin on option buying)
+            # Options: full premium upfront (no intraday margin on option buying).
             lot_size    = int(metadata.get("lot_size", 1)) or 1
-            lots        = max(1, int(risk_amount / (lot_size * entry)))
+            cost_per_lot = entry * lot_size
+            # Long premium: debit IS the max loss, so risk budget == capital budget.
+            lots        = lots_to_fit(cost_per_lot, risk_budget, risk_budget,
+                                      MAX_LEARNING_LOTS)
+            lots        = max(1, lots)   # learning records every signal (ignores fund cap)
             qty         = lots * lot_size
             capital_req = qty * entry
+            cap_at_risk = capital_req            # long premium: debit IS the max loss
         else:
-            stop_dist = abs(entry - stop)
-            if stop_dist < 0.01:
+            qty, cap_at_risk, reason = shares_to_fit(entry, stop, risk_budget)
+            if qty <= 0:
+                logger.info(f"[PaperTrading] Mirror SKIP {symbol}: {reason or 'size 0'}")
                 return None
-            qty         = max(1, int(risk_amount / stop_dist))
             capital_req = qty * entry * 0.25   # 25% intraday margin for equity/futures
 
-        if not self.can_trade(capital_req):
-            logger.info(
-                f"[PaperTrading] Mirror SKIP {symbol}: insufficient capital "
-                f"(balance ₹{balance:,.0f}, required ₹{capital_req:,.0f})"
-            )
-            return None
-
+        # LEARNING ignores fund availability — every signal is recorded (no can_trade
+        # gate). The ₹5L wallet is for P&L reporting only, not a trading constraint.
         order_id  = f"PAPER-LRN-{trade.get('id', 'UNKNOWN')[-8:]}"
         now_str   = datetime.now(tz=IST).isoformat()
 
@@ -603,7 +599,7 @@ class PaperTradingEngine:
                     stop,
                     float(trade.get("target", entry)),
                     qty,
-                    round(risk_amount, 2),
+                    round(cap_at_risk, 2),
                     round(capital_req, 2),
                     "OPEN",
                     now_str,
