@@ -45,11 +45,14 @@ MIN_PAPER_BALANCE      = 25_000.0    # stop new paper trades below this floor
 
 # Realistic simulation parameters
 SLIPPAGE_PCT  = 0.05    # 0.05% slippage on fills
-BROKERAGE_PCT = 0.03    # 0.03% per leg (legacy; superseded by flat fee below)
-# Fyers charges ₹20 flat per order regardless of size — NOT a percentage. Use a flat
-# fee so paper P&L matches the learning lab and reality (a 0.03% model overcharges
-# large positions, e.g. ₹116 on a ₹386k trade vs the real ₹20). Round trip = ₹40.
-FEE_PER_ORDER = 20.0    # ₹ per order (one leg)
+# Transaction costs come from the SINGLE source: execution.fees (facade over
+# analysis/cost_model.py + config/cost_rates.json). No inline fee math here —
+# so paper, learning and live can never diverge on costs.
+from execution import fees
+
+
+def _fee_segment(instrument_type: str) -> str:
+    return "OPTIONS" if instrument_type == "nse_options" else "EQUITY"
 
 
 class PaperTradingEngine:
@@ -285,8 +288,8 @@ class PaperTradingEngine:
                     ltp        = raw_ltp if raw_ltp <= entry * 20 else entry
                     unrealised = (ltp - entry) * size if direction == "LONG" else (entry - ltp) * size
 
-                # Deduct entry-leg fee only (exit not yet incurred on an open position)
-                brokerage  = FEE_PER_ORDER
+                # Deduct entry-leg cost only (exit not yet incurred on an open position)
+                brokerage  = fees.open_leg(_fee_segment(instr_type), entry, size)
                 net_pnl    = unrealised - brokerage
 
                 positions.append({
@@ -484,14 +487,15 @@ class PaperTradingEngine:
             entry            = row["entry_price"]
             size             = row["position_size"]
             capital_deployed = float(row["capital_deployed"] or 0)
+            instr_type       = row["instrument_type"] if row["instrument_type"] else ""
 
             if row["direction"] == "LONG":
                 gross_pnl = (exit_price - entry) * size
             else:
                 gross_pnl = (entry - exit_price) * size
 
-            # Deduct brokerage both legs (entry + exit), flat per order
-            brokerage = 2 * FEE_PER_ORDER
+            # Round-trip transaction cost from the single source (entry + exit)
+            brokerage = fees.round_trip(_fee_segment(instr_type), entry, exit_price, size)
             pnl       = round(gross_pnl - brokerage, 2)
 
             conn.execute("""
@@ -649,7 +653,7 @@ class PaperTradingEngine:
                 else:
                     gross_pnl = (entry - exit_price) * size
 
-                brokerage = 2 * FEE_PER_ORDER   # entry + exit, flat per order
+                brokerage = fees.round_trip(_fee_segment(instr_type), entry, exit_price, size)
                 pnl       = round(gross_pnl - brokerage, 2)
 
                 conn.execute("""

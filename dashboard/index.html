@@ -381,15 +381,18 @@ const LearningTradesTable = React.memo(function LearningTradesTable({trades, ltp
               const meta     = t.metadata || {};
               const nfoSym   = meta.nfo_symbol || null;
               const isOpts   = meta.instrument_type === "nse_options";
-              // Options: ONLY use nfo_symbol key — never fall back to index symbol (avoids index LTP)
-              const ltp      = open ? (isOpts ? (nfoSym ? (ltps[nfoSym] || null) : null) : (ltps[t.symbol] || null)) : null;
+              // Open trades: prefer the BACKEND mark (live_ltp + unrealized_inr) so the whole
+              // row is internally consistent and matches the Paper widget — fees come from the
+              // single cost source (backend cost_model), never recomputed in the frontend.
+              // Fall back to the live ltps tick map only if the backend gave no price.
+              const ltp      = open
+                ? (t.live_ltp != null ? t.live_ltp
+                   : (isOpts ? (nfoSym ? (ltps[nfoSym] || null) : null) : (ltps[t.symbol] || null)))
+                : null;
               const livePts  = ltp != null
                 ? (isOpts || t.direction==="LONG" ? ltp - t.entry_price : t.entry_price - ltp)
                 : null;
-              // Real executed qty (options: lots×lot_size, equity: shares) — set by backend.
-              const lotSize  = t.qty || (isOpts ? (meta.lot_size || 1) : 1);
-              const liveFees = 20;  // open position: entry-leg fee only (₹20/order), matches Paper
-              const liveInr  = livePts != null ? (livePts * lotSize - liveFees) : null;
+              const liveInr  = open ? (t.unrealized_inr != null ? t.unrealized_inr : null) : null;
               const ltpColor = ltp == null ? "#64748b"
                 : livePts > 0 ? "#22c55e"
                 : livePts < 0 ? "#ef4444"
@@ -540,22 +543,10 @@ const LearningTabContent = React.memo(function LearningTabContent({trades, ltps,
   const totalRF  = closedF.reduce((s,t)=>s+(t.pnl_r||0), 0);
   // Live unrealized R across open positions (backend marks each open row to market)
   const liveR    = openF.reduce((s,t)=>s+(t.unrealized_r||0), 0);
-  // Monetary overall P&L, per-tick — same as MCX: Σ closed ₹ + Σ open live ₹ (recomputed
-  // from the live LTP for each row, options via nfo_symbol / equity via symbol+qty).
-  const _liveInr = (t) => {
-    const m = t.metadata || {};
-    const isO = m.instrument_type === "nse_options";
-    const key = isO ? m.nfo_symbol : t.symbol;
-    const ltp = key ? (ltps[key] ?? null) : null;
-    if (ltp == null) return null;
-    const lot = t.qty || (isO ? (m.lot_size || 1) : 0);  // real executed qty from backend
-    if (!lot) return null;
-    const livePts = (isO || t.direction === "LONG") ? (ltp - t.entry_price) : (t.entry_price - ltp);
-    const fees = 20;  // open position: entry-leg fee only (₹20/order), matches Paper
-    return livePts * lot - fees;
-  };
+  // Monetary overall P&L = Σ closed ₹ + Σ open live ₹. Both come from the BACKEND
+  // (single cost source): closed = pnl_inr, open = unrealized_inr (cost_model marked).
   const closedPnlInr = closedF.reduce((s,t)=>s+(t.pnl_inr||0), 0);
-  const openPnlInr   = openF.reduce((s,t)=>{ const v=_liveInr(t); return s+(v!=null?v:0); }, 0);
+  const openPnlInr   = openF.reduce((s,t)=>s+(t.unrealized_inr||0), 0);
   const totalPnlInr  = closedPnlInr + openPnlInr;
   const isFiltered = !!(filterSym || filterStrat!=="all" || filterDir!=="all" || filterStatus!=="all" || filterDate);
 

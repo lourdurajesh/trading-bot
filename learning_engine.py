@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 IST    = ZoneInfo("Asia/Kolkata")
 from config.settings import DB_PATH, TOTAL_CAPITAL, RISK_PER_TRADE_PCT  # single source for paths/sizing
+from execution import fees as txn_fees  # single source for transaction costs (cost_model facade)
 
 # Equity learning trades carry no lot size, so monetary P&L = pnl_pts × qty where qty is
 # sized to a fixed risk-per-trade (₹). This makes ₹ P&L track R (pnl_pts×qty == pnl_r×risk),
@@ -47,9 +48,8 @@ SLIPPAGE_OPTIONS = 0.003    # 0.30% — accounts for bid-ask spread on options
 # ── Trading fees (round trip) ─────────────────────────────────────
 # Fyers: ₹20 flat per order (not per lot) for all segments.
 # Round trip = entry order + exit order = ₹40 flat regardless of lot count.
-FEES_EQUITY_FLAT   = 40.0   # ₹40 per equity/futures round trip
-FEES_OPTIONS_FLAT  = 40.0   # ₹40 per options round trip (₹20 × 2 orders, flat)
-FEE_PER_ORDER      = 20.0   # ₹20 per order (one leg) — open trades have paid entry only
+# Transaction costs come from the SINGLE source: execution.fees (txn_fees) →
+# analysis/cost_model.py + config/cost_rates.json. No flat-fee constants here.
 
 # ── Swing vs intraday hold classification ─────────────────────────
 # Swing strategies are NOT forced to close at EOD; they run until
@@ -537,21 +537,17 @@ class LearningEngine:
                 else:
                     eff_exit = round(exit_price * (1 + slip), 2)  # buy back at ask
 
+                # Round-trip transaction cost from the SINGLE source (cost_model),
+                # on the REAL executed quantity (shares, or lots × lot_size).
+                _qty = self._real_qty(trade)
                 if instrument_type == "nse_options":
                     # pnl_pts = premium move per unit (same units as entry_price)
-                    # monetary P&L = pnl_pts × lot_size − fees (computed at read time in get_trades)
-                    # Real round-trip cost (B2.2): brokerage + STT + exchange + GST on the
-                    # actual premium × lot quantity. Replaces the old flat ₹40 assumption.
-                    _lot = int(metadata.get("lot_size") or 1)
-                    try:
-                        from analysis.cost_model import single_option_cost
-                        fees = single_option_cost("NSE_OPT", entry, eff_exit, _lot)
-                    except Exception:
-                        fees = FEES_OPTIONS_FLAT
+                    # monetary P&L = pnl_pts × qty − fees (computed at read time in get_trades)
+                    fees = txn_fees.round_trip("OPTIONS", entry, eff_exit, _qty)
                     pnl_pts = round(eff_exit - entry, 2)
                     pnl_r   = round((eff_exit - entry) / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
                 else:
-                    fees = FEES_EQUITY_FLAT
+                    fees = txn_fees.round_trip("EQUITY", entry, eff_exit, _qty)
                     # Partial booking: 50% was booked at 1R; blend with final exit
                     if metadata.get("partial_booked") and metadata.get("partial_price"):
                         half_price = float(metadata["partial_price"])
@@ -1120,9 +1116,10 @@ class LearningEngine:
                 risk    = entry - stop          # long premium: stop < entry
                 pnl_pts = ltp - entry           # premium move per unit
                 # ₹ P&L uses the ACTUAL executed qty (lots × lot_size), same as Paper.
-                # Open position: only the entry-leg fee has been incurred (₹20).
+                # Open position: only the entry-leg cost has been incurred (single source).
                 qty     = self._real_qty(trade)
-                pnl_inr = round(pnl_pts * qty - FEE_PER_ORDER, 2) if qty else None
+                fee     = txn_fees.open_leg("OPTIONS", entry, qty)
+                pnl_inr = round(pnl_pts * qty - fee, 2) if qty else None
             else:
                 ltp = store.get_last_price(trade.get("symbol"))
                 if not ltp or ltp <= 0:
@@ -1133,10 +1130,11 @@ class LearningEngine:
                     pnl_pts = entry - ltp
                 # ₹ P&L uses the ACTUAL executed share qty (same as Paper widget);
                 # R is still risk-based, so keep risk from the original stop distance.
-                # Open position: only the entry-leg fee has been incurred (₹20).
+                # Open position: only the entry-leg cost has been incurred (single source).
                 risk = float(meta.get("risk_pts") or 0) or abs(entry - stop)
                 qty     = self._real_qty(trade)
-                pnl_inr = round(pnl_pts * qty - FEE_PER_ORDER, 2) if qty else None
+                fee     = txn_fees.open_leg("EQUITY", entry, qty)
+                pnl_inr = round(pnl_pts * qty - fee, 2) if qty else None
 
             pnl_r = round(pnl_pts / risk, 2) if risk and risk > 0 else 0.0
             return {"ltp": round(ltp, 2), "pnl_pts": round(pnl_pts, 2),
