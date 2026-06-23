@@ -3,11 +3,14 @@
   "_styles": ["trend_trail", "mean_reversion_target", "convex_trail"],
   "_default": "trend_trail",
   "TrendFollow":           "trend_trail",
+  "ShortTrend":            "trend_trail",
   "SimpleMomentum":        "trend_trail",
   "InstitutionalMomentum": "trend_trail",
   "MeanReversion":         "mean_reversion_target",
   "SimpleRSI":             "mean_reversion_target",
   "Reversal3m":            "mean_reversion_target",
   "Reversal5m":            "mean_reversion_target",
+  "GapFade":               "mean_reversion_target",
+  "MomentumReversal":      "mean_reversion_target",
   "DirectionalOptions":    "convex_trail"
 }

@@ -114,6 +114,12 @@ class PositionManager:
             return
         remaining_size = pos.position_size
 
+        # Strategy-aware exit policy — the SAME shared source the learning engine uses
+        # (execution/exit_policy + config). Mean-reversion takes a hard full exit at the
+        # target; trend/momentum keeps partial + trail + T2.
+        from execution.exit_policy import exit_style, MEAN_REVERSION
+        is_mean_rev = (exit_style(pos.strategy) == MEAN_REVERSION)
+
         with self._lock:
             already_partial = symbol in self._partial_exited
             already_be      = symbol in self._breakeven_applied
@@ -177,6 +183,15 @@ class PositionManager:
                 self._exit_position(symbol, remaining_size, "STOP", ltp)
                 return
 
+            # Mean-reversion: hard FULL exit at the target — no partial/trail (the
+            # snap-back reverts). Same policy as the learning engine (shared exit_policy).
+            if is_mean_rev:
+                if target_1 > 0 and ltp >= target_1:
+                    logger.info(f"[PositionManager] MEAN-REV TARGET {symbol}: "
+                                f"ltp={ltp:.2f} >= t1={target_1:.2f} — full exit")
+                    self._exit_position(symbol, remaining_size, "TARGET", ltp)
+                return
+
             # Dynamic target — advance milestone after T1 is hit
             if already_partial:
                 self._update_dynamic_target(symbol, profit_r, entry, risk, direction)
@@ -233,6 +248,14 @@ class PositionManager:
                 logger.info(f"[PositionManager] STOP HIT SHORT {symbol}: "
                             f"ltp={ltp:.2f} >= sl={effective_stop:.2f}")
                 self._exit_position(symbol, remaining_size, "STOP", ltp)
+                return
+
+            # Mean-reversion: hard FULL exit at the target — no partial/trail (shared policy).
+            if is_mean_rev:
+                if target_1 > 0 and ltp <= target_1:
+                    logger.info(f"[PositionManager] MEAN-REV TARGET SHORT {symbol}: "
+                                f"ltp={ltp:.2f} <= t1={target_1:.2f} — full exit")
+                    self._exit_position(symbol, remaining_size, "TARGET", ltp)
                 return
 
             # Dynamic target — advance milestone after T1 is hit
