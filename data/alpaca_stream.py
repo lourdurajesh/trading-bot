@@ -28,6 +28,31 @@ from data.data_store import store
 
 logger = logging.getLogger(__name__)
 
+
+def _to_ist(ts) -> datetime:
+    """Normalise an Alpaca timestamp to an IST-aware datetime.
+
+    Alpaca delivers timestamps as a pandas Timestamp on some paths but as an int/float
+    epoch on the raw WS path — the latter broke `.to_pydatetime()` ('int' object has no
+    attribute 'to_pydatetime'), dropping every US bar. Handle every form.
+    """
+    if hasattr(ts, "to_pydatetime"):              # pandas Timestamp
+        dt = ts.to_pydatetime()
+    elif isinstance(ts, datetime):
+        dt = ts
+    elif isinstance(ts, (int, float)):            # epoch — infer unit by magnitude
+        v = float(ts)
+        div = 1e9 if v >= 1e18 else 1e6 if v >= 1e15 else 1e3 if v >= 1e12 else 1.0
+        dt = datetime.fromtimestamp(v / div, tz=timezone.utc)
+    else:
+        try:
+            dt = pd.to_datetime(ts).to_pydatetime()
+        except Exception:
+            dt = datetime.now(tz=timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST)
+
 US_SYMBOLS_ALL = list(set(US_EQUITIES + US_ETFS))
 
 
@@ -126,7 +151,7 @@ class AlpacaStream:
         """
         try:
             tick = {
-                "timestamp": bar.timestamp.to_pydatetime().replace(tzinfo=timezone.utc).astimezone(IST),
+                "timestamp": _to_ist(bar.timestamp),
                 "ltp":       float(bar.close),
                 "volume":    int(bar.volume),
                 "open":      float(bar.open),
@@ -144,7 +169,7 @@ class AlpacaStream:
         """
         try:
             tick = {
-                "timestamp": trade.timestamp.to_pydatetime().replace(tzinfo=timezone.utc).astimezone(IST),
+                "timestamp": _to_ist(trade.timestamp),
                 "ltp":       float(trade.price),
                 "volume":    int(trade.size),
             }
