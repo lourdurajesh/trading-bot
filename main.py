@@ -243,6 +243,7 @@ class TradingBot:
         last_slow_run        = 0
         last_commodity_run   = 0
         last_us_run          = 0
+        last_generation      = 0          # unified entry-generation tick (all segments)
         last_token_check     = 0          # periodic token health check
         last_snapshot_save   = 0
         TOKEN_CHECK_INTERVAL = 1800       # check token every 30 min
@@ -254,6 +255,11 @@ class TradingBot:
         _edge_monitor_week       = None   # ISO week when edge monitor last ran
         _analytics_saved_date    = None   # date when analytics report was saved
         _token_prerefreshed_date = None   # date of proactive 5:30 AM token refresh
+
+        # ── ONE pipeline: all segments driven by the orchestrator (Phase-V V4) ──
+        from execution.orchestrator import build_orchestrator
+        orchestrator = build_orchestrator(self._is_market_hours)
+        logger.info(f"[Main] Orchestrator segments: {orchestrator.segments}")
 
         while self._running:
             try:
@@ -353,54 +359,41 @@ class TradingBot:
                     except Exception as e:
                         logger.error(f"[Main] IEP re-score error: {e}")
 
-                # MCX exit check — runs every 5 seconds regardless of NSE hours
-                # (MCX trades 09:00–23:30, well outside NSE session)
+                # ── Exits: one fast-monitor pass across every segment ─────────
+                # Each segment self-gates (NSE needs market hours; MCX/US gate
+                # internally), so this single call replaces the per-engine exit calls.
                 try:
-                    commodity_options.check_exits()
-                except Exception as _ce:
-                    logger.debug(f"[CommOpts] exit check error: {_ce}")
+                    orchestrator.run_fast_monitors()
+                except Exception as _fe:
+                    logger.debug(f"[Orchestrator] fast-monitor error: {_fe}")
 
-                if self._is_market_hours():
-                    # ── Fast loop — runs every 5 seconds ──────────
-                    position_manager.check_all()
+                # ── OI close snapshot at 15:25 IST ────────────────────────────
+                if (now_time >= _OI_CLOSE_SNAP_TIME
+                        and today != _oi_snap_saved_date
+                        and now_ist.weekday() < 5
+                        and not _is_holiday(today)):
+                    try:
+                        oi_analyzer.save_close_snapshot()
+                        _oi_snap_saved_date = today
+                        logger.info("[Main] OI close snapshot saved")
+                    except Exception as e:
+                        logger.error(f"[Main] OI snapshot save error: {e}")
 
-                    # ── Slow loop — runs every 60 seconds ─────────
-                    if now - last_slow_run >= EVAL_INTERVAL_SECONDS:
-                        last_slow_run = now
-
+                # ── Unified entry-generation tick — every 60s, ONE pipeline ───
+                # Adapters decide their own session: NSE-main / NSE-learning run only
+                # when NSE is open; MCX and US gate internally. NSE-specific prep (OI
+                # refresh, portfolio snapshot) runs just before, only when NSE is open.
+                if now - last_generation >= EVAL_INTERVAL_SECONDS:
+                    last_generation = now
+                    if self._is_market_hours():
                         if strategy_selector._cycle_count % 10 == 0:
                             self._log_portfolio_snapshot()
-
-                        # Refresh OI analyzer (feeds conviction_scorer OI signal)
                         try:
                             oi_analyzer.refresh("BANKNIFTY")
                             oi_analyzer.refresh("NIFTY")
                         except Exception as e:
                             logger.debug(f"[Main] OI analyzer refresh error: {e}")
-
-                        # Production strategies (institutional_momentum is highest priority)
-                        strategy_selector.run_cycle()
-
-                        # NSE learning paper trades — parallel, isolated
-                        try:
-                            learning_engine.run_cycle()
-                        except Exception as le:
-                            logger.debug(f"Learning cycle error: {le}")
-
-                    # ── OI close snapshot at 15:25 IST ────────────
-                    if (now_time >= _OI_CLOSE_SNAP_TIME
-                            and today != _oi_snap_saved_date
-                            and now_ist.weekday() < 5
-                            and not _is_holiday(today)):
-                        try:
-                            oi_analyzer.save_close_snapshot()
-                            _oi_snap_saved_date = today
-                            logger.info("[Main] OI close snapshot saved")
-                        except Exception as e:
-                            logger.error(f"[Main] OI snapshot save error: {e}")
-
-                else:
-                    logger.debug("Outside market hours — skipping.")
+                    orchestrator.run_generation(now)
 
                 # ── Daily trade analytics report at 15:35 IST ────────
                 if (now_time >= _ANALYTICS_TIME
@@ -459,24 +452,8 @@ class TradingBot:
                     except Exception as te:
                         logger.debug(f"[Main] Token check error: {te}")
 
-                # Commodity options learning — separate 60s cadence,
-                # MCX hours gate is enforced internally in run_cycle()
-                if now - last_commodity_run >= EVAL_INTERVAL_SECONDS:
-                    last_commodity_run = now
-                    try:
-                        commodity_options.run_cycle()
-                    except Exception as ce:
-                        logger.exception(f"[CommOpts] Cycle error: {ce}")
-
-                # US index-ETF Reversal options (SPY/QQQ) — paper, BS-modeled.
-                # US-session hours gate is enforced internally in run_cycle().
-                if now - last_us_run >= EVAL_INTERVAL_SECONDS:
-                    last_us_run = now
-                    try:
-                        from us_reversal import us_reversal
-                        us_reversal.run_cycle()
-                    except Exception as ue:
-                        logger.exception(f"[USReversal] Cycle error: {ue}")
+                # MCX + US generation now run through orchestrator.run_generation()
+                # above (their session-hours gates are internal to each engine).
 
             except Exception as e:
                 logger.error(f"Loop error: {e}", exc_info=True)
