@@ -390,6 +390,63 @@ def run_mode():
         return {"run_mode": "PAPER", "error": str(e)}
 
 
+@app.get("/book/positions")
+def book_positions():
+    """SINGLE source for the dashboard's open positions — every book and segment in
+    ONE response, priced in the backend with the one cost source, so every page
+    renders the same trade identically and refreshes together (Stage 4).
+
+    Row: book (LIVE|PAPER|LEARNING), segment (EQUITY|OPTIONS|MCX), strategy, symbol,
+    instrument, direction, qty, entry, ltp, unrealized_pnl.
+    """
+    mode = _run_mode()
+    rows = []
+
+    def _row(book, segment, strategy, symbol, instrument, direction, qty, entry, ltp, pnl):
+        return {"book": book, "segment": segment, "strategy": strategy or "",
+                "symbol": symbol, "instrument": instrument or symbol,
+                "direction": direction, "qty": qty, "entry": entry,
+                "ltp": ltp, "unrealized_pnl": pnl}
+
+    # 1) Main book (LIVE/PAPER) — portfolio_tracker
+    try:
+        from risk.portfolio_tracker import portfolio_tracker
+        for p in portfolio_tracker.get_open_positions():
+            seg = "OPTIONS" if p.get("signal_type") == "OPTIONS" else "EQUITY"
+            nfo = (p.get("options_meta") or {}).get("nfo_symbol")
+            rows.append(_row(mode, seg, p.get("strategy"), p.get("symbol"), nfo,
+                             p.get("direction"), p.get("position_size"),
+                             p.get("entry_price"), p.get("ltp"), p.get("unrealised_pnl")))
+    except Exception as e:
+        logger.error(f"[book] main positions: {e}")
+
+    # 2) Learning NSE (equity + index options) — learning_engine (backend-marked)
+    try:
+        from learning_engine import learning_engine
+        for t in learning_engine.get_trades(status="OPEN", limit=500):
+            m = t.get("metadata") or {}
+            seg = "OPTIONS" if m.get("instrument_type") == "nse_options" else "EQUITY"
+            rows.append(_row("LEARNING", seg, t.get("strategy"), t.get("symbol"),
+                             m.get("nfo_symbol"), t.get("direction"), t.get("qty"),
+                             t.get("entry_price"), t.get("live_ltp"), t.get("unrealized_inr")))
+    except Exception as e:
+        logger.error(f"[book] learning positions: {e}")
+
+    # 3) Learning MCX — commodity engine (backend-marked)
+    try:
+        from commodity_options_learning import commodity_options
+        for t in commodity_options.get_open_positions():
+            rows.append(_row("LEARNING", "MCX", t.get("strategy"), t.get("instrument"),
+                             t.get("symbol"), t.get("direction"), t.get("qty"),
+                             t.get("net_debit"), t.get("spot"), t.get("unrealized_pnl")))
+    except Exception as e:
+        logger.error(f"[book] mcx positions: {e}")
+
+    total = round(sum((r["unrealized_pnl"] or 0) for r in rows), 2)
+    return {"run_mode": mode, "count": len(rows),
+            "total_unrealized": total, "positions": rows}
+
+
 @app.get("/paper/stats")
 def get_paper_stats():
     try:

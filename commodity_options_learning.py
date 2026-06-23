@@ -2245,6 +2245,47 @@ class CommodityOptionsLearning:
             result.append(d)
         return result
 
+    def get_open_positions(self) -> list[dict]:
+        """Live-marked OPEN MCX positions for the unified /book/positions feed.
+
+        Unrealised P&L is computed in the BACKEND (single cost source) using the same
+        delta model as _check_exits — so MCX renders consistently with equity/options
+        and is not recomputed in the frontend."""
+        from data.data_store import store
+        from execution import fees as txn_fees
+        delta = engine_settings.spread_delta()
+        out = []
+        for _key, t in list(self._open_positions.items()):
+            instrument = t.get("instrument", "")
+            sym        = _fyers_sym(instrument)
+            spot       = (store.get_last_price(sym)
+                          or store.get_last_price(t.get("symbol") or "")
+                          or float(t.get("spot_at_entry", 0) or 0))
+            entry_spot = float(t.get("spot_at_entry", 0) or 0)
+            direction  = t.get("direction", "LONG")
+            lots       = int(t.get("lots", 1) or 1)
+            lot_size   = int(t.get("lot_size", 1) or 1)
+            qty        = lots * lot_size
+            net_debit  = float(t.get("net_debit", 0) or 0)
+            spot_move  = (spot - entry_spot) if direction == "LONG" else (entry_spot - spot)
+            gross      = round(spot_move * delta, 2) * qty
+            fee        = txn_fees.open_leg("MCX", net_debit, qty)
+            out.append({
+                "id":             t.get("id"),
+                "instrument":     instrument,
+                "symbol":         sym,
+                "strategy":       t.get("strategy", ""),
+                "direction":      direction,
+                "qty":            qty,
+                "lots":           lots,
+                "lot_size":       lot_size,
+                "entry_spot":     entry_spot,
+                "net_debit":      net_debit,
+                "spot":           round(spot, 2),
+                "unrealized_pnl": round(gross - fee, 2),
+            })
+        return out
+
     def get_stats(self) -> dict:
         trades = self.get_trades(status="CLOSED", limit=1000)
         open_t = self.get_trades(status="OPEN")
