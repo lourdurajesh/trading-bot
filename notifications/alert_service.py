@@ -325,6 +325,15 @@ class AlertService:
                 },
                 timeout=10,
             )
+            # Markdown parse failure (unbalanced * _ [ ` in dynamic content like symbol
+            # names / reasons) → Telegram 400 and the message is dropped. Resend as plain
+            # text so the alert still gets through.
+            if resp.status_code == 400 and "parse" in resp.text.lower():
+                resp = requests.post(
+                    self._api_url,
+                    json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
+                    timeout=10,
+                )
             if not resp.ok:
                 logger.warning(f"[Alerts] Telegram API error: {resp.status_code} {resp.text[:200]}")
         except Exception as exc:

@@ -116,6 +116,18 @@ went unnoticed. A bot you'll trust with money must self-detect these.
 
 ---
 
+## First task next week — validate the S/R entry filter (concrete kickoff)
+
+The support/resistance room filter (`analysis/support_resistance.py` + `config/entry_filters.json`,
+wired into ShortTrend/TrendFollow, 2026-06-24) is the first thing to run through the
+backtest loop, because it's already live and shaping entries:
+1. **A/B backtest** ShortTrend + TrendFollow over history **with vs without** the S/R
+   filter → does net expectancy / win-rate / drawdown improve? (Confirms the idea.)
+2. **Walk-forward** the S/R thresholds (`pivot_window`, `min_room_atr`, `level_buffer_pct`,
+   `oversold_floor`/`overbought_ceiling`) — optimise on window N, test on N+1 → confirm
+   they generalise (not curve-fit). Keep the filter only if WF out-of-sample holds.
+This doubles as the first real exercise of the Workstream-1 harness.
+
 ## Sequencing
 
 1. **Workstream 1 first** — nothing else can be trusted without it.
