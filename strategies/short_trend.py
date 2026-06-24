@@ -173,6 +173,17 @@ class ShortTrendStrategy(BaseStrategy):
             if year_low < target_2:
                 target_3 = year_low
 
+        # ── 9b. Support/resistance room (single source: support_resistance) ──
+        # Only short a breakdown that has ROOM to fall: skip if the next support
+        # sits above the target, or if RSI is exhausted while tagging support
+        # (the bounce zone — exactly the RELIANCE 1300 case).
+        from analysis.support_resistance import entry_blocked_reason
+        sr_df = df_1d if df_1d is not None else df_1h
+        sr_skip = entry_blocked_reason(sr_df, "SHORT", entry, target_1, rsi_val, atr_val)
+        if sr_skip:
+            self.log_skip(symbol, f"S/R: {sr_skip}")
+            return None
+
         # ── 10. Risk:Reward filter ────────────────────────────────
         rr = (entry - target_1) / risk   # reward / risk for short
         if rr < MIN_RISK_REWARD:

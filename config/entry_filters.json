@@ -1,0 +1,10 @@
+{
+  "_comment": "Support/Resistance entry quality filter. A breakdown short is only valid with ROOM to fall (the next significant support must be at/below the target, not sitting right under entry), and we never short an exhausted move tagging support (bounce zone). Mirror for longs into resistance. Levels are pivot highs/lows on the higher timeframe. Edit here — no hard-coding.",
+  "enabled": true,
+  "pivot_window": 3,
+  "level_lookback": 120,
+  "level_buffer_pct": 0.4,
+  "min_room_atr": 1.0,
+  "oversold_floor": 40.0,
+  "overbought_ceiling": 60.0
+}

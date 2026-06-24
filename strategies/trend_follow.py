@@ -141,6 +141,17 @@ class TrendFollowStrategy(BaseStrategy):
             if target_3 <= target_2:
                 target_3 = 0.0
 
+        # ── 9b. Support/resistance room (single source: support_resistance) ──
+        # Only buy a breakout with ROOM to run: skip if the next resistance sits
+        # below the target, or if RSI is overbought while tagging resistance
+        # (the rejection zone — the long mirror of the RELIANCE case).
+        from analysis.support_resistance import entry_blocked_reason
+        sr_df = df_1d if df_1d is not None else df_1h
+        sr_skip = entry_blocked_reason(sr_df, "LONG", entry, target_1, rsi_val, atr_val)
+        if sr_skip:
+            self.log_skip(symbol, f"S/R: {sr_skip}")
+            return None
+
         # ── 10. Risk:Reward filter ────────────────────────────────
         rr = (target_1 - entry) / risk
         if rr < MIN_RISK_REWARD:
