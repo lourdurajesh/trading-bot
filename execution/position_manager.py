@@ -192,6 +192,14 @@ class PositionManager:
                 self._exit_position(symbol, remaining_size, "STOP", ltp)
                 return
 
+            # Structural exit — close an in-profit trade reversing/stalling BEFORE it
+            # round-trips to the stop (shared single source; same as the learning engine).
+            sx = self._structural_exit_reason(symbol, direction, entry)
+            if sx:
+                logger.info(f"[PositionManager] STRUCTURAL EXIT {symbol}: {sx} @ {ltp:.2f}")
+                self._exit_position(symbol, remaining_size, sx, ltp)
+                return
+
             # Mean-reversion: hard FULL exit at the target — no partial/trail (the
             # snap-back reverts). Same policy as the learning engine (shared exit_policy).
             if is_mean_rev:
@@ -259,6 +267,14 @@ class PositionManager:
                 self._exit_position(symbol, remaining_size, "STOP", ltp)
                 return
 
+            # Structural exit — close an in-profit short reversing/stalling BEFORE it
+            # round-trips to the stop (shared single source; same as the LONG path).
+            sx = self._structural_exit_reason(symbol, direction, entry)
+            if sx:
+                logger.info(f"[PositionManager] STRUCTURAL EXIT SHORT {symbol}: {sx} @ {ltp:.2f}")
+                self._exit_position(symbol, remaining_size, sx, ltp)
+                return
+
             # Mean-reversion: hard FULL exit at the target — no partial/trail (shared policy).
             if is_mean_rev:
                 if target_1 > 0 and ltp <= target_1:
@@ -298,6 +314,27 @@ class PositionManager:
             # Trailing stop for short
             if profit_r >= TRAIL_TRIGGER:
                 self._update_trailing_stop(symbol, ltp, direction, risk)
+
+    # ─────────────────────────────────────────────────────────────
+    # STRUCTURAL EXIT — shared single source (execution/exit_signals)
+    # ─────────────────────────────────────────────────────────────
+
+    def _structural_exit_reason(self, df_symbol: str, direction: str,
+                                entry_ref: float) -> Optional[str]:
+        """Structural (reversal / stall) exit on the underlying OHLCV — the SAME shared
+        decision (execution/exit_signals.structural_exit) the learning engine uses, so the
+        portfolio book closes a reversing winner identically. Keyed off the entry strategy
+        via exit_signals config, never the segment. Self-gates to fire only once in profit.
+        df_symbol: equity uses its own symbol; options pass the underlying index."""
+        if entry_ref <= 0:
+            return None
+        try:
+            from execution.exit_signals import structural_exit, config as _xs_cfg
+            tf = _xs_cfg().get("timeframe", "5m")
+            return structural_exit(self._store.get_ohlcv(df_symbol, tf), direction, entry_ref)
+        except Exception as e:
+            logger.error(f"[PositionManager] structural_exit error {df_symbol}: {e}")
+            return None
 
     # ─────────────────────────────────────────────────────────────
     # OPTIONS EXIT MANAGEMENT
@@ -400,6 +437,26 @@ class PositionManager:
             self._exit_options_position(symbol, size, "TARGET", options_meta)
             self._partial_exited.add(symbol)
             return
+
+        # ── 7. Structural exit on the UNDERLYING — shared single source ──────────
+        # Close a reversing/stalling option winner before it round-trips, using the SAME
+        # exit_signals decision the learning engine applies. The option position's `symbol`
+        # IS the underlying index; map direction from option type (CE→LONG, PE→SHORT). Gated
+        # on underlying profit via the entry spot captured at open. This is the option
+        # "trend reversed → exit" path that was missing (NIFTY CE rode 144→112 to EOD).
+        entry_spot = float(options_meta.get("entry_spot") or 0)
+        if entry_spot > 0:
+            opt_type = (options_meta.get("option_type") or "").upper()
+            nfo = (options_meta.get("nfo_symbol") or pos_dict.get("monitor_symbol") or "").upper()
+            und_dir = "SHORT" if (opt_type == "PE" or "PE" in nfo) else "LONG"
+            sx = self._structural_exit_reason(symbol, und_dir, entry_spot)
+            if sx:
+                logger.info(
+                    f"[PositionManager] OPTIONS STRUCTURAL EXIT {symbol}: {sx} "
+                    f"(underlying {und_dir}, entry_spot {entry_spot:.2f})"
+                )
+                self._exit_options_position(symbol, size, sx, options_meta)
+                return
 
     def _get_monitor_ltp(self, pos_dict: dict) -> Optional[float]:
         """

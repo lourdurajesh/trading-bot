@@ -97,6 +97,15 @@ class PortfolioTracker:
         self._trade_counter += 1
         trade_id = f"T{datetime.now(tz=IST).strftime('%Y%m%d%H%M%S')}-{self._trade_counter:04d}"
 
+        # Capture the underlying spot at entry for OPTIONS so the structural exit can gate on
+        # underlying profit (the option's symbol IS the underlying index; entry_price is the
+        # premium). Single source: PositionManager reads options_meta["entry_spot"].
+        opts_meta = dict(signal.options_meta or {})
+        if signal.signal_type.value == "OPTIONS" and "entry_spot" not in opts_meta:
+            _spot = store.get_ltp(signal.symbol)
+            if _spot and _spot > 0:
+                opts_meta["entry_spot"] = float(_spot)
+
         position = Position(
             id                 = trade_id,
             symbol             = signal.symbol,
@@ -111,7 +120,7 @@ class PortfolioTracker:
             capital_at_risk    = signal.capital_at_risk,
             entry_time         = datetime.now(tz=IST),
             hold_type          = getattr(signal, "hold_type", "intraday"),
-            options_meta       = signal.options_meta or {},
+            options_meta       = opts_meta,
             original_stop_loss = signal.stop_loss,   # frozen at entry — never updated
             monitor_symbol     = getattr(signal, "monitor_symbol", "") or signal.symbol,
         )
