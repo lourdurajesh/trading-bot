@@ -149,85 +149,121 @@ def create_views(conn) -> None:
         conn.execute(_view_sql(seg))
 
 
-def init() -> None:
-    """Ensure the ledger table + compatibility views exist. Safe to call repeatedly and
-    from every engine's startup. Only creates a view when no real table shadows the name
-    (so a not-yet-migrated DB is left untouched until the migration runs)."""
-    with sqlite3.connect(DB_PATH) as conn:
-        _create_ledger(conn)
-        for seg, schema in SEGMENT_SCHEMA.items():
-            name = schema["view"]
-            existing = conn.execute(
-                "SELECT type FROM sqlite_master WHERE name=?", (name,)
+# ── Ledger instance (DB-path injectable) ──────────────────────────
+
+class Ledger:
+    """Trades store bound to ONE DB file.
+
+    The default instance (`_default`) uses `settings.DB_PATH` — the live `trades.db` every
+    engine reads today, so the module-level functions below behave byte-identically to before.
+    A second runtime (the online forward-test harness, slice 6) constructs `Ledger("db/learning.db")`
+    so its high-volume bake-off trades live in an isolated file — same code, no schema fork,
+    no write contention with the live book. Asset/segment differences stay in DATA (the JSON
+    payload + per-segment SEGMENT_SCHEMA), never in forked store logic.
+    """
+
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+
+    def init(self) -> None:
+        """Ensure the ledger table + compatibility views exist. Safe to call repeatedly and
+        from every engine's startup. Only creates a view when no real table shadows the name
+        (so a not-yet-migrated DB is left untouched until the migration runs)."""
+        with sqlite3.connect(self.db_path) as conn:
+            _create_ledger(conn)
+            for seg, schema in SEGMENT_SCHEMA.items():
+                name = schema["view"]
+                existing = conn.execute(
+                    "SELECT type FROM sqlite_master WHERE name=?", (name,)
+                ).fetchone()
+                if existing is None:
+                    conn.execute(_view_sql(seg))       # fresh DB → create the view
+                # if a real TABLE still shadows the name, the migration hasn't run yet —
+                # leave it; engines keep reading the table until cutover.
+
+    # ── Writes (the one write path) ──────────────────────────────
+    def record(self, segment: str, row: dict) -> None:
+        """Insert or replace a trade. `row` is the engine's column-named dict; missing columns
+        are defaulted. Promotes the indexed columns out of the payload."""
+        seg = _segment(segment)
+        full = _full_row(seg, row)
+        payload = json.dumps(full)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                f"INSERT OR REPLACE INTO {LEDGER_TABLE} "
+                f"(id, segment, status, symbol, strategy, entry_time, exit_time, payload) "
+                f"VALUES (?,?,?,?,?,?,?,?)",
+                (full.get("id"), seg, full.get("status"), full.get("symbol"),
+                 full.get("strategy"), full.get("entry_time"), full.get("exit_time"), payload),
+            )
+
+    def update_fields(self, segment: str, trade_id: str, **fields) -> None:
+        """Read-modify-write: merge `fields` into the stored payload for (segment, id) and
+        refresh any promoted columns that changed. Replaces the old per-table UPDATE … SET …
+        statements (close, trailing-stop update, metadata update)."""
+        seg = _segment(segment)
+        clean = {k: _sanitize(v) for k, v in fields.items()}
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute(
+                f"SELECT payload FROM {LEDGER_TABLE} WHERE segment=? AND id=?", (seg, trade_id)
             ).fetchone()
-            if existing is None:
-                conn.execute(_view_sql(seg))           # fresh DB → create the view
-            # if a real TABLE still shadows the name, the migration hasn't run yet —
-            # leave it; engines keep reading the table until cutover.
+            if cur is None:
+                return
+            data = json.loads(cur[0])
+            data.update(clean)
+            data = _full_row(seg, data)            # keep full shape + sanitise
+            conn.execute(
+                f"UPDATE {LEDGER_TABLE} SET status=?, symbol=?, strategy=?, entry_time=?, "
+                f"exit_time=?, payload=? WHERE segment=? AND id=?",
+                (data.get("status"), data.get("symbol"), data.get("strategy"),
+                 data.get("entry_time"), data.get("exit_time"), json.dumps(data), seg, trade_id),
+            )
+
+    # ── Reads (for backfill / verification / future direct use) ──
+    def get_rows(self, segment: str, status: Optional[str] = None, limit: Optional[int] = None) -> list:
+        """Full row dicts for a segment, newest first — identical keys to the old `SELECT *`."""
+        seg = _segment(segment)
+        q = f"SELECT payload FROM {LEDGER_TABLE} WHERE segment=?"
+        params: list = [seg]
+        if status:
+            q += " AND status=?"; params.append(status.upper())
+        q += " ORDER BY entry_time DESC"
+        if limit is not None:
+            q += " LIMIT ?"; params.append(int(limit))
+        with sqlite3.connect(self.db_path) as conn:
+            return [json.loads(r[0]) for r in conn.execute(q, params)]
+
+    def count(self, segment: str, status: Optional[str] = None) -> int:
+        seg = _segment(segment)
+        q = f"SELECT COUNT(*) FROM {LEDGER_TABLE} WHERE segment=?"
+        params: list = [seg]
+        if status:
+            q += " AND status=?"; params.append(status.upper())
+        with sqlite3.connect(self.db_path) as conn:
+            return conn.execute(q, params).fetchone()[0]
 
 
-# ── Writes (the one write path) ───────────────────────────────────
+# ── Default instance + module-level delegators (back-compat) ──────
+# Existing callers use `ledger.record(...)`, `ledger.init()`, etc. — unchanged. They route to
+# the default instance bound to the live DB_PATH.
+_default = Ledger(DB_PATH)
+
+
+def init() -> None:
+    _default.init()
+
 
 def record(segment: str, row: dict) -> None:
-    """Insert or replace a trade. `row` is the engine's column-named dict; missing columns
-    are defaulted. Promotes the indexed columns out of the payload."""
-    seg = _segment(segment)
-    full = _full_row(seg, row)
-    payload = json.dumps(full)
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            f"INSERT OR REPLACE INTO {LEDGER_TABLE} "
-            f"(id, segment, status, symbol, strategy, entry_time, exit_time, payload) "
-            f"VALUES (?,?,?,?,?,?,?,?)",
-            (full.get("id"), seg, full.get("status"), full.get("symbol"),
-             full.get("strategy"), full.get("entry_time"), full.get("exit_time"), payload),
-        )
+    _default.record(segment, row)
 
 
 def update_fields(segment: str, trade_id: str, **fields) -> None:
-    """Read-modify-write: merge `fields` into the stored payload for (segment, id) and
-    refresh any promoted columns that changed. Replaces the old per-table UPDATE … SET …
-    statements (close, trailing-stop update, metadata update)."""
-    seg = _segment(segment)
-    clean = {k: _sanitize(v) for k, v in fields.items()}
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.execute(
-            f"SELECT payload FROM {LEDGER_TABLE} WHERE segment=? AND id=?", (seg, trade_id)
-        ).fetchone()
-        if cur is None:
-            return
-        data = json.loads(cur[0])
-        data.update(clean)
-        data = _full_row(seg, data)            # keep full shape + sanitise
-        conn.execute(
-            f"UPDATE {LEDGER_TABLE} SET status=?, symbol=?, strategy=?, entry_time=?, "
-            f"exit_time=?, payload=? WHERE segment=? AND id=?",
-            (data.get("status"), data.get("symbol"), data.get("strategy"),
-             data.get("entry_time"), data.get("exit_time"), json.dumps(data), seg, trade_id),
-        )
+    _default.update_fields(segment, trade_id, **fields)
 
-
-# ── Reads (for backfill / verification / future direct use) ───────
 
 def get_rows(segment: str, status: Optional[str] = None, limit: Optional[int] = None) -> list:
-    """Full row dicts for a segment, newest first — identical keys to the old `SELECT *`."""
-    seg = _segment(segment)
-    q = f"SELECT payload FROM {LEDGER_TABLE} WHERE segment=?"
-    params: list = [seg]
-    if status:
-        q += " AND status=?"; params.append(status.upper())
-    q += " ORDER BY entry_time DESC"
-    if limit is not None:
-        q += " LIMIT ?"; params.append(int(limit))
-    with sqlite3.connect(DB_PATH) as conn:
-        return [json.loads(r[0]) for r in conn.execute(q, params)]
+    return _default.get_rows(segment, status, limit)
 
 
 def count(segment: str, status: Optional[str] = None) -> int:
-    seg = _segment(segment)
-    q = f"SELECT COUNT(*) FROM {LEDGER_TABLE} WHERE segment=?"
-    params: list = [seg]
-    if status:
-        q += " AND status=?"; params.append(status.upper())
-    with sqlite3.connect(DB_PATH) as conn:
-        return conn.execute(q, params).fetchone()[0]
+    return _default.count(segment, status)
