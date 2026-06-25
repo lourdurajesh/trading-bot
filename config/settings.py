@@ -55,6 +55,12 @@ RISK_PER_TRADE_PCT    = float(os.getenv("RISK_PER_TRADE_PCT", "1.5")) # % of cap
 LIVE_STRATEGIES       = os.getenv("LIVE_STRATEGIES", "")
 MAX_OPEN_POSITIONS    = int(os.getenv("MAX_OPEN_POSITIONS", "10"))
 MAX_PORTFOLIO_HEAT    = float(os.getenv("MAX_PORTFOLIO_HEAT", "60"))  # % — no new trades beyond this
+# Gross exposure cap — total deployed notional may not exceed this % of capital.
+# 100 = 1× capital = NO leverage (intraday leverage is on hold). Stops the book stacking
+# positions far beyond available capital (the "buys without limit" bug).
+MAX_GROSS_EXPOSURE_PCT = float(os.getenv("MAX_GROSS_EXPOSURE_PCT", "100"))
+# Per-position cap — a single position's notional may not exceed this % of capital.
+MAX_POSITION_PCT       = float(os.getenv("MAX_POSITION_PCT", "25"))
 
 # Kill switch — halts all trading for the day if daily loss exceeds this %
 DAILY_LOSS_LIMIT_PCT  = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "3.0"))

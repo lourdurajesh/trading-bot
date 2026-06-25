@@ -80,8 +80,10 @@ def lots_capped(requested: int, cost_per_unit: float, cap_budget: float,
 
 
 def shares_to_fit(entry: float, stop: float, risk_budget: float,
-                  *, min_risk_frac: float = 0.001) -> tuple[int, float, str]:
-    """Size-to-fit a share-based (equity / futures) position by fixed-fractional risk.
+                  *, cap_budget: Optional[float] = None,
+                  min_risk_frac: float = 0.001) -> tuple[int, float, str]:
+    """Size-to-fit a share-based (equity / futures) position by fixed-fractional risk,
+    then clamp to an exposure budget (the share analogue of lots_to_fit's cap_budget).
 
     shares = risk_budget / risk_per_share, where risk_per_share = |entry − stop|.
 
@@ -99,6 +101,8 @@ def shares_to_fit(entry: float, stop: float, risk_budget: float,
         return 0, 0.0, (f"stop loss too tight (risk ₹{risk_per_share:.4f} "
                         f"< min ₹{min_risk:.4f})")
     shares = int(risk_budget / risk_per_share)
+    if cap_budget is not None and entry > 0:
+        shares = min(shares, int(cap_budget / entry))   # clamp to exposure/buying-power budget
     return shares, round(shares * risk_per_share, 2), ""
 
 

@@ -25,9 +25,11 @@ IST = ZoneInfo("Asia/Kolkata")
 
 from config.settings import (
     DAILY_LOSS_LIMIT_PCT,
+    MAX_GROSS_EXPOSURE_PCT,
     MAX_OPEN_POSITIONS,
     MAX_OPTIONS_ALLOCATION_PCT,
     MAX_PORTFOLIO_HEAT,
+    MAX_POSITION_PCT,
     MIN_RISK_REWARD,
     MIN_RISK_REWARD_OPTIONS,
     RISK_PER_TRADE_PCT,
@@ -146,10 +148,15 @@ class RiskManager:
             signal._approved_lots = approved_lots
 
         # ── 9. Position sizing ────────────────────────────────────
-        position_size, capital_at_risk = self._calculate_size(signal, capital)
+        # Deployed notional across open positions (entry × size) — caps total exposure to
+        # MAX_GROSS_EXPOSURE_PCT of capital (1× = no leverage). This is the gate that stops
+        # the book stacking positions far beyond available capital.
+        open_notional = sum(float(p.get("entry_price", 0)) * float(p.get("position_size", 0))
+                            for p in open_positions)
+        position_size, capital_at_risk = self._calculate_size(signal, capital, open_notional)
 
         if position_size <= 0:
-            return RiskDecision(False, "Position size calculated as zero — price or risk too large")
+            return RiskDecision(False, "Position size calculated as zero — exposure cap or risk too large")
 
         logger.info(
             f"[RiskManager] APPROVED {signal.symbol} | "
@@ -223,23 +230,38 @@ class RiskManager:
     # INTERNAL
     # ─────────────────────────────────────────────────────────────
 
-    def _calculate_size(self, signal: Signal, capital: float) -> tuple[int, float]:
+    def _calculate_size(self, signal: Signal, capital: float,
+                        open_notional: float = 0.0) -> tuple[int, float]:
         """
         Position sizing — equity vs options routed separately.
 
-        Equity: shares = risk_budget / risk_per_share
+        Equity: shares = risk_budget / risk_per_share, clamped to the exposure cap.
         Options: lots already computed by options_risk_gate.check() and stored
                  on signal._approved_lots; position_size = lots × lot_size
+
+        open_notional: deployed notional across current open positions, used to enforce
+        the gross-exposure cap (1× capital = no leverage) so the book can't over-deploy.
         """
         if signal.signal_type == SignalType.OPTIONS:
             return self._calculate_options_size(signal)
 
         # ── Equity / futures sizing ───────────────────────────────
-        # Fixed-fractional sizing + tight-stop guard live in the shared sizer so the
-        # rule is identical wherever equity is sized.
+        # Fixed-fractional sizing + tight-stop guard live in the shared sizer so the rule
+        # is identical wherever equity is sized. cap_budget enforces TWO limits: a single
+        # position ≤ MAX_POSITION_PCT of capital, AND total deployed ≤ MAX_GROSS_EXPOSURE_PCT
+        # (the tighter of the per-position cap and the remaining gross headroom).
         from execution.sizing import shares_to_fit
-        risk_amount        = capital * (RISK_PER_TRADE_PCT / 100)
-        shares, actual_risk, reason = shares_to_fit(signal.entry, signal.stop_loss, risk_amount)
+        risk_amount = capital * (RISK_PER_TRADE_PCT / 100)
+        gross_cap   = capital * (MAX_GROSS_EXPOSURE_PCT / 100)
+        headroom    = max(0.0, gross_cap - open_notional)
+        per_pos_cap = capital * (MAX_POSITION_PCT / 100)
+        cap_budget  = min(per_pos_cap, headroom)
+        if cap_budget <= 0:
+            logger.warning(f"[RiskManager] {signal.symbol}: gross exposure cap reached "
+                           f"(deployed ₹{open_notional:,.0f} ≥ cap ₹{gross_cap:,.0f}) — rejecting")
+            return 0, 0.0
+        shares, actual_risk, reason = shares_to_fit(signal.entry, signal.stop_loss,
+                                                    risk_amount, cap_budget=cap_budget)
         if reason:
             logger.warning(f"[RiskManager] {signal.symbol}: {reason} — rejecting")
             return 0, 0.0
