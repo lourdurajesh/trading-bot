@@ -361,47 +361,14 @@ class PortfolioTracker:
 
     def _init_db(self) -> None:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        # Trades live in the unified ledger (execution/ledger.py, segment "live"), surfaced via
+        # the `trades` compatibility VIEW so every reader (dashboard, analysis, scripts) is
+        # unchanged. ledger.init() creates the ledger table + view, and leaves a not-yet-migrated
+        # `trades` TABLE untouched until scripts/migrate_unified_ledger.py runs (deploy step).
+        # Writes go through ledger.record() (see _save_position). param_changes stays a plain table.
+        from execution import ledger
+        ledger.init()
         with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS trades (
-                    id                  TEXT PRIMARY KEY,
-                    symbol              TEXT,
-                    strategy            TEXT,
-                    direction           TEXT,
-                    signal_type         TEXT,
-                    entry_price         REAL,
-                    exit_price          REAL,
-                    stop_loss           REAL,
-                    target_1            REAL,
-                    target_2            REAL DEFAULT 0,
-                    position_size       INTEGER,
-                    capital_at_risk     REAL,
-                    realised_pnl        REAL,
-                    status              TEXT,
-                    exit_reason         TEXT,
-                    entry_time          TEXT,
-                    exit_time           TEXT,
-                    hold_type           TEXT DEFAULT 'intraday',
-                    original_stop_loss  REAL DEFAULT 0,
-                    sl_order_id         TEXT DEFAULT '',
-                    options_meta        TEXT DEFAULT '{}'
-                )
-            """)
-            # Safe migrations for pre-existing tables
-            for col, typedef in [
-                ("target_2",           "REAL DEFAULT 0"),
-                ("signal_type",        "TEXT DEFAULT 'EQUITY'"),
-                ("hold_type",          "TEXT DEFAULT 'intraday'"),
-                ("original_stop_loss", "REAL DEFAULT 0"),
-                ("sl_order_id",        "TEXT DEFAULT ''"),
-                ("options_meta",       "TEXT DEFAULT '{}'"),
-                ("t1_hit",             "INTEGER DEFAULT 0"),
-                ("monitor_symbol",     "TEXT DEFAULT ''"),
-            ]:
-                try:
-                    conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typedef}")
-                except Exception:
-                    pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS param_changes (
                     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -416,28 +383,35 @@ class PortfolioTracker:
         logger.info(f"[Portfolio] Database initialised at {DB_PATH}")
 
     def _save_position(self, pos: Position) -> None:
+        """Upsert the trade into the unified ledger (segment "live"). The `trades` compat VIEW
+        projects the payload back to the original columns, so all readers are unchanged."""
         import json
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
-                INSERT OR REPLACE INTO trades
-                (id, symbol, strategy, direction, signal_type, hold_type, entry_price,
-                 exit_price, stop_loss, target_1, target_2, position_size, capital_at_risk,
-                 realised_pnl, status, exit_reason, entry_time, exit_time,
-                 original_stop_loss, sl_order_id, options_meta, t1_hit, monitor_symbol)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                pos.id, pos.symbol, pos.strategy, pos.direction, pos.signal_type, pos.hold_type,
-                pos.entry_price, pos.exit_price, pos.stop_loss, pos.target_1, pos.target_2,
-                pos.position_size, pos.capital_at_risk, pos.realised_pnl,
-                pos.status, pos.exit_reason,
-                pos.entry_time.isoformat() if pos.entry_time else None,
-                pos.exit_time.isoformat()  if pos.exit_time  else None,
-                pos.original_stop_loss,
-                pos.sl_order_id or "",
-                json.dumps(pos.options_meta) if pos.options_meta else "{}",
-                1 if pos.t1_hit else 0,
-                pos.monitor_symbol or "",
-            ))
+        from execution import ledger
+        ledger.record("live", {
+            "id":                 pos.id,
+            "symbol":             pos.symbol,
+            "strategy":           pos.strategy,
+            "direction":          pos.direction,
+            "signal_type":        pos.signal_type,
+            "entry_price":        pos.entry_price,
+            "exit_price":         pos.exit_price,
+            "stop_loss":          pos.stop_loss,
+            "target_1":           pos.target_1,
+            "position_size":      pos.position_size,
+            "capital_at_risk":    pos.capital_at_risk,
+            "realised_pnl":       pos.realised_pnl,
+            "status":             pos.status,
+            "exit_reason":        pos.exit_reason,
+            "entry_time":         pos.entry_time.isoformat() if pos.entry_time else None,
+            "exit_time":          pos.exit_time.isoformat()  if pos.exit_time  else None,
+            "target_2":           pos.target_2,
+            "hold_type":          pos.hold_type,
+            "original_stop_loss": pos.original_stop_loss,
+            "sl_order_id":        pos.sl_order_id or "",
+            "options_meta":       json.dumps(pos.options_meta) if pos.options_meta else "{}",
+            "t1_hit":             1 if pos.t1_hit else 0,
+            "monitor_symbol":     pos.monitor_symbol or "",
+        })
 
     def _update_position_db(self, pos: Position) -> None:
         self._save_position(pos)

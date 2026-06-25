@@ -78,6 +78,26 @@ SEGMENT_SCHEMA: dict[str, dict] = {
             ("exit_reason", None), ("peak_spot", None), ("stop_spot", None),
         ],
     },
+    # Production book (PAPER/LIVE) — the portfolio_tracker `trades` table. Column order MUST
+    # match the live CREATE TABLE + ALTER order so the `trades` compat VIEW's SELECT * is
+    # positionally identical and every existing reader (dashboard _collect_book_trades,
+    # analysis, scripts) is unchanged. Writes cut over to record()/update_fields() (slice 1b).
+    "live": {
+        "view": "trades",
+        # Order MUST match the LIVE physical table (verified via PRAGMA): target_2 was
+        # ALTER-added on the prod DB so it sits AFTER exit_time, not mid-table. Matching the
+        # live order keeps the `trades` view's SELECT * positionally identical for migration.
+        "columns": [
+            ("id", None), ("symbol", None), ("strategy", None), ("direction", None),
+            ("signal_type", "EQUITY"), ("entry_price", None), ("exit_price", 0),
+            ("stop_loss", None), ("target_1", None),
+            ("position_size", None), ("capital_at_risk", None), ("realised_pnl", 0),
+            ("status", "OPEN"), ("exit_reason", ""), ("entry_time", None), ("exit_time", None),
+            ("target_2", 0),
+            ("hold_type", "intraday"), ("original_stop_loss", 0), ("sl_order_id", ""),
+            ("options_meta", "{}"), ("t1_hit", 0), ("monitor_symbol", ""),
+        ],
+    },
 }
 
 
