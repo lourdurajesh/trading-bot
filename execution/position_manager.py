@@ -54,8 +54,17 @@ class PositionManager:
         position_manager.check_all()   # called by fast loop every 5s
     """
 
-    def __init__(self):
+    def __init__(self, tracker=None, store_=None, book: str = "PAPER"):
+        # Per-book instantiable (library-safe). The portfolio engine uses the default
+        # globals; a second runtime (the forward-test harness, slice 6) injects its own
+        # tracker/store/book so one exit engine serves multiple books without globals.
+        # NOTE: internal exit state is symbol-keyed today (correct for the portfolio book —
+        # one position/symbol). The symbol→trade-id re-key lands with slice 6, paired with
+        # the harness that actually needs multiple positions per symbol + its test.
         self._lock              = threading.Lock()
+        self._book              = book
+        self._tracker           = tracker if tracker is not None else portfolio_tracker
+        self._store             = store_  if store_  is not None else store
         self._breakeven_applied: set[str] = set()   # symbols where SL moved to BE
         self._partial_exited:    set[str] = set()   # symbols where 50% already exited
         self._trailing_stops:    dict[str, float] = {}  # symbol → current trail SL
@@ -66,7 +75,7 @@ class PositionManager:
         Check all open positions against current prices.
         Called every 5 seconds from main.py fast loop.
         """
-        positions = portfolio_tracker.get_open_positions()
+        positions = self._tracker.get_open_positions()
         if not positions:
             return
 
@@ -96,7 +105,7 @@ class PositionManager:
 
         # ── OPTIONS positions — separate exit management ──────────
         if signal_type == "OPTIONS":
-            pos = portfolio_tracker.get_position(symbol)
+            pos = self._tracker.get_position(symbol)
             opt_size = pos.position_size if pos else 0
             self._check_options_position(
                 symbol, direction, entry, stop, target_1,
@@ -104,12 +113,12 @@ class PositionManager:
             )
             return
 
-        ltp = store.get_ltp(symbol)
+        ltp = self._store.get_ltp(symbol)
         if not ltp or ltp <= 0:
             return
 
         # Always use live position size from tracker (not stale pos_dict snapshot)
-        pos = portfolio_tracker.get_position(symbol)
+        pos = self._tracker.get_position(symbol)
         if not pos or pos.position_size <= 0:
             return
         remaining_size = pos.position_size
@@ -167,7 +176,7 @@ class PositionManager:
         if direction == "LONG":
             # Use original_stop_loss for risk so trailing continues after breakeven move;
             # entry - stop = 0 once SL is at breakeven, which would freeze trailing (Bug 15).
-            pos_obj = portfolio_tracker.get_position(symbol)
+            pos_obj = self._tracker.get_position(symbol)
             original_sl = (pos_obj.original_stop_loss
                            if pos_obj and pos_obj.original_stop_loss else stop)
             risk = entry - original_sl
@@ -212,7 +221,7 @@ class PositionManager:
                             f"ltp={ltp:.2f} >= t1={target_1:.2f} — "
                             f"exiting {partial_size} shares")
                 self._partial_exit(symbol, partial_size, "TARGET1", ltp)
-                portfolio_tracker.mark_t1_hit(symbol)   # persist so restart knows T1 fired
+                self._tracker.mark_t1_hit(symbol)   # persist so restart knows T1 fired
                 with self._lock:
                     self._partial_exited.add(symbol)
                     self._dynamic_target_r[symbol] = DYNAMIC_TARGET_START_R
@@ -234,7 +243,7 @@ class PositionManager:
 
         # ── 4. SHORT position management ──────────────────────────
         elif direction == "SHORT":
-            pos_obj = portfolio_tracker.get_position(symbol)
+            pos_obj = self._tracker.get_position(symbol)
             original_sl = (pos_obj.original_stop_loss
                            if pos_obj and pos_obj.original_stop_loss else stop)
             risk = original_sl - entry   # Bug 15: use original SL, not current (moved) stop
@@ -276,7 +285,7 @@ class PositionManager:
                 partial_size = max(1, int(remaining_size * PARTIAL_EXIT_PCT))
                 logger.info(f"[PositionManager] T1 HIT SHORT {symbol}")
                 self._partial_exit(symbol, partial_size, "TARGET1", ltp)
-                portfolio_tracker.mark_t1_hit(symbol)   # persist so restart knows T1 fired
+                self._tracker.mark_t1_hit(symbol)   # persist so restart knows T1 fired
                 with self._lock:
                     self._partial_exited.add(symbol)
                     self._dynamic_target_r[symbol] = DYNAMIC_TARGET_START_R
@@ -345,7 +354,7 @@ class PositionManager:
         # Must run BEFORE the LTP check so EOD exits fire even when tick data
         # is temporarily unavailable (e.g. WS reconnect gap, subscription delay).
         if now.time() >= EOD_EXIT_TIME:
-            opt_pos = portfolio_tracker.get_position(symbol)
+            opt_pos = self._tracker.get_position(symbol)
             if opt_pos and opt_pos.hold_type == "swing":
                 return
             logger.info(f"[PositionManager] EOD OPTIONS exit: {symbol}")
@@ -407,14 +416,14 @@ class PositionManager:
 
             if combine == "sum":
                 syms = options_meta.get("monitor_symbols", [])
-                ltps = [store.get_ltp(s) for s in syms if s]
+                ltps = [self._store.get_ltp(s) for s in syms if s]
                 valid = [float(v) for v in ltps if v and v > 0]
                 return sum(valid) if valid and len(valid) == len(syms) else None
             else:
                 monitor_sym = pos_dict.get("monitor_symbol") or ""
                 if not monitor_sym:
                     return None
-                ltp = store.get_ltp(monitor_sym)
+                ltp = self._store.get_ltp(monitor_sym)
                 return float(ltp) if ltp and ltp > 0 else None
         except Exception:
             return None
@@ -428,7 +437,7 @@ class PositionManager:
         Routes to paper engine in paper mode, else Fyers NFO.
         """
 
-        pos = portfolio_tracker.get_position(symbol)
+        pos = self._tracker.get_position(symbol)
         if not pos:
             logger.warning(f"[PositionManager] Options exit: no position found for {symbol}")
             return
@@ -460,7 +469,7 @@ class PositionManager:
 
         if order_id:
             # exit_price (option premium) already resolved above — reuse it.
-            closed = portfolio_tracker.close_position(symbol, exit_price, reason)
+            closed = self._tracker.close_position(symbol, exit_price, reason)
             if closed:
                 # Notify options risk gate of the P&L
                 try:
@@ -515,7 +524,7 @@ class PositionManager:
     def _exit_position(self, symbol: str, size: int, reason: str, price: float) -> None:
         """Full exit of a position."""
 
-        pos = portfolio_tracker.get_position(symbol)
+        pos = self._tracker.get_position(symbol)
         if not pos:
             logger.warning(f"[PositionManager] Exit called but no position found: {symbol}")
             return
@@ -546,11 +555,11 @@ class PositionManager:
 
         # Mark PENDING_CLOSE BEFORE placing the order so that a crash between
         # the broker call and close_position() is detectable on restart (Bug 1).
-        portfolio_tracker.set_pending_close(symbol)
+        self._tracker.set_pending_close(symbol)
 
         if order_id:
             # Close in portfolio tracker
-            closed = portfolio_tracker.close_position(symbol, price, reason)
+            closed = self._tracker.close_position(symbol, price, reason)
             if closed:
                 alert_service.trade_closed(symbol, closed.realised_pnl, reason)
                 self._apply_exit_cooldown(symbol, reason)
@@ -563,10 +572,10 @@ class PositionManager:
                 self._dynamic_target_r.pop(symbol, None)
         else:
             # Revert PENDING_CLOSE → OPEN so position monitoring continues
-            pos = portfolio_tracker.get_position(symbol)
+            pos = self._tracker.get_position(symbol)
             if pos:
                 pos.status = "OPEN"
-                portfolio_tracker._update_position_db(pos)
+                self._tracker._update_position_db(pos)
             logger.error(f"[PositionManager] EXIT ORDER FAILED for {symbol} — "
                          f"MANUAL INTERVENTION REQUIRED")
             alert_service.info(
@@ -578,7 +587,7 @@ class PositionManager:
     def _partial_exit(self, symbol: str, size: int, reason: str, price: float) -> None:
         """Exit part of a position."""
 
-        pos = portfolio_tracker.get_position(symbol)
+        pos = self._tracker.get_position(symbol)
         if not pos:
             return
 
@@ -607,7 +616,7 @@ class PositionManager:
         if order_id:
             # Persist reduced size to DB immediately so restart sees correct qty (Bug 5)
             new_size = pos.position_size - size
-            portfolio_tracker.update_position_size(symbol, new_size)
+            self._tracker.update_position_size(symbol, new_size)
             pos.position_size = new_size
 
             partial_pnl = (price - pos.entry_price) * size
@@ -625,7 +634,7 @@ class PositionManager:
     def _move_stop_to_breakeven(self, symbol: str, entry_price: float) -> None:
         """Move stop loss to breakeven (entry price)."""
         self._trailing_stops[symbol] = entry_price
-        portfolio_tracker.update_stop_loss(symbol, entry_price)
+        self._tracker.update_stop_loss(symbol, entry_price)
         logger.info(f"[PositionManager] SL moved to breakeven: "
                     f"{symbol} → ₹{entry_price:.2f}")
 
@@ -649,13 +658,13 @@ class PositionManager:
         # Only move stop in profitable direction (ratchet — never move backward)
         if direction == "LONG" and new_sl > current_sl:
             self._trailing_stops[symbol] = round(new_sl, 2)
-            portfolio_tracker.update_stop_loss(symbol, new_sl)
+            self._tracker.update_stop_loss(symbol, new_sl)
             logger.info(f"[PositionManager] Trail SL updated: {symbol} → ₹{new_sl:.2f}")
             self._update_broker_sl(symbol, new_sl)
 
         elif direction == "SHORT" and (current_sl == 0 or new_sl < current_sl):
             self._trailing_stops[symbol] = round(new_sl, 2)
-            portfolio_tracker.update_stop_loss(symbol, new_sl)
+            self._tracker.update_stop_loss(symbol, new_sl)
             logger.info(f"[PositionManager] Trail SL updated SHORT: {symbol} → ₹{new_sl:.2f}")
             self._update_broker_sl(symbol, new_sl)
 
@@ -669,7 +678,7 @@ class PositionManager:
         to compute risk, because if SL was moved to breakeven, stop_loss == entry,
         making risk = 0 and causing early return without restoring state (Bug 6).
         """
-        pos = portfolio_tracker.get_position(symbol)
+        pos = self._tracker.get_position(symbol)
         if not pos:
             return
 
@@ -759,7 +768,7 @@ class PositionManager:
             return
         try:
             from execution.fyers_broker import fyers_broker
-            pos = portfolio_tracker.get_position(symbol)
+            pos = self._tracker.get_position(symbol)
             if not pos:
                 return
             remaining_size = pos.position_size
@@ -786,7 +795,7 @@ class PositionManager:
                 product    = product,
             )
             if new_sl_id:
-                portfolio_tracker.update_sl_order_id(symbol, new_sl_id)
+                self._tracker.update_sl_order_id(symbol, new_sl_id)
                 logger.debug(f"[PositionManager] New SL order {new_sl_id} @ ₹{new_sl:.2f} for {symbol}")
         except Exception as e:
             logger.warning(f"[PositionManager] Broker SL update failed (non-fatal): {e}")
