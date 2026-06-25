@@ -30,7 +30,20 @@ LEARNING = "LEARNING"
 
 
 def _live_strategy_set() -> tuple:
-    return tuple(s.strip() for s in (LIVE_STRATEGIES or "").split(",") if s.strip())
+    """Strategies the LIVE/PAPER book trades. Priority:
+      1. LIVE_STRATEGIES env (explicit operator override), if set;
+      2. else the promotion gate — strategies whose stage == 'live' (settable from the
+         dashboard). Default stage is 'live', so with no env and no demotions this is the
+         whole catalog == today's 'all enabled strategies trade' behaviour (non-breaking).
+    """
+    env = tuple(s.strip() for s in (LIVE_STRATEGIES or "").split(",") if s.strip())
+    if env:
+        return env
+    try:
+        from config.strategy_toggles import live_stage_set
+        return live_stage_set()
+    except Exception:
+        return ()
 
 
 @dataclass(frozen=True)

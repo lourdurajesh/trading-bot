@@ -2046,6 +2046,21 @@ def set_strategy_enabled(name: str, enabled: str, _: None = Depends(_require_api
         return {"error": str(e)}
 
 
+@app.post("/strategies/{name}/stage/{stage_value}")
+def set_strategy_stage(name: str, stage_value: str, _: None = Depends(_require_api_key)):
+    """Set a strategy's promotion stage (candidate|forward_test|live) — the human approval
+    gate (Spec principle 6). Only 'live'-stage strategies trade the LIVE/PAPER book; others
+    run only in the forward-test harness. Single source: config/strategy_toggles."""
+    try:
+        from config.strategy_toggles import set_stage, stage as _stage
+        set_stage(name, stage_value)
+        return {"name": name, "stage": _stage(name), "status": "ok"}
+    except ValueError as ve:
+        return {"error": str(ve)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/config/strategies")
 def get_strategy_config():
     """

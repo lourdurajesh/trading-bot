@@ -37,7 +37,15 @@ CATALOG = {
     "RSIReversalSpread":     "MCX",
 }
 
+# Promotion stages — the human approval gate (Spec principle 6). A strategy is promoted
+# candidate → forward_test → live. Only `live`-stage strategies trade the LIVE/PAPER book
+# (the real money / its paper twin); candidate/forward_test run ONLY in the forward-test
+# harness. Default 'live' preserves today's behaviour (every enabled strategy trades the book).
+STAGES = ("candidate", "forward_test", "live")
+DEFAULT_STAGE = "live"
+
 _cache: dict | None = None
+_stage_cache: dict | None = None
 
 
 def _base(name: str) -> str:
@@ -50,7 +58,13 @@ def _base(name: str) -> str:
 
 def _ensure(conn) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS strategy_settings "
-                 "(name TEXT PRIMARY KEY, enabled INTEGER DEFAULT 1)")
+                 "(name TEXT PRIMARY KEY, enabled INTEGER DEFAULT 1, "
+                 f" stage TEXT DEFAULT '{DEFAULT_STAGE}')")
+    # Safe migration for pre-existing tables (added 'stage' in slice 7).
+    try:
+        conn.execute(f"ALTER TABLE strategy_settings ADD COLUMN stage TEXT DEFAULT '{DEFAULT_STAGE}'")
+    except Exception:
+        pass
 
 
 def _states() -> dict:
@@ -69,6 +83,22 @@ def _states() -> dict:
     return d
 
 
+def _stages() -> dict:
+    global _stage_cache
+    if _stage_cache is not None:
+        return _stage_cache
+    d = {}
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            _ensure(conn)
+            for name, stg in conn.execute("SELECT name, stage FROM strategy_settings"):
+                d[name] = stg or DEFAULT_STAGE
+    except Exception as e:
+        logger.warning(f"[strategy_toggles] stage load failed: {e}")
+    _stage_cache = d
+    return d
+
+
 def is_enabled(name: str, default: bool = True) -> bool:
     """Whether a strategy is enabled (unknown/unset → default True)."""
     return _states().get(_base(name), default)
@@ -79,7 +109,9 @@ def set_enabled(name: str, on: bool) -> None:
     try:
         with sqlite3.connect(DB_PATH) as conn:
             _ensure(conn)
-            conn.execute("INSERT OR REPLACE INTO strategy_settings (name, enabled) VALUES (?,?)",
+            # Upsert only `enabled` so a stage set earlier is preserved (no clobber).
+            conn.execute("INSERT INTO strategy_settings (name, enabled) VALUES (?,?) "
+                         "ON CONFLICT(name) DO UPDATE SET enabled=excluded.enabled",
                          (base, 1 if on else 0))
         _states()[base] = bool(on)
         logger.info(f"[strategy_toggles] {base} → {'ENABLED' if on else 'DISABLED'}")
@@ -87,11 +119,44 @@ def set_enabled(name: str, on: bool) -> None:
         logger.error(f"[strategy_toggles] set {base} failed: {e}")
 
 
+def stage(name: str, default: str = DEFAULT_STAGE) -> str:
+    """Promotion stage for a strategy (candidate | forward_test | live)."""
+    return _stages().get(_base(name), default)
+
+
+def set_stage(name: str, stage_value: str) -> None:
+    base = _base(name)
+    if stage_value not in STAGES:
+        raise ValueError(f"invalid stage '{stage_value}' — expected {STAGES}")
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            _ensure(conn)
+            # Upsert only `stage` so the enabled flag is preserved (no clobber).
+            conn.execute("INSERT INTO strategy_settings (name, stage) VALUES (?,?) "
+                         "ON CONFLICT(name) DO UPDATE SET stage=excluded.stage",
+                         (base, stage_value))
+        _stages()[base] = stage_value
+        logger.info(f"[strategy_toggles] {base} stage → {stage_value}")
+    except Exception as e:
+        logger.error(f"[strategy_toggles] set_stage {base} failed: {e}")
+
+
+def live_stage_set() -> tuple:
+    """Catalog strategies whose promotion stage == 'live' — the live/paper book's strategy
+    set (the human approval gate). Default stage is 'live', so by default this is the whole
+    catalog (== today's 'all trade' behaviour)."""
+    st = _stages()
+    return tuple(n for n in CATALOG if st.get(n, DEFAULT_STAGE) == "live")
+
+
 def all_states() -> list[dict]:
-    """Catalog with current enabled flags — for the dashboard."""
-    st = _states()
-    return [{"name": n, "segment": seg, "enabled": st.get(n, True)}
+    """Catalog with current enabled flags + promotion stage — for the dashboard."""
+    en = _states()
+    sg = _stages()
+    return [{"name": n, "segment": seg, "enabled": en.get(n, True),
+             "stage": sg.get(n, DEFAULT_STAGE)}
             for n, seg in CATALOG.items()]
 
 
-__all__ = ["is_enabled", "set_enabled", "all_states", "CATALOG"]
+__all__ = ["is_enabled", "set_enabled", "stage", "set_stage", "live_stage_set",
+           "all_states", "CATALOG", "STAGES"]
