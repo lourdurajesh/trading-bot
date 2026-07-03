@@ -125,7 +125,7 @@ class PortfolioTracker:
             monitor_symbol     = getattr(signal, "monitor_symbol", "") or signal.symbol,
         )
 
-        self._open_positions[signal.symbol] = position
+        self._open_positions[position.id] = position
         self._save_position(position)
 
         logger.info(
@@ -156,10 +156,25 @@ class PortfolioTracker:
         fill_price: float,
         reason: str = "manual",
     ) -> Optional[Position]:
-        """Record a position exit and calculate P&L."""
-        position = self._open_positions.pop(symbol, None)
-        if not position:
+        """Close the (first) open position for a symbol. Unambiguous for the live book (one
+        position/symbol); multi-position books (learning) close the exact trade via
+        close_position_by_id()."""
+        _pid = next((pid for pid, p in self._open_positions.items() if p.symbol == symbol), None)
+        if not _pid:
             logger.warning(f"[Portfolio] close_position called for {symbol} but no open position found")
+            return None
+        return self.close_position_by_id(_pid, fill_price, reason)
+
+    def close_position_by_id(
+        self,
+        trade_id: str,
+        fill_price: float,
+        reason: str = "manual",
+    ) -> Optional[Position]:
+        """Record a position exit (by trade-id — multi-position-safe) and calculate P&L."""
+        position = self._open_positions.pop(trade_id, None)
+        if not position:
+            logger.warning(f"[Portfolio] close_position_by_id: {trade_id} not open")
             return None
 
         position.exit_price  = fill_price
@@ -209,7 +224,8 @@ class PortfolioTracker:
     def get_open_positions(self) -> list[dict]:
         """Returns all open positions with live unrealised P&L."""
         result = []
-        for symbol, pos in self._open_positions.items():
+        for pos in self._open_positions.values():
+            symbol = pos.symbol
             options_meta = pos.options_meta or {}
             nfo_sym = options_meta.get("nfo_symbol") if pos.signal_type == "OPTIONS" else None
             # Display price: live LTP, else last candle close (survives market close / restart)
@@ -289,7 +305,8 @@ class PortfolioTracker:
         (e.g., crash during exit, manual broker close, option expiry).
         Returns True if a position was found and closed.
         """
-        pos = self._open_positions.pop(symbol, None)
+        _pid = next((pid for pid, p in self._open_positions.items() if p.symbol == symbol), None)
+        pos = self._open_positions.pop(_pid, None) if _pid else None
         if pos:
             nfo = (pos.options_meta or {}).get("nfo_symbol")
             ltp = store.get_ltp(nfo or symbol)
@@ -320,46 +337,56 @@ class PortfolioTracker:
         return False
 
     def has_open_position(self, symbol: str) -> bool:
-        return symbol in self._open_positions
+        return any(p.symbol == symbol for p in self._open_positions.values())
 
     def get_position(self, symbol: str) -> Optional[Position]:
-        return self._open_positions.get(symbol)
+        """First OPEN position for a symbol. Positions are keyed by trade-id so one book can
+        hold several positions per symbol (the learning bake-off runs every strategy in
+        parallel); the live book has one per symbol, so this returns that one — behaviour
+        unchanged. Exit management routes by trade-id via get_position_by_id()."""
+        return next((p for p in self._open_positions.values() if p.symbol == symbol), None)
 
-    def update_stop_loss(self, symbol: str, new_sl: float) -> None:
-        """Persist an updated stop loss (trailing or breakeven) into the Position and DB."""
-        pos = self._open_positions.get(symbol)
+    def get_position_by_id(self, trade_id: str) -> Optional[Position]:
+        """The position with this exact trade-id (the multi-position-safe lookup)."""
+        return self._open_positions.get(trade_id)
+
+    def update_stop_loss(self, trade_id: str, new_sl: float) -> None:
+        """Persist an updated stop loss (trailing or breakeven). Keyed by trade-id so it
+        targets the exact position (a book may hold several positions per symbol)."""
+        pos = self.get_position_by_id(trade_id)
         if pos:
             pos.stop_loss = round(new_sl, 2)
             self._update_position_db(pos)
 
-    def update_position_size(self, symbol: str, new_size: int) -> None:
-        """Persist reduced position size after a partial exit (Bug 5)."""
-        pos = self._open_positions.get(symbol)
+    def update_position_size(self, trade_id: str, new_size: int) -> None:
+        """Persist reduced position size after a partial exit (Bug 5). Keyed by trade-id."""
+        pos = self.get_position_by_id(trade_id)
         if pos:
             pos.position_size = new_size
             self._update_position_db(pos)
 
     def update_sl_order_id(self, symbol: str, order_id: str) -> None:
         """Record the current active SL broker order ID (Bug 2)."""
-        pos = self._open_positions.get(symbol)
+        pos = self.get_position(symbol)
         if pos:
             pos.sl_order_id = order_id
             self._update_position_db(pos)
 
-    def mark_t1_hit(self, symbol: str) -> None:
-        """Persist T1-hit flag so reconstruction after restart knows partial exit already fired."""
-        pos = self._open_positions.get(symbol)
+    def mark_t1_hit(self, trade_id: str) -> None:
+        """Persist T1-hit flag so reconstruction after restart knows partial exit already fired.
+        Keyed by trade-id (a book may hold several positions per symbol)."""
+        pos = self.get_position_by_id(trade_id)
         if pos:
             pos.t1_hit = True
             self._update_position_db(pos)
 
-    def set_pending_close(self, symbol: str) -> None:
+    def set_pending_close(self, trade_id: str) -> None:
         """
-        Mark position as PENDING_CLOSE before placing the exit order (Bug 1).
+        Mark position as PENDING_CLOSE before placing the exit order (Bug 1). Keyed by trade-id.
         If the bot crashes after the broker order is placed but before close_position()
         writes CLOSED, startup reconciliation detects PENDING_CLOSE and resolves it.
         """
-        pos = self._open_positions.get(symbol)
+        pos = self.get_position_by_id(trade_id)
         if pos:
             pos.status = "PENDING_CLOSE"
             self._update_position_db(pos)
@@ -462,7 +489,7 @@ class PortfolioTracker:
                     t1_hit             = bool(row["t1_hit"]) if "t1_hit" in row.keys() and row["t1_hit"] else False,
                     monitor_symbol     = row["monitor_symbol"] if "monitor_symbol" in row.keys() and row["monitor_symbol"] else row["symbol"],
                 )
-                self._open_positions[pos.symbol] = pos
+                self._open_positions[pos.id] = pos
 
                 if pos.status == "PENDING_CLOSE":
                     logger.warning(

@@ -105,10 +105,11 @@ class PositionManager:
 
         # ── OPTIONS positions — separate exit management ──────────
         if signal_type == "OPTIONS":
-            pos = self._tracker.get_position(symbol)
+            pos = self._tracker.get_position_by_id(pos_dict.get("id")) or self._tracker.get_position(symbol)
             opt_size = pos.position_size if pos else 0
+            opt_pid  = pos.id if pos else (pos_dict.get("id") or "")
             self._check_options_position(
-                symbol, direction, entry, stop, target_1,
+                symbol, opt_pid, direction, entry, stop, target_1,
                 opt_size, options_meta, now, pos_dict,
             )
             return
@@ -117,10 +118,14 @@ class PositionManager:
         if not ltp or ltp <= 0:
             return
 
-        # Always use live position size from tracker (not stale pos_dict snapshot)
-        pos = self._tracker.get_position(symbol)
+        # The SPECIFIC position by trade-id (a book may hold several positions per symbol —
+        # the learning bake-off). Exit state + tracker mutations are keyed by pos.id; market
+        # data / orders / logging use pos.symbol. For the live book (one position/symbol)
+        # id↔symbol is 1:1 → behaviour unchanged.
+        pos = self._tracker.get_position_by_id(pos_dict.get("id")) or self._tracker.get_position(symbol)
         if not pos or pos.position_size <= 0:
             return
+        pid = pos.id
         remaining_size = pos.position_size
 
         # Strategy-aware exit policy — the SAME shared source the learning engine uses
@@ -130,25 +135,25 @@ class PositionManager:
         is_mean_rev = (exit_style(pos.strategy) == MEAN_REVERSION)
 
         with self._lock:
-            already_partial = symbol in self._partial_exited
-            already_be      = symbol in self._breakeven_applied
+            already_partial = pid in self._partial_exited
+            already_be      = pid in self._breakeven_applied
 
         # ── Reconstruct in-memory state after a service restart ───
-        # If none of our tracking dicts know about this symbol yet, infer from
+        # If none of our tracking dicts know about this position yet, infer from
         # the persisted stop_loss: if SL has already been moved to/past breakeven
         # it means T1 was hit in a previous session.
         with self._lock:
-            untracked = (symbol not in self._partial_exited
-                         and symbol not in self._breakeven_applied
-                         and symbol not in self._trailing_stops)
+            untracked = (pid not in self._partial_exited
+                         and pid not in self._breakeven_applied
+                         and pid not in self._trailing_stops)
         if untracked:
-            self._reconstruct_state_from_position(symbol, direction, entry, stop, ltp)
+            self._reconstruct_state_from_position(pos, direction, entry, stop, ltp)
             with self._lock:
-                already_partial = symbol in self._partial_exited
-                already_be      = symbol in self._breakeven_applied
+                already_partial = pid in self._partial_exited
+                already_be      = pid in self._breakeven_applied
 
         # Use trailing stop if set, else original stop
-        effective_stop = self._trailing_stops.get(symbol, stop)
+        effective_stop = self._trailing_stops.get(pid, stop)
 
         # ── 1. EOD forced exit (3:15 PM IST) ─────────────────────
         if now.time() >= EOD_EXIT_TIME:
@@ -157,7 +162,7 @@ class PositionManager:
                 # Broker product is CNC so no auto-squareoff from exchange side either.
                 return
             logger.info(f"[PositionManager] EOD exit: {symbol} × {remaining_size}")
-            self._exit_position(symbol, remaining_size, "EOD_FORCED", ltp)
+            self._exit_position(pos, remaining_size, "EOD_FORCED", ltp)
             return
 
         # ── 2. Max holding period ─────────────────────────────────
@@ -167,7 +172,7 @@ class PositionManager:
                 days_held = (datetime.now(tz=IST) - entry_dt).days
                 if days_held >= MAX_HOLDING_DAYS:
                     logger.info(f"[PositionManager] Max hold {days_held}d: {symbol}")
-                    self._exit_position(symbol, remaining_size, "MAX_HOLD", ltp)
+                    self._exit_position(pos, remaining_size, "MAX_HOLD", ltp)
                     return
             except Exception:
                 pass
@@ -176,9 +181,7 @@ class PositionManager:
         if direction == "LONG":
             # Use original_stop_loss for risk so trailing continues after breakeven move;
             # entry - stop = 0 once SL is at breakeven, which would freeze trailing (Bug 15).
-            pos_obj = self._tracker.get_position(symbol)
-            original_sl = (pos_obj.original_stop_loss
-                           if pos_obj and pos_obj.original_stop_loss else stop)
+            original_sl = (pos.original_stop_loss if pos.original_stop_loss else stop)
             risk = entry - original_sl
             if risk <= 0:
                 return
@@ -189,7 +192,7 @@ class PositionManager:
             if ltp <= effective_stop:
                 logger.info(f"[PositionManager] STOP HIT {symbol}: "
                             f"ltp={ltp:.2f} <= sl={effective_stop:.2f}")
-                self._exit_position(symbol, remaining_size, "STOP", ltp)
+                self._exit_position(pos, remaining_size, "STOP", ltp)
                 return
 
             # Structural exit — close an in-profit trade reversing/stalling BEFORE it
@@ -197,7 +200,7 @@ class PositionManager:
             sx = self._structural_exit_reason(symbol, direction, entry)
             if sx:
                 logger.info(f"[PositionManager] STRUCTURAL EXIT {symbol}: {sx} @ {ltp:.2f}")
-                self._exit_position(symbol, remaining_size, sx, ltp)
+                self._exit_position(pos, remaining_size, sx, ltp)
                 return
 
             # Mean-reversion: hard FULL exit at the target — no partial/trail (the
@@ -206,20 +209,20 @@ class PositionManager:
                 if target_1 > 0 and ltp >= target_1:
                     logger.info(f"[PositionManager] MEAN-REV TARGET {symbol}: "
                                 f"ltp={ltp:.2f} >= t1={target_1:.2f} — full exit")
-                    self._exit_position(symbol, remaining_size, "TARGET", ltp)
+                    self._exit_position(pos, remaining_size, "TARGET", ltp)
                 return
 
             # Dynamic target — advance milestone after T1 is hit
             if already_partial:
-                self._update_dynamic_target(symbol, profit_r, entry, risk, direction)
+                self._update_dynamic_target(pid, symbol, profit_r, entry, risk, direction)
 
             # Target 2 hit — skipped when dynamic target is active (trailing stop exits instead)
             if target_2 > 0 and ltp >= target_2 and already_partial:
-                if symbol not in self._dynamic_target_r:
+                if pid not in self._dynamic_target_r:
                     logger.info(f"[PositionManager] T2 HIT {symbol}: "
                                 f"ltp={ltp:.2f} >= t2={target_2:.2f} — "
                                 f"exiting remaining {remaining_size} shares")
-                    self._exit_position(symbol, remaining_size, "TARGET2", ltp)
+                    self._exit_position(pos, remaining_size, "TARGET2", ltp)
                     return
 
             # Target 1 hit — partial exit + move SL to breakeven + activate dynamic target
@@ -228,32 +231,30 @@ class PositionManager:
                 logger.info(f"[PositionManager] T1 HIT {symbol}: "
                             f"ltp={ltp:.2f} >= t1={target_1:.2f} — "
                             f"exiting {partial_size} shares")
-                self._partial_exit(symbol, partial_size, "TARGET1", ltp)
-                self._tracker.mark_t1_hit(symbol)   # persist so restart knows T1 fired
+                self._partial_exit(pos, partial_size, "TARGET1", ltp)
+                self._tracker.mark_t1_hit(pid)   # persist so restart knows T1 fired
                 with self._lock:
-                    self._partial_exited.add(symbol)
-                    self._dynamic_target_r[symbol] = DYNAMIC_TARGET_START_R
+                    self._partial_exited.add(pid)
+                    self._dynamic_target_r[pid] = DYNAMIC_TARGET_START_R
                 if not already_be:
-                    self._move_stop_to_breakeven(symbol, entry)
+                    self._move_stop_to_breakeven(pid, symbol, entry)
                     with self._lock:
-                        self._breakeven_applied.add(symbol)
+                        self._breakeven_applied.add(pid)
                 return
 
             # Trailing stop — after 1.5R profit
             if profit_r >= TRAIL_TRIGGER:
-                self._update_trailing_stop(symbol, ltp, direction, risk)
+                self._update_trailing_stop(pid, symbol, ltp, direction, risk)
 
             # Breakeven move — after 1R profit (if T1 not yet hit)
             elif profit_r >= BREAKEVEN_TRIGGER and not already_be:
-                self._move_stop_to_breakeven(symbol, entry)
+                self._move_stop_to_breakeven(pid, symbol, entry)
                 with self._lock:
-                    self._breakeven_applied.add(symbol)
+                    self._breakeven_applied.add(pid)
 
         # ── 4. SHORT position management ──────────────────────────
         elif direction == "SHORT":
-            pos_obj = self._tracker.get_position(symbol)
-            original_sl = (pos_obj.original_stop_loss
-                           if pos_obj and pos_obj.original_stop_loss else stop)
+            original_sl = (pos.original_stop_loss if pos.original_stop_loss else stop)
             risk = original_sl - entry   # Bug 15: use original SL, not current (moved) stop
             if risk <= 0:
                 return
@@ -264,7 +265,7 @@ class PositionManager:
             if ltp >= effective_stop:
                 logger.info(f"[PositionManager] STOP HIT SHORT {symbol}: "
                             f"ltp={ltp:.2f} >= sl={effective_stop:.2f}")
-                self._exit_position(symbol, remaining_size, "STOP", ltp)
+                self._exit_position(pos, remaining_size, "STOP", ltp)
                 return
 
             # Structural exit — close an in-profit short reversing/stalling BEFORE it
@@ -272,7 +273,7 @@ class PositionManager:
             sx = self._structural_exit_reason(symbol, direction, entry)
             if sx:
                 logger.info(f"[PositionManager] STRUCTURAL EXIT SHORT {symbol}: {sx} @ {ltp:.2f}")
-                self._exit_position(symbol, remaining_size, sx, ltp)
+                self._exit_position(pos, remaining_size, sx, ltp)
                 return
 
             # Mean-reversion: hard FULL exit at the target — no partial/trail (shared policy).
@@ -280,40 +281,40 @@ class PositionManager:
                 if target_1 > 0 and ltp <= target_1:
                     logger.info(f"[PositionManager] MEAN-REV TARGET SHORT {symbol}: "
                                 f"ltp={ltp:.2f} <= t1={target_1:.2f} — full exit")
-                    self._exit_position(symbol, remaining_size, "TARGET", ltp)
+                    self._exit_position(pos, remaining_size, "TARGET", ltp)
                 return
 
             # Dynamic target — advance milestone after T1 is hit
             if already_partial:
-                self._update_dynamic_target(symbol, profit_r, entry, risk, direction)
+                self._update_dynamic_target(pid, symbol, profit_r, entry, risk, direction)
 
             # Target 2 hit — skipped when dynamic target is active (trailing stop exits instead)
             if target_2 > 0 and ltp <= target_2 and already_partial:
-                if symbol not in self._dynamic_target_r:
+                if pid not in self._dynamic_target_r:
                     logger.info(f"[PositionManager] T2 HIT SHORT {symbol}: "
                                 f"ltp={ltp:.2f} <= t2={target_2:.2f} — "
                                 f"exiting remaining {remaining_size} shares")
-                    self._exit_position(symbol, remaining_size, "TARGET2", ltp)
+                    self._exit_position(pos, remaining_size, "TARGET2", ltp)
                     return
 
             # Target 1 hit — partial exit + move SL to breakeven + activate dynamic target
             if target_1 > 0 and ltp <= target_1 and not already_partial:
                 partial_size = max(1, int(remaining_size * PARTIAL_EXIT_PCT))
                 logger.info(f"[PositionManager] T1 HIT SHORT {symbol}")
-                self._partial_exit(symbol, partial_size, "TARGET1", ltp)
-                self._tracker.mark_t1_hit(symbol)   # persist so restart knows T1 fired
+                self._partial_exit(pos, partial_size, "TARGET1", ltp)
+                self._tracker.mark_t1_hit(pid)   # persist so restart knows T1 fired
                 with self._lock:
-                    self._partial_exited.add(symbol)
-                    self._dynamic_target_r[symbol] = DYNAMIC_TARGET_START_R
+                    self._partial_exited.add(pid)
+                    self._dynamic_target_r[pid] = DYNAMIC_TARGET_START_R
                 if not already_be:
-                    self._move_stop_to_breakeven(symbol, entry)
+                    self._move_stop_to_breakeven(pid, symbol, entry)
                     with self._lock:
-                        self._breakeven_applied.add(symbol)
+                        self._breakeven_applied.add(pid)
                 return
 
             # Trailing stop for short
             if profit_r >= TRAIL_TRIGGER:
-                self._update_trailing_stop(symbol, ltp, direction, risk)
+                self._update_trailing_stop(pid, symbol, ltp, direction, risk)
 
     # ─────────────────────────────────────────────────────────────
     # STRUCTURAL EXIT — shared single source (execution/exit_signals)
@@ -343,6 +344,7 @@ class PositionManager:
     def _check_options_position(
         self,
         symbol: str,
+        pid: str,
         direction: str,
         entry: float,
         stop: float,
@@ -382,7 +384,7 @@ class PositionManager:
                         f"[PositionManager] OPTIONS DTE EXIT {symbol}: "
                         f"{dte} days to expiry — closing to avoid expiry risk"
                     )
-                    self._exit_options_position(symbol, size, "DTE_FORCED", options_meta)
+                    self._exit_options_position(symbol, pid, size, "DTE_FORCED", options_meta)
                     return
             except Exception:
                 pass
@@ -395,7 +397,7 @@ class PositionManager:
             if opt_pos and opt_pos.hold_type == "swing":
                 return
             logger.info(f"[PositionManager] EOD OPTIONS exit: {symbol}")
-            self._exit_options_position(symbol, size, "EOD_FORCED", options_meta)
+            self._exit_options_position(symbol, pid, size, "EOD_FORCED", options_meta)
             return
 
         # ── 3. Get current monitor LTP ────────────────────────────
@@ -411,7 +413,7 @@ class PositionManager:
                 h, m = map(int, time_stop_str.split(":"))
                 if now.time() >= time(h, m):
                     logger.info(f"[PositionManager] TIME STOP {symbol}: {time_stop_str} — exiting")
-                    self._exit_options_position(symbol, size, "TIME_STOP", options_meta)
+                    self._exit_options_position(symbol, pid, size, "TIME_STOP", options_meta)
                     return
             except Exception:
                 pass
@@ -427,15 +429,15 @@ class PositionManager:
                 f"{'value' if direction == 'SHORT' else 'premium'} {option_ltp:.2f} "
                 f"{'≥' if direction == 'SHORT' else '≤'} stop {stop:.2f}"
             )
-            self._exit_options_position(symbol, size, "STOP", options_meta)
+            self._exit_options_position(symbol, pid, size, "STOP", options_meta)
             return
-        if _pdec == "TARGET" and target_1 > 0 and symbol not in self._partial_exited:
+        if _pdec == "TARGET" and target_1 > 0 and pid not in self._partial_exited:
             logger.info(
                 f"[PositionManager] OPTIONS TARGET {symbol}: "
                 f"ltp {option_ltp:.2f} {'≥' if direction == 'LONG' else '≤'} target {target_1:.2f}"
             )
-            self._exit_options_position(symbol, size, "TARGET", options_meta)
-            self._partial_exited.add(symbol)
+            self._exit_options_position(symbol, pid, size, "TARGET", options_meta)
+            self._partial_exited.add(pid)
             return
 
         # ── 7. Structural exit on the UNDERLYING — shared single source ──────────
@@ -455,7 +457,7 @@ class PositionManager:
                     f"[PositionManager] OPTIONS STRUCTURAL EXIT {symbol}: {sx} "
                     f"(underlying {und_dir}, entry_spot {entry_spot:.2f})"
                 )
-                self._exit_options_position(symbol, size, sx, options_meta)
+                self._exit_options_position(symbol, pid, size, sx, options_meta)
                 return
 
     def _get_monitor_ltp(self, pos_dict: dict) -> Optional[float]:
@@ -486,18 +488,19 @@ class PositionManager:
             return None
 
     def _exit_options_position(
-        self, symbol: str, size: int, reason: str, options_meta: dict
+        self, symbol: str, pid: str, size: int, reason: str, options_meta: dict
     ) -> None:
         """
-        Exit an options position.
+        Exit a SPECIFIC options position (by trade-id — multi-position-safe).
         Closes all legs (call + put for strangles, single leg for debit spread).
         Routes to paper engine in paper mode, else Fyers NFO.
         """
 
-        pos = self._tracker.get_position(symbol)
+        pos = self._tracker.get_position_by_id(pid) or self._tracker.get_position(symbol)
         if not pos:
             logger.warning(f"[PositionManager] Options exit: no position found for {symbol}")
             return
+        pid = pos.id
 
         logger.info(
             f"[PositionManager] OPTIONS EXIT {symbol} × {size} — {reason}"
@@ -526,7 +529,7 @@ class PositionManager:
 
         if order_id:
             # exit_price (option premium) already resolved above — reuse it.
-            closed = self._tracker.close_position(symbol, exit_price, reason)
+            closed = self._tracker.close_position_by_id(pid, exit_price, reason)
             if closed:
                 # Notify options risk gate of the P&L
                 try:
@@ -538,10 +541,10 @@ class PositionManager:
                 alert_service.trade_closed(symbol, closed.realised_pnl, reason)
                 self._apply_exit_cooldown(symbol, reason)
             with self._lock:
-                self._breakeven_applied.discard(symbol)
-                self._partial_exited.discard(symbol)
-                self._trailing_stops.pop(symbol, None)
-                self._dynamic_target_r.pop(symbol, None)
+                self._breakeven_applied.discard(pid)
+                self._partial_exited.discard(pid)
+                self._trailing_stops.pop(pid, None)
+                self._dynamic_target_r.pop(pid, None)
         else:
             logger.error(
                 f"[PositionManager] OPTIONS EXIT ORDER FAILED for {symbol} — "
@@ -578,13 +581,14 @@ class PositionManager:
     # EXIT OPERATIONS
     # ─────────────────────────────────────────────────────────────
 
-    def _exit_position(self, symbol: str, size: int, reason: str, price: float) -> None:
-        """Full exit of a position."""
-
-        pos = self._tracker.get_position(symbol)
+    def _exit_position(self, pos, size: int, reason: str, price: float) -> None:
+        """Full exit of a SPECIFIC position (identified by the Position object, not symbol),
+        so a book holding several positions per symbol exits the right one. State + tracker
+        ops route by pos.id; orders/logging use pos.symbol."""
         if not pos:
-            logger.warning(f"[PositionManager] Exit called but no position found: {symbol}")
             return
+        pid    = pos.id
+        symbol = pos.symbol
 
         logger.info(f"[PositionManager] EXITING {symbol} × {size} @ {price:.2f} — {reason}")
 
@@ -612,27 +616,25 @@ class PositionManager:
 
         # Mark PENDING_CLOSE BEFORE placing the order so that a crash between
         # the broker call and close_position() is detectable on restart (Bug 1).
-        self._tracker.set_pending_close(symbol)
+        self._tracker.set_pending_close(pid)
 
         if order_id:
-            # Close in portfolio tracker
-            closed = self._tracker.close_position(symbol, price, reason)
+            # Close in portfolio tracker (by trade-id — multi-position-safe)
+            closed = self._tracker.close_position_by_id(pid, price, reason)
             if closed:
                 alert_service.trade_closed(symbol, closed.realised_pnl, reason)
                 self._apply_exit_cooldown(symbol, reason)
 
             # Clean up tracking sets (locked)
             with self._lock:
-                self._breakeven_applied.discard(symbol)
-                self._partial_exited.discard(symbol)
-                self._trailing_stops.pop(symbol, None)
-                self._dynamic_target_r.pop(symbol, None)
+                self._breakeven_applied.discard(pid)
+                self._partial_exited.discard(pid)
+                self._trailing_stops.pop(pid, None)
+                self._dynamic_target_r.pop(pid, None)
         else:
             # Revert PENDING_CLOSE → OPEN so position monitoring continues
-            pos = self._tracker.get_position(symbol)
-            if pos:
-                pos.status = "OPEN"
-                self._tracker._update_position_db(pos)
+            pos.status = "OPEN"
+            self._tracker._update_position_db(pos)
             logger.error(f"[PositionManager] EXIT ORDER FAILED for {symbol} — "
                          f"MANUAL INTERVENTION REQUIRED")
             alert_service.info(
@@ -641,12 +643,11 @@ class PositionManager:
                 f"MANUAL EXIT REQUIRED IMMEDIATELY"
             )
 
-    def _partial_exit(self, symbol: str, size: int, reason: str, price: float) -> None:
-        """Exit part of a position."""
-
-        pos = self._tracker.get_position(symbol)
+    def _partial_exit(self, pos, size: int, reason: str, price: float) -> None:
+        """Exit part of a SPECIFIC position (by Position object). update_position_size routes by id."""
         if not pos:
             return
+        symbol = pos.symbol
 
         logger.info(f"[PositionManager] PARTIAL EXIT {symbol} × {size} @ {price:.2f}")
 
@@ -673,7 +674,7 @@ class PositionManager:
         if order_id:
             # Persist reduced size to DB immediately so restart sees correct qty (Bug 5)
             new_size = pos.position_size - size
-            self._tracker.update_position_size(symbol, new_size)
+            self._tracker.update_position_size(pos.id, new_size)
             pos.position_size = new_size
 
             partial_pnl = (price - pos.entry_price) * size
@@ -688,20 +689,20 @@ class PositionManager:
         else:
             logger.error(f"[PositionManager] Partial exit order failed for {symbol}")
 
-    def _move_stop_to_breakeven(self, symbol: str, entry_price: float) -> None:
-        """Move stop loss to breakeven (entry price)."""
-        self._trailing_stops[symbol] = entry_price
-        self._tracker.update_stop_loss(symbol, entry_price)
+    def _move_stop_to_breakeven(self, pid: str, symbol: str, entry_price: float) -> None:
+        """Move stop loss to breakeven (entry price). State + tracker by pid; broker/log by symbol."""
+        self._trailing_stops[pid] = entry_price
+        self._tracker.update_stop_loss(pid, entry_price)
         logger.info(f"[PositionManager] SL moved to breakeven: "
                     f"{symbol} → ₹{entry_price:.2f}")
 
-        # Cancel old SL order on broker and place new one
+        # Cancel old SL order on broker and place new one (live only; keyed by symbol)
         self._update_broker_sl(symbol, entry_price)
 
     def _update_trailing_stop(
-        self, symbol: str, ltp: float, direction: str, risk: float
+        self, pid: str, symbol: str, ltp: float, direction: str, risk: float
     ) -> None:
-        """Update trailing stop — trails by 1×ATR behind current price."""
+        """Update trailing stop — trails by 1×ATR behind current price. State by pid."""
         # Use ATR as trail distance (approximated as original risk amount)
         trail_distance = risk * 0.8
 
@@ -710,34 +711,36 @@ class PositionManager:
         else:
             new_sl = ltp + trail_distance
 
-        current_sl = self._trailing_stops.get(symbol, 0)
+        current_sl = self._trailing_stops.get(pid, 0)
 
         # Only move stop in profitable direction (ratchet — never move backward)
         if direction == "LONG" and new_sl > current_sl:
-            self._trailing_stops[symbol] = round(new_sl, 2)
-            self._tracker.update_stop_loss(symbol, new_sl)
+            self._trailing_stops[pid] = round(new_sl, 2)
+            self._tracker.update_stop_loss(pid, new_sl)
             logger.info(f"[PositionManager] Trail SL updated: {symbol} → ₹{new_sl:.2f}")
             self._update_broker_sl(symbol, new_sl)
 
         elif direction == "SHORT" and (current_sl == 0 or new_sl < current_sl):
-            self._trailing_stops[symbol] = round(new_sl, 2)
-            self._tracker.update_stop_loss(symbol, new_sl)
+            self._trailing_stops[pid] = round(new_sl, 2)
+            self._tracker.update_stop_loss(pid, new_sl)
             logger.info(f"[PositionManager] Trail SL updated SHORT: {symbol} → ₹{new_sl:.2f}")
             self._update_broker_sl(symbol, new_sl)
 
     def _reconstruct_state_from_position(
-        self, symbol: str, direction: str, entry: float, original_stop: float, ltp: float
+        self, pos, direction: str, entry: float, original_stop: float, ltp: float
     ) -> None:
         """
         Rebuild in-memory tracking state from the persisted stop_loss after a restart.
+        Keyed by pos.id (multi-position-safe).
 
         Uses original_stop_loss (frozen at entry) rather than the current stop_loss
         to compute risk, because if SL was moved to breakeven, stop_loss == entry,
         making risk = 0 and causing early return without restoring state (Bug 6).
         """
-        pos = self._tracker.get_position(symbol)
         if not pos:
             return
+        pid    = pos.id
+        symbol = pos.symbol
 
         persisted_sl = pos.stop_loss
         # Use the immutable original stop for risk — never use the current (moved) SL (Bug 6)
@@ -768,10 +771,10 @@ class PositionManager:
         next_milestone = max(DYNAMIC_TARGET_START_R, math.ceil(profit_r) + 1)
 
         with self._lock:
-            self._partial_exited.add(symbol)
-            self._breakeven_applied.add(symbol)
-            self._trailing_stops[symbol]   = persisted_sl
-            self._dynamic_target_r[symbol] = next_milestone
+            self._partial_exited.add(pid)
+            self._breakeven_applied.add(pid)
+            self._trailing_stops[pid]   = persisted_sl
+            self._dynamic_target_r[pid] = next_milestone
 
         logger.info(
             f"[PositionManager] State restored after restart: {symbol} | "
@@ -780,21 +783,22 @@ class PositionManager:
         )
 
     def _update_dynamic_target(
-        self, symbol: str, profit_r: float, entry: float, risk: float, direction: str
+        self, pid: str, symbol: str, profit_r: float, entry: float, risk: float, direction: str
     ) -> None:
         """
         Advance the dynamic target milestone each time the trade gains another R.
         Called every tick after T1 partial exit. Trailing stop remains the exit trigger.
+        State keyed by pid; symbol used for logging only.
         """
         with self._lock:
-            current_milestone = self._dynamic_target_r.get(symbol)
+            current_milestone = self._dynamic_target_r.get(pid)
         if current_milestone is None:
             return
 
         if profit_r >= current_milestone:
             next_milestone = current_milestone + DYNAMIC_TARGET_STEP
             with self._lock:
-                self._dynamic_target_r[symbol] = next_milestone
+                self._dynamic_target_r[pid] = next_milestone
 
             if direction == "LONG":
                 next_price = entry + next_milestone * risk

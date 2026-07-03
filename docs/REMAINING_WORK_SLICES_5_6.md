@@ -55,7 +55,38 @@ trades (entry/exit/strike/premium/reason) via the one pipeline. MCX is paper →
 
 ---
 
-## Slice 6 — extract the online forward-test harness (separate DB) + trade-id re-key
+## Slice 6 — run LEARNING entry+exit through the ONE engine (firm directive — see memory `one-engine-never-compromise`)
+
+> **Non-negotiable:** learning must use the SAME engine (entry AND exit) as paper/live — never a
+> parallel/patched `learning_engine`. Sub-steps below; **6a is DONE**.
+
+**6a — DONE (branch `slice6-learning-one-engine`, verified):** `risk/portfolio_tracker.py` is now
+keyed by **trade-id** (`_open_positions[pos.id]`), so one book can hold several positions per
+symbol (the bake-off). Symbol methods (`get_position`/`close_position`/mutations/`has_open_position`)
+return the FIRST match → live book byte-identical; added `get_position_by_id()`. Verified: two
+positions on one symbol coexist + isolate; live single-position unchanged.
+
+**6b — route `PositionManager` exits by trade-id (NEXT — the delicate one).** ~62 sites in
+`execution/position_manager.py` key exit state (`_trailing_stops`/`_partial_exited`/
+`_breakeven_applied`/`_dynamic_target_r`) and call tracker mutations by **symbol**. Refactor:
+in `_check_position`/`_check_options_position` derive `key = pos.id`; change the helpers
+(`_move_stop_to_breakeven`, `_update_trailing_stop`, `_update_dynamic_target`,
+`_reconstruct_state_from_position`, `reset_symbol`, `_exit_position`, `_partial_exit`,
+`_exit_options_position`, `_update_broker_sl`) to take the position (use `pos.id` for state +
+`get_position_by_id`, `pos.symbol` for orders/logging); add id-based tracker mutations
+(`update_stop_loss`/`update_position_size`/`mark_t1_hit` are PM-only → make them id-based).
+**This is deployed exit code — do it as ONE careful pass, gated by `parity_check.py` on the live
+paper book (must stay byte-identical) + a unit test with two positions on one symbol.** Also
+skip the duplicate-symbol reject in `risk_manager` when the context is LEARNING.
+
+**6c — the learning runtime.** New same-repo entrypoint that instantiates its own
+`PortfolioTracker` + `PositionManager(book=LEARNING, store, tracker)` (both already per-book
+instantiable) + a LEARNING `RunContext` (no funds, all strategies, multi-position), runs every
+strategy through `risk_manager` → `order_manager` (record-only) → the shared `PositionManager`
+exits. **Delete `learning_engine`'s own `_check_exits` (+ helpers) and entry loop.**
+
+### (original detail retained below)
+## Slice 6 (orig) — extract the online forward-test harness (separate DB) + trade-id re-key
 
 **6a — Separate learning DB (the user's original explicit request).**
 - The forward-test/learning books (NSE-learning `nse` segment + US `us` segment) move to
