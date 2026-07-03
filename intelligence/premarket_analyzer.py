@@ -90,19 +90,12 @@ class PreMarketAnalyzer:
             "[PreMarket] NSE IEP API unavailable — falling back to Fyers LTP proxy. "
             "The reading may differ from the final NSE call-auction IEP."
         )
-        # Escalate to dashboard so operator sees it without checking logs.
-        # The IEP is time-critical (09:00–09:20 window) — a degraded reading
-        # at this point may under-score the conviction score for today.
-        try:
-            from system_health import system_health
-            system_health.set_alert(
-                "nse_iep_api",
-                "NSE pre-open IEP API unavailable — conviction IEP score is based on Fyers LTP "
-                "proxy (less accurate). NSE API may be rate-limiting or unreachable.",
-                severity="warning",
-            )
-        except Exception:
-            pass
+        # NOTE: log-only, NO dashboard system_health alert. The NSE pre-open IEP API is
+        # unavailable essentially every day, and the Fyers LTP proxy fallback (below) handles
+        # it — so a persistent "ACTION REQUIRED" banner re-raised every pre-open is pure daily
+        # noise for an expected, handled condition (operator dismisses it, it returns next 09:00).
+        # The warning above is captured in the log + the daily conviction report (which shows the
+        # IEP source). Only raise an alert if the proxy ALSO fails (that path errors elsewhere).
         return self._score_from_fyers()
 
     def get_iep(self) -> Optional[dict]:
