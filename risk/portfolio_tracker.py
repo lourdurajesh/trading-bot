@@ -79,8 +79,17 @@ class PortfolioTracker:
         stats = portfolio_tracker.get_stats()
     """
 
-    def __init__(self):
-        self._open_positions: dict[str, Position] = {}    # symbol → Position
+    def __init__(self, ledger_=None, db_path: str = None, segment: str = "live", book: str = "LIVE"):
+        # Per-DB / per-book instantiable. The live singleton uses the defaults (module ledger +
+        # settings.DB_PATH, segment "live") — behaviour byte-identical. A second runtime (the
+        # learning forward-test book) injects Ledger("db/learning.db") + db_path so its trades live
+        # in an isolated file, written through the SAME ledger code (single source, no fork).
+        from execution import ledger as _ledmod
+        self._ledger   = ledger_ if ledger_ is not None else _ledmod._default
+        self._db_path  = db_path or DB_PATH
+        self._segment  = segment
+        self._book     = book
+        self._open_positions: dict[str, Position] = {}    # trade-id → Position
         self._closed_trades:  list[Position]      = []
         self._peak_value      = TOTAL_CAPITAL
         self._trade_counter   = 0
@@ -325,7 +334,7 @@ class PortfolioTracker:
             return True
 
         # Position not in memory — update DB directly (restored-but-not-in-memory edge case)
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(self._db_path) as conn:
             cur = conn.execute(
                 "UPDATE trades SET status='CLOSED', exit_reason=?, exit_time=? "
                 "WHERE symbol=? AND status='OPEN'",
@@ -396,15 +405,14 @@ class PortfolioTracker:
     # ─────────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        # Trades live in the unified ledger (execution/ledger.py, segment "live"), surfaced via
-        # the `trades` compatibility VIEW so every reader (dashboard, analysis, scripts) is
-        # unchanged. ledger.init() creates the ledger table + view, and leaves a not-yet-migrated
-        # `trades` TABLE untouched until scripts/migrate_unified_ledger.py runs (deploy step).
-        # Writes go through ledger.record() (see _save_position). param_changes stays a plain table.
-        from execution import ledger
-        ledger.init()
-        with sqlite3.connect(DB_PATH) as conn:
+        os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
+        # Trades live in the unified ledger (execution/ledger.py), surfaced via the `trades`
+        # compatibility VIEW so every reader (dashboard, analysis, scripts) is unchanged.
+        # self._ledger.init() creates the ledger table + view in self._db_path, and leaves a
+        # not-yet-migrated `trades` TABLE untouched until scripts/migrate_unified_ledger.py runs.
+        # Writes go through self._ledger.record() (see _save_position). param_changes stays plain.
+        self._ledger.init()
+        with sqlite3.connect(self._db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS param_changes (
                     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -416,14 +424,13 @@ class PortfolioTracker:
                     reason    TEXT DEFAULT 'manual'
                 )
             """)
-        logger.info(f"[Portfolio] Database initialised at {DB_PATH}")
+        logger.info(f"[Portfolio] Database initialised at {self._db_path} (book={self._book})")
 
     def _save_position(self, pos: Position) -> None:
-        """Upsert the trade into the unified ledger (segment "live"). The `trades` compat VIEW
-        projects the payload back to the original columns, so all readers are unchanged."""
+        """Upsert the trade into this book's ledger/segment. The compat VIEW projects the payload
+        back to the original columns, so all readers are unchanged."""
         import json
-        from execution import ledger
-        ledger.record("live", {
+        self._ledger.record(self._segment, {
             "id":                 pos.id,
             "symbol":             pos.symbol,
             "strategy":           pos.strategy,
@@ -456,7 +463,7 @@ class PortfolioTracker:
         """Reload OPEN and PENDING_CLOSE positions from DB on restart (Bug 1, 6, 18)."""
         import json
         try:
-            with sqlite3.connect(DB_PATH) as conn:
+            with sqlite3.connect(self._db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     "SELECT * FROM trades WHERE status IN ('OPEN', 'PENDING_CLOSE')"
@@ -505,7 +512,7 @@ class PortfolioTracker:
         # Load today's closed trades for accurate win-rate / P&L stats (Bug 18)
         try:
             today_str = datetime.now(tz=IST).strftime("%Y-%m-%d")
-            with sqlite3.connect(DB_PATH) as conn:
+            with sqlite3.connect(self._db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 closed_rows = conn.execute(
                     "SELECT * FROM trades WHERE status = 'CLOSED' AND entry_time >= ?",
