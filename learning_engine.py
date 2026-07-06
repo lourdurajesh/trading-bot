@@ -97,14 +97,22 @@ class LearningEngine:
 
         # This book's own risk state, tracker and exit engine — never the LIVE
         # globals (per-book instantiable since slices 0b/1b/6a/6c-1/6c-2).
-        # db_path=LEARNING_DB_PATH, segment="live": a fresh, isolated file using
-        # the SAME schema Position/PortfolioTracker already write (see
-        # LEARNING_DB_PATH's comment above for why the legacy "nse" segment in
-        # trades.db can't be reused here).
+        # segment="live": a fresh, isolated file using the SAME schema Position/
+        # PortfolioTracker already write (see LEARNING_DB_PATH's comment above
+        # for why the legacy "nse" segment in trades.db can't be reused here).
+        # ledger_ MUST be an explicit Ledger(LEARNING_DB_PATH) instance --
+        # PortfolioTracker defaults self._ledger to the GLOBAL ledger (bound to
+        # the main trades.db) whenever ledger_ is omitted, even if db_path is
+        # set; db_path alone only affects this tracker's own raw-sqlite helpers,
+        # not where _save_position/_load_open_positions actually read/write.
+        # Passing db_path without ledger_ would have written every new learning
+        # trade into the LIVE segment of trades.db -- the production book's
+        # own data.
+        from execution.ledger import Ledger
         self._nse_risk_manager = RiskManager(book="LEARNING")
         self._nse_tracker = PortfolioTracker(
-            db_path=LEARNING_DB_PATH, segment="live", book="LEARNING",
-            risk_manager_=self._nse_risk_manager,
+            ledger_=Ledger(LEARNING_DB_PATH), db_path=LEARNING_DB_PATH,
+            segment="live", book="LEARNING", risk_manager_=self._nse_risk_manager,
         )
         self._nse_position_manager = PositionManager(
             tracker=self._nse_tracker, store_=store, book="LEARNING",
