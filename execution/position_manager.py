@@ -56,15 +56,20 @@ class PositionManager:
         position_manager.check_all()   # called by fast loop every 5s
     """
 
-    def __init__(self, tracker=None, store_=None, book: str = "PAPER"):
+    def __init__(self, tracker=None, store_=None, book: str = "PAPER", on_close=None):
         # Per-book instantiable (library-safe). The portfolio engine uses the default
         # globals; a second runtime (the forward-test harness, slice 6) injects its own
         # tracker/store/book so one exit engine serves multiple books without globals.
         # NOTE: internal exit state is symbol-keyed today (correct for the portfolio book —
         # one position/symbol). The symbol→trade-id re-key lands with slice 6, paired with
         # the harness that actually needs multiple positions per symbol + its test.
+        # on_close(symbol, minutes): optional cooldown callback for a second book — without
+        # it, _apply_exit_cooldown falls back to the production strategy_selector's cooldown
+        # store, which a non-LIVE book must NEVER write to (a learning trade closing must not
+        # block production from re-entering that symbol).
         self._lock              = threading.Lock()
         self._book              = book
+        self._on_close          = on_close
         self._tracker           = tracker if tracker is not None else portfolio_tracker
         self._store             = store_  if store_  is not None else store
         self._breakeven_applied: set[str] = set()   # symbols where SL moved to BE
@@ -586,7 +591,11 @@ class PositionManager:
         exit_ltp   = self._get_monitor_ltp(pos_dict_for_ltp)
         exit_price = exit_ltp if exit_ltp and exit_ltp > 0 else pos.entry_price
 
-        if PAPER_TRADING:
+        if self._book == "LEARNING":
+            # Same reasoning as _exit_position: no real order, no paper_trading_engine
+            # call (separate symbol-keyed wallet mirror, owned by learning_engine).
+            order_id = "LEARNING-EXIT"
+        elif PAPER_TRADING:
             from paper_trading import paper_trading_engine
             paper_trading_engine.close_order(
                 symbol     = symbol,
@@ -664,7 +673,13 @@ class PositionManager:
 
         logger.info(f"[PositionManager] EXITING {symbol} × {size} @ {price:.2f} — {reason}")
 
-        if PAPER_TRADING:
+        if self._book == "LEARNING":
+            # No real order, and no paper_trading_engine call — that engine's
+            # ₹5L wallet mirror is a SEPARATE bookkeeping system keyed by its own
+            # trade-id (learning_engine's mirror_learning_open/close); calling
+            # close_order() here by SYMBOL could match and corrupt the wrong row.
+            order_id = "LEARNING-EXIT"
+        elif PAPER_TRADING:
             # Paper mode — simulate exit via paper trading engine
             from paper_trading import paper_trading_engine
             paper_trading_engine.close_order(
@@ -1010,6 +1025,16 @@ class PositionManager:
             minutes = SYMBOL_COOLDOWN_MINUTES
         else:
             minutes = 30   # unknown reason — short cooldown as safety net
+
+        if self._on_close is not None:
+            # A second book's own cooldown store (e.g. learning_engine._apply_cooldown) —
+            # never the production strategy_selector.
+            try:
+                self._on_close(symbol, minutes)
+            except Exception as e:
+                logger.warning(f"[PositionManager] on_close callback error for {symbol}: {e}")
+            return
+
         try:
             from strategies.strategy_selector import strategy_selector
             strategy_selector.apply_cooldown(symbol, minutes=minutes)
