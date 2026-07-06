@@ -35,13 +35,28 @@ from config.settings import (
     RISK_PER_TRADE_PCT,
     TOTAL_CAPITAL,
 )
-from risk.options_risk import options_risk_gate
+from risk.options_risk import OptionsRiskGate, options_risk_gate
 from strategies.base_strategy import Direction, Signal, SignalType
 
 logger = logging.getLogger(__name__)
 
 from config.settings import DB_PATH as _DB_PATH
 _RISK_STATE_PATH = os.path.join(os.path.dirname(_DB_PATH) or "db", "risk_state.json")
+
+
+def _risk_state_path_for(book: str) -> str:
+    """Per-book state file so a second book (e.g. LEARNING) doesn't share the LIVE
+    kill-switch/daily-P&L. LIVE keeps the original path (back-compat)."""
+    if book == "LIVE":
+        return _RISK_STATE_PATH
+    base, ext = os.path.splitext(_RISK_STATE_PATH)
+    return f"{base}_{book.lower()}{ext}"
+
+
+# Books whose open positions are, by design, NOT one-per-symbol (the learning
+# bake-off runs several strategies on the same symbol at once) and whose position
+# count isn't meant to be capped like a single concentrated live book.
+_MULTI_POSITION_BOOKS = {"LEARNING"}
 
 
 @dataclass
@@ -62,13 +77,22 @@ class RiskManager:
             signal.position_size   = decision.position_size
             signal.capital_at_risk = decision.capital_at_risk
             order_manager.route(signal)
+
+    Per-book instantiable (like PortfolioTracker/PositionManager): a second book
+    (e.g. LEARNING) gets its own kill-switch/daily-P&L state and its own
+    OptionsRiskGate, so a production loss streak can never halt learning (or vice
+    versa). LEARNING also runs several strategies per symbol at once (the bake-off)
+    and isn't capped like a single concentrated book — see _MULTI_POSITION_BOOKS.
     """
 
-    def __init__(self):
+    def __init__(self, book: str = "LIVE"):
+        self._book               = book
         self._kill_switch_active = False
         self._kill_switch_reason = ""
         self._daily_realised_pnl  = 0.0   # updated by portfolio_tracker
         self._daily_reset_date    = datetime.now(tz=IST).date()
+        self._state_path          = _risk_state_path_for(book)
+        self._options_gate        = options_risk_gate if book == "LIVE" else OptionsRiskGate(book=book)
         self._load_state()
 
     # ─────────────────────────────────────────────────────────────
@@ -106,13 +130,18 @@ class RiskManager:
             return RiskDecision(False, f"R:R {rr:.1f} below minimum {min_rr}")
 
         # ── 4. Max open positions ─────────────────────────────────
-        if len(open_positions) >= MAX_OPEN_POSITIONS:
+        # Skipped for multi-position books (LEARNING runs many strategies × many
+        # symbols concurrently by design — the bake-off — not a cap violation).
+        if self._book not in _MULTI_POSITION_BOOKS and len(open_positions) >= MAX_OPEN_POSITIONS:
             return RiskDecision(False, f"Max open positions reached ({MAX_OPEN_POSITIONS})")
 
         # ── 5. Duplicate symbol check ─────────────────────────────
-        open_symbols = [p["symbol"] for p in open_positions]
-        if signal.symbol in open_symbols:
-            return RiskDecision(False, f"Already have open position in {signal.symbol}")
+        # Skipped for multi-position books — LEARNING intentionally holds several
+        # strategies' positions on the same symbol at once.
+        if self._book not in _MULTI_POSITION_BOOKS:
+            open_symbols = [p["symbol"] for p in open_positions]
+            if signal.symbol in open_symbols:
+                return RiskDecision(False, f"Already have open position in {signal.symbol}")
 
         # ── 6. Portfolio heat check ───────────────────────────────
         total_risk_capital = sum(p.get("capital_at_risk", 0) for p in open_positions)
@@ -140,8 +169,8 @@ class RiskManager:
                     f"Options allocation {options_pct:.1f}% at max ({MAX_OPTIONS_ALLOCATION_PCT}%)"
                 )
 
-            # ── 8b. Options-specific safety gate ─────────────────
-            opt_approved, opt_reason, approved_lots = options_risk_gate.check(signal, capital)
+            # ── 8b. Options-specific safety gate (this book's own gate) ──
+            opt_approved, opt_reason, approved_lots = self._options_gate.check(signal, capital)
             if not opt_approved:
                 return RiskDecision(False, f"[OptionsGate] {opt_reason}")
             # Store approved lots back on signal so position sizing uses it
@@ -181,10 +210,10 @@ class RiskManager:
         self._daily_realised_pnl += pnl_change
         self._save_state()
 
-        # Forward options P&L to options-specific gate
+        # Forward options P&L to this book's options-specific gate
         if signal_type == "OPTIONS":
             try:
-                options_risk_gate.update_daily_pnl(pnl_change, TOTAL_CAPITAL)
+                self._options_gate.update_daily_pnl(pnl_change, TOTAL_CAPITAL)
             except Exception:
                 pass
 
@@ -221,7 +250,7 @@ class RiskManager:
             "risk_per_trade_pct":  RISK_PER_TRADE_PCT,
         }
         try:
-            d["options"] = options_risk_gate.status()
+            d["options"] = self._options_gate.status()
         except Exception:
             pass
         return d
@@ -310,9 +339,9 @@ class RiskManager:
     def _load_state(self) -> None:
         """Restore kill switch and daily P&L from disk on startup."""
         try:
-            if not os.path.exists(_RISK_STATE_PATH):
+            if not os.path.exists(self._state_path):
                 return
-            with open(_RISK_STATE_PATH) as f:
+            with open(self._state_path) as f:
                 data = json.load(f)
             today      = datetime.now(tz=IST).date()
             saved_date = date.fromisoformat(data.get("daily_reset_date", "2000-01-01"))
@@ -335,8 +364,8 @@ class RiskManager:
     def _save_state(self) -> None:
         """Persist kill switch and daily P&L to disk."""
         try:
-            os.makedirs(os.path.dirname(_RISK_STATE_PATH) or ".", exist_ok=True)
-            with open(_RISK_STATE_PATH, "w") as f:
+            os.makedirs(os.path.dirname(self._state_path) or ".", exist_ok=True)
+            with open(self._state_path, "w") as f:
                 json.dump({
                     "kill_switch_active": self._kill_switch_active,
                     "kill_switch_reason": self._kill_switch_reason,
@@ -347,5 +376,5 @@ class RiskManager:
             logger.warning(f"[RiskManager] Could not save state file: {e}")
 
 
-# ── Module-level singleton ────────────────────────────────────────
+# ── Module-level singleton (LIVE book) ─────────────────────────────
 risk_manager = RiskManager()

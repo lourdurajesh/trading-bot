@@ -50,6 +50,16 @@ logger = logging.getLogger(__name__)
 from config.settings import DB_PATH as _DB_PATH
 _OPTIONS_RISK_STATE_PATH = os.path.join(os.path.dirname(_DB_PATH) or "db", "options_risk_state.json")
 
+
+def _options_risk_state_path_for(book: str) -> str:
+    """Per-book state file so a second book (e.g. LEARNING) doesn't share the LIVE
+    options kill-switch/daily-P&L. LIVE keeps the original path (back-compat)."""
+    if book == "LIVE":
+        return _OPTIONS_RISK_STATE_PATH
+    base, ext = os.path.splitext(_OPTIONS_RISK_STATE_PATH)
+    return f"{base}_{book.lower()}{ext}"
+
+
 # VIX symbol on Fyers / NSE India
 INDIA_VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
 
@@ -59,18 +69,24 @@ class OptionsRiskGate:
     Pre-trade safety gate for all options signals.
 
     Usage:
-        gate = options_risk_gate   # singleton
+        gate = options_risk_gate   # singleton (LIVE book)
         approved, reason, lots = gate.check(signal, capital)
         if not approved:
             return RiskDecision(False, reason)
+
+    Per-book instantiable (like PortfolioTracker/PositionManager) so a second book
+    (e.g. LEARNING) gets its OWN daily-options-loss kill switch, never sharing state
+    with the LIVE gate.
     """
 
-    def __init__(self):
+    def __init__(self, book: str = "LIVE"):
+        self._book                    = book
         self._lock                    = threading.Lock()
         self._daily_options_pnl       = 0.0
         self._daily_reset_date        = datetime.now(tz=IST).date()
         self._options_kill_switch     = False
         self._options_kill_reason     = ""
+        self._state_path              = _options_risk_state_path_for(book)
         self._load_state()
 
     # ─────────────────────────────────────────────────────────────
@@ -386,9 +402,9 @@ class OptionsRiskGate:
     def _load_state(self) -> None:
         """Restore options kill switch and daily P&L from disk on startup."""
         try:
-            if not os.path.exists(_OPTIONS_RISK_STATE_PATH):
+            if not os.path.exists(self._state_path):
                 return
-            with open(_OPTIONS_RISK_STATE_PATH) as f:
+            with open(self._state_path) as f:
                 data = json.load(f)
             today      = datetime.now(tz=IST).date()
             saved_date = date.fromisoformat(data.get("daily_reset_date", "2000-01-01"))
@@ -411,8 +427,8 @@ class OptionsRiskGate:
     def _save_state(self) -> None:
         """Persist options kill switch and daily P&L to disk."""
         try:
-            os.makedirs(os.path.dirname(_OPTIONS_RISK_STATE_PATH) or ".", exist_ok=True)
-            with open(_OPTIONS_RISK_STATE_PATH, "w") as f:
+            os.makedirs(os.path.dirname(self._state_path) or ".", exist_ok=True)
+            with open(self._state_path, "w") as f:
                 json.dump({
                     "kill_switch_active": self._options_kill_switch,
                     "kill_switch_reason": self._options_kill_reason,
@@ -423,5 +439,5 @@ class OptionsRiskGate:
             logger.warning(f"[OptionsRisk] Could not save state file: {e}")
 
 
-# ── Module-level singleton ────────────────────────────────────────
+# ── Module-level singleton (LIVE book) ─────────────────────────────
 options_risk_gate = OptionsRiskGate()
