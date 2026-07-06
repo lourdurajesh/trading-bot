@@ -78,12 +78,15 @@ class MCXStrategyConfig:
     #
     # TrendSpread
     rsi_long_min:         float  = 55.0   # LONG: RSI must be above this
-    rsi_long_max:         float  = 68.0   # LONG: RSI must be below this (avoid overbought)
-    rsi_short_min:        float  = 32.0   # SHORT: RSI must be above this (avoid oversold)
+    rsi_long_max:         float  = 62.0   # LONG: RSI must be below this (leave room before overbought exhaustion)
+    rsi_short_min:        float  = 38.0   # SHORT: RSI must be above this (leave room before oversold exhaustion)
     rsi_short_max:        float  = 45.0   # SHORT: RSI must be below this
     ema_gap_min_pct:      float  = 0.3    # min EMA5-EMA20 separation % (noise filter)
     min_rvol_trend:       float  = 1.3    # RVOL floor — crossover on dead volume is noise
     min_adx_trend:        float  = 20.0   # ADX floor — filters EMA crossovers in ranging markets
+    max_adx_trend:        float  = 40.0   # ADX ceiling — above this the trend is likely already
+                                          # mature/extended; entering here chases the move rather
+                                          # than catching it while it's still building
     #
     # RSIReversalSpread
     rsi_oversold:         float  = 32.0   # LONG trigger: RSI below this = oversold

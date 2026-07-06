@@ -1338,8 +1338,8 @@ class CommodityOptionsLearning:
                 _rvol_str    = f"RVOL={_rvol_val:.2f} (need >1.3/1.5)" if _vol_avail else "RVOL=N/A(no MCX feed)"
                 logger.info(
                     f"[CommOpts] {short} no signal — spot={spot:.2f} | "
-                    f"RSI={_rsi_val:.0f} (long 55-68 / short 32-45) | "
-                    f"ADX={_adx_val:.0f} (need >20) | "
+                    f"RSI={_rsi_val:.0f} (long 55-62 / short 38-45) | "
+                    f"ADX={_adx_val:.0f} (need 20-40) | "
                     f"{_rvol_str} | "
                     f"EMA5={_ema5_val:.2f} EMA20={_ema20_val:.2f} gap={_ema_gap_pct:.2f}%"
                 )
