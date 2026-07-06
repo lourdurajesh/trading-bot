@@ -79,16 +79,25 @@ class PortfolioTracker:
         stats = portfolio_tracker.get_stats()
     """
 
-    def __init__(self, ledger_=None, db_path: str = None, segment: str = "live", book: str = "LIVE"):
+    def __init__(self, ledger_=None, db_path: str = None, segment: str = "live", book: str = "LIVE",
+                 risk_manager_=None):
         # Per-DB / per-book instantiable. The live singleton uses the defaults (module ledger +
         # settings.DB_PATH, segment "live") — behaviour byte-identical. A second runtime (the
         # learning forward-test book) injects Ledger("db/learning.db") + db_path so its trades live
         # in an isolated file, written through the SAME ledger code (single source, no fork).
+        # risk_manager_ defaults to the global (LIVE) RiskManager for back-compat; a second book
+        # MUST inject its own (RiskManager per-book instantiable, slice 6c-2) so a P&L update from
+        # this tracker never feeds another book's kill-switch/daily-loss state.
         from execution import ledger as _ledmod
         self._ledger   = ledger_ if ledger_ is not None else _ledmod._default
         self._db_path  = db_path or DB_PATH
         self._segment  = segment
         self._book     = book
+        if risk_manager_ is not None:
+            self._risk_manager = risk_manager_
+        else:
+            from risk.risk_manager import risk_manager as _default_rm
+            self._risk_manager = _default_rm
         self._open_positions: dict[str, Position] = {}    # trade-id → Position
         self._closed_trades:  list[Position]      = []
         self._peak_value      = TOTAL_CAPITAL
@@ -203,9 +212,8 @@ class PortfolioTracker:
         self._closed_trades.append(position)
         self._update_position_db(position)
 
-        # Notify risk manager of P&L change
-        from risk.risk_manager import risk_manager
-        risk_manager.update_daily_pnl(position.realised_pnl)
+        # Notify THIS book's risk manager of the P&L change (never another book's)
+        self._risk_manager.update_daily_pnl(position.realised_pnl)
 
         logger.info(
             f"[Portfolio] CLOSED {position.symbol} | "
@@ -478,19 +486,18 @@ class PortfolioTracker:
         self._save_position(pos)
 
     def _load_open_positions(self) -> None:
-        """Reload OPEN and PENDING_CLOSE positions from DB on restart (Bug 1, 6, 18)."""
-        import json
+        """Reload OPEN and PENDING_CLOSE positions from DB on restart (Bug 1, 6, 18).
+
+        Reads via self._ledger.get_rows(self._segment, ...) — NOT the `trades` compat
+        view, which is hardcoded to segment='live' and would silently load zero rows
+        for any other book (e.g. LEARNING's "nse"/"us" segments)."""
         try:
-            with sqlite3.connect(self._db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(
-                    "SELECT * FROM trades WHERE status IN ('OPEN', 'PENDING_CLOSE')"
-                ).fetchall()
+            rows = [r for r in self._ledger.get_rows(self._segment)
+                    if r.get("status") in ("OPEN", "PENDING_CLOSE")]
 
             for row in rows:
-                try:
-                    options_meta = json.loads(row["options_meta"] or "{}") if "options_meta" in row.keys() else {}
-                except Exception:
+                options_meta = row.get("options_meta") or {}
+                if not isinstance(options_meta, dict):
                     options_meta = {}
 
                 pos = Position(
@@ -498,21 +505,21 @@ class PortfolioTracker:
                     symbol             = row["symbol"],
                     strategy           = row["strategy"],
                     direction          = row["direction"],
-                    signal_type        = row["signal_type"] if "signal_type" in row.keys() else "EQUITY",
+                    signal_type        = row.get("signal_type") or "EQUITY",
                     entry_price        = row["entry_price"],
                     stop_loss          = row["stop_loss"],
                     target_1           = row["target_1"],
-                    target_2           = float(row["target_2"]) if row["target_2"] else 0.0,
+                    target_2           = float(row.get("target_2") or 0),
                     position_size      = row["position_size"],
                     capital_at_risk    = row["capital_at_risk"],
                     entry_time         = datetime.fromisoformat(row["entry_time"]),
-                    hold_type          = row["hold_type"] if "hold_type" in row.keys() and row["hold_type"] else "intraday",
+                    hold_type          = row.get("hold_type") or "intraday",
                     status             = row["status"],
                     options_meta       = options_meta,
-                    original_stop_loss = float(row["original_stop_loss"]) if "original_stop_loss" in row.keys() and row["original_stop_loss"] else row["stop_loss"],
-                    sl_order_id        = row["sl_order_id"] if "sl_order_id" in row.keys() and row["sl_order_id"] else "",
-                    t1_hit             = bool(row["t1_hit"]) if "t1_hit" in row.keys() and row["t1_hit"] else False,
-                    monitor_symbol     = row["monitor_symbol"] if "monitor_symbol" in row.keys() and row["monitor_symbol"] else row["symbol"],
+                    original_stop_loss = float(row.get("original_stop_loss") or row["stop_loss"]),
+                    sl_order_id        = row.get("sl_order_id") or "",
+                    t1_hit             = bool(row.get("t1_hit")),
+                    monitor_symbol     = row.get("monitor_symbol") or row["symbol"],
                 )
                 self._open_positions[pos.id] = pos
 
@@ -530,36 +537,31 @@ class PortfolioTracker:
         # Load today's closed trades for accurate win-rate / P&L stats (Bug 18)
         try:
             today_str = datetime.now(tz=IST).strftime("%Y-%m-%d")
-            with sqlite3.connect(self._db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                closed_rows = conn.execute(
-                    "SELECT * FROM trades WHERE status = 'CLOSED' AND entry_time >= ?",
-                    (today_str,),
-                ).fetchall()
+            closed_rows = [r for r in self._ledger.get_rows(self._segment, status="CLOSED")
+                          if (r.get("entry_time") or "") >= today_str]
             for row in closed_rows:
-                try:
-                    options_meta = json.loads(row["options_meta"] or "{}") if "options_meta" in row.keys() else {}
-                except Exception:
+                options_meta = row.get("options_meta") or {}
+                if not isinstance(options_meta, dict):
                     options_meta = {}
                 pos = Position(
                     id              = row["id"],
                     symbol          = row["symbol"],
                     strategy        = row["strategy"],
                     direction       = row["direction"],
-                    signal_type     = row["signal_type"] if "signal_type" in row.keys() else "EQUITY",
+                    signal_type     = row.get("signal_type") or "EQUITY",
                     entry_price     = row["entry_price"],
                     stop_loss       = row["stop_loss"],
                     target_1        = row["target_1"],
-                    target_2        = float(row["target_2"]) if row["target_2"] else 0.0,
+                    target_2        = float(row.get("target_2") or 0),
                     position_size   = row["position_size"],
                     capital_at_risk = row["capital_at_risk"],
                     entry_time      = datetime.fromisoformat(row["entry_time"]),
-                    hold_type       = row["hold_type"] if "hold_type" in row.keys() and row["hold_type"] else "intraday",
-                    exit_price      = float(row["exit_price"]) if row["exit_price"] else 0.0,
-                    exit_time       = datetime.fromisoformat(row["exit_time"]) if row["exit_time"] else None,
-                    realised_pnl    = float(row["realised_pnl"]) if row["realised_pnl"] else 0.0,
+                    hold_type       = row.get("hold_type") or "intraday",
+                    exit_price      = float(row.get("exit_price") or 0),
+                    exit_time       = datetime.fromisoformat(row["exit_time"]) if row.get("exit_time") else None,
+                    realised_pnl    = float(row.get("realised_pnl") or 0),
                     status          = "CLOSED",
-                    exit_reason     = row["exit_reason"] or "",
+                    exit_reason     = row.get("exit_reason") or "",
                     options_meta    = options_meta,
                 )
                 self._closed_trades.append(pos)
