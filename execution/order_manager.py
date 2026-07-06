@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-from config.settings import BOT_MODE, PAPER_TRADING, TOTAL_CAPITAL   # Bug 16: use settings constant
+from config.settings import BOT_MODE, TOTAL_CAPITAL   # Bug 16: use settings constant
 from risk.portfolio_tracker import portfolio_tracker
 from risk.risk_manager import risk_manager
 from strategies.base_strategy import Direction, Signal, SignalType
@@ -41,16 +41,27 @@ class OrderManager:
         self._pending_signals: dict[str, Signal] = {}
         self._lock             = threading.Lock()
 
-    def submit(self, signal: Signal) -> Optional[str]:
+    def submit(
+        self, signal: Signal, *, ctx=None, tracker=None, risk_manager_=None,
+    ) -> Optional[str]:
         """
-        Entry point for all LIVE/PAPER signals (the real book).
-        Runs strategy-enablement + risk + profit validation, then routes to AUTO/MANUAL.
-        LEARNING signals do NOT come here — they run all strategies via learning_engine.
+        Entry point for every book's signals — LIVE/PAPER (the real book) AND
+        LEARNING. ctx/tracker/risk_manager_ let a second book (e.g. LEARNING) reuse
+        this exact routing logic with its own RunContext/PortfolioTracker/RiskManager
+        instead of the LIVE/PAPER globals; all three default to today's globals so
+        existing callers are unaffected.
+        Runs strategy-enablement + risk + profit validation, then routes to
+        AUTO/MANUAL (LIVE/PAPER) or always straight through (LEARNING — no human
+        confirmation step; it records every signal it's allowed to size).
         """
-        # Strategy enablement — the active book (LIVE/PAPER) trades only the curated
-        # LIVE_STRATEGIES set (config). Single source: execution/run_context.
         from execution.run_context import active_context
-        ctx = active_context()
+        ctx = ctx or active_context()
+        trk = tracker or portfolio_tracker
+        rm  = risk_manager_ or risk_manager
+
+        # Strategy enablement — the active book (LIVE/PAPER) trades only the curated
+        # LIVE_STRATEGIES set (config); LEARNING's set is empty = all. Single source:
+        # execution/run_context.
         if not ctx.trades_strategy(signal.strategy):
             logger.info(
                 f"[OrderManager] SKIP {signal.symbol}: strategy '{signal.strategy}' "
@@ -64,9 +75,10 @@ class OrderManager:
                 pass
             return None
 
-        # Risk validation
-        open_positions = portfolio_tracker.get_open_positions()
-        decision       = risk_manager.validate(signal, open_positions)
+        # Risk validation — this book's own tracker/risk manager (see class docstring
+        # of RiskManager: per-book instantiable, own kill-switch/rules).
+        open_positions = trk.get_open_positions()
+        decision       = rm.validate(signal, open_positions)
 
         if not decision.approved:
             logger.info(f"[OrderManager] REJECTED {signal.symbol}: {decision.reason}")
@@ -77,12 +89,15 @@ class OrderManager:
                 pass
             return None
 
-        # Minimum net profit check
+        # Minimum net profit check — a signal-quality filter, not broker-specific;
+        # applies to every book.
         if not self._check_min_profit(signal, decision.position_size):
             return None
 
-        # Margin check
-        if not self._check_margin(signal, decision.position_size):
+        # Margin check is a real-broker-funds concept — only meaningful for a book
+        # that enforces funds (LIVE/PAPER). LEARNING (enforce_funds=False) records
+        # every approved signal regardless of simulated available margin.
+        if ctx.enforce_funds and not self._check_margin(signal, decision.position_size):
             return None
 
         signal.position_size   = decision.position_size
@@ -90,10 +105,12 @@ class OrderManager:
 
         signal_id = str(uuid.uuid4())[:8].upper()
 
-        if self._mode == "AUTO":
-            self._execute(signal)
-        else:
+        if ctx.place_real_orders and self._mode == "MANUAL":
             self._queue_for_confirmation(signal_id, signal)
+        else:
+            # AUTO (LIVE/PAPER) or any book that never places real orders
+            # (LEARNING) — execute immediately.
+            self._execute(signal, ctx=ctx, tracker=trk)
 
         return signal_id
 
@@ -233,11 +250,17 @@ class OrderManager:
     # EXECUTION
     # ─────────────────────────────────────────────────────────────
 
-    def _execute(self, signal: Signal) -> None:
+    def _execute(self, signal: Signal, *, ctx=None, tracker=None) -> None:
         """
-        Atomic execution — routes to paper trading or live broker.
-        Options signals are routed to _execute_options() for multi-leg placement.
+        Atomic execution — routes to a real broker only when this book places real
+        orders (ctx.place_real_orders); every other book (PAPER, LEARNING) just
+        records the position. Options signals are routed to _execute_options() for
+        multi-leg placement.
         """
+        from execution.run_context import active_context
+        ctx = ctx or active_context()
+        trk = tracker or portfolio_tracker
+
         # Block new entries for NSE symbols outside trading hours (09:15–15:15 IST).
         # Prevents the open→EOD-forced-close→re-signal infinite loop.
         if signal.symbol.startswith("NSE:"):
@@ -250,13 +273,16 @@ class OrderManager:
                     f"[OrderManager] Blocked entry outside NSE hours: "
                     f"{signal.symbol} at {now_ist.strftime('%H:%M:%S')} IST"
                 )
-                # Apply a 60-min cooldown so the same symbol doesn't re-trigger
-                # every cycle for the rest of the session.
-                try:
-                    from strategies.strategy_selector import strategy_selector
-                    strategy_selector.apply_cooldown(signal.symbol, minutes=60)
-                except Exception:
-                    pass
+                # Apply a 60-min cooldown on the active LIVE/PAPER book so the same
+                # symbol doesn't re-trigger every cycle for the rest of the session.
+                # Never touch the LIVE/PAPER cooldown from a LEARNING rejection —
+                # learning tracks its own cooldowns independently.
+                if ctx.mode != "LEARNING":
+                    try:
+                        from strategies.strategy_selector import strategy_selector
+                        strategy_selector.apply_cooldown(signal.symbol, minutes=60)
+                    except Exception:
+                        pass
                 return
 
         # Index symbols (NIFTY/BANKNIFTY) can only be traded as options contracts,
@@ -271,15 +297,16 @@ class OrderManager:
 
         # Options: multi-leg execution via dedicated path
         if signal.signal_type == SignalType.OPTIONS:
-            self._execute_options(signal)
+            self._execute_options(signal, ctx=ctx, tracker=trk)
             return
 
-        # Paper trading mode — simulate execution
-        # paper_trading_engine (₹5L wallet) is exclusive to learning mirrors; only
-        # portfolio_tracker is written here so Trading tab and Paper P&L tab stay separate.
-        if PAPER_TRADING:
-            portfolio_tracker.open_position(signal, fill_price=signal.entry)
-            logger.info(f"[OrderManager] [PAPER] Trade recorded: {signal.symbol}")
+        # Record-only book (PAPER, LEARNING) — simulate execution, no broker call.
+        # paper_trading_engine (₹5L wallet) is a SEPARATE learning-only dashboard
+        # mirror; only the tracker is written here so Trading tab and Paper P&L tab
+        # stay separate.
+        if not ctx.place_real_orders:
+            trk.open_position(signal, fill_price=signal.entry)
+            logger.info(f"[OrderManager] [{ctx.mode}] Trade recorded: {signal.symbol}")
             return
 
         broker = self._get_broker(signal.symbol)
@@ -342,7 +369,7 @@ class OrderManager:
         signal.entry = fill_price
 
         # ── Step 3: Record position ───────────────────────────────
-        portfolio_tracker.open_position(signal, fill_price=fill_price)
+        trk.open_position(signal, fill_price=fill_price)
 
         # ── Step 4: Place SL order (critical — retry 3 times) ─────
         sl_placed = False
@@ -374,12 +401,12 @@ class OrderManager:
             return
 
         # Bug 2 (part 2): persist the SL order ID so _update_broker_sl can cancel it later
-        portfolio_tracker.update_sl_order_id(signal.symbol, sl_order_id)
+        trk.update_sl_order_id(signal.symbol, sl_order_id)
 
         # ── Step 5: Send success alert ────────────────────────────
         self._send_alert(signal, sl_order_id, pending=False)
 
-    def _execute_options(self, signal: Signal) -> None:
+    def _execute_options(self, signal: Signal, *, ctx=None, tracker=None) -> None:
         """
         Place all legs for an options signal.
 
@@ -389,6 +416,10 @@ class OrderManager:
         No SL order is placed at the broker — position_manager monitors option
         premium LTP and issues a market-close order when stop/target is breached.
         """
+        from execution.run_context import active_context
+        ctx = ctx or active_context()
+        trk = tracker or portfolio_tracker
+
         meta      = signal.options_meta or {}
         lot_size  = int(meta.get("lot_size", 1)) or 1
         lots      = max(1, signal.position_size // lot_size)
@@ -402,11 +433,12 @@ class OrderManager:
             )
             return
 
-        # Paper trading — record position and subscribe monitor symbols; skip real orders.
-        if PAPER_TRADING:
-            portfolio_tracker.open_position(signal, fill_price=signal.entry)
+        # Record-only book (PAPER, LEARNING) — record position and subscribe
+        # monitor symbols; skip real orders.
+        if not ctx.place_real_orders:
+            trk.open_position(signal, fill_price=signal.entry)
             logger.info(
-                f"[OrderManager] [PAPER/OPTIONS] {meta.get('strategy','')} "
+                f"[OrderManager] [{ctx.mode}/OPTIONS] {meta.get('strategy','')} "
                 f"{signal.symbol} × {lots} lot(s)"
             )
             try:
@@ -473,7 +505,7 @@ class OrderManager:
                     f"using signal.entry ₹{signal.entry:.2f} as fallback"
                 )
 
-        portfolio_tracker.open_position(signal, fill_price=actual_fill)
+        trk.open_position(signal, fill_price=actual_fill)
         try:
             from data.fyers_stream import fyers_stream
             if fyers_stream is not None:
