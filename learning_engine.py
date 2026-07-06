@@ -45,6 +45,18 @@ from config import strategy_toggles      # single source for per-strategy on/off
 LEARNING_RISK_RUPEES = float(os.getenv("LEARNING_RISK_RUPEES",
                                        str(TOTAL_CAPITAL * RISK_PER_TRADE_PCT / 100)))
 
+# New-pipeline trades (since slice 6c) live in their OWN file, using the same
+# schema PortfolioTracker/Position already write (segment "live" — the schema
+# name, not the book identity; book="LEARNING" is what keeps this book's risk
+# state/exits isolated). The OLD "nse" segment in trades.db has a genuinely
+# different, learning-only schema (target/pnl_pts/pnl_r/metadata/mae_pts/mfe_pts/
+# fees) that Position was never built to populate — writing new rows there left
+# them with empty metadata and zero pnl_pts/pnl_r (verified via smoke test). A
+# fresh isolated file sidesteps the schema mismatch entirely; get_trades() below
+# unions historical "nse" rows with this file's so nothing already recorded
+# disappears from the dashboard.
+LEARNING_DB_PATH = os.path.join(os.path.dirname(DB_PATH) or "db", "learning.db")
+
 logger = logging.getLogger(__name__)
 
 # Swing strategies are NOT forced to close at EOD by the strategy's own design intent —
@@ -85,9 +97,14 @@ class LearningEngine:
 
         # This book's own risk state, tracker and exit engine — never the LIVE
         # globals (per-book instantiable since slices 0b/1b/6a/6c-1/6c-2).
+        # db_path=LEARNING_DB_PATH, segment="live": a fresh, isolated file using
+        # the SAME schema Position/PortfolioTracker already write (see
+        # LEARNING_DB_PATH's comment above for why the legacy "nse" segment in
+        # trades.db can't be reused here).
         self._nse_risk_manager = RiskManager(book="LEARNING")
         self._nse_tracker = PortfolioTracker(
-            segment="nse", book="LEARNING", risk_manager_=self._nse_risk_manager,
+            db_path=LEARNING_DB_PATH, segment="live", book="LEARNING",
+            risk_manager_=self._nse_risk_manager,
         )
         self._nse_position_manager = PositionManager(
             tracker=self._nse_tracker, store_=store, book="LEARNING",
@@ -323,19 +340,85 @@ class LearningEngine:
     # READ API — used by dashboard
     # ─────────────────────────────────────────────────────────────
 
+    def _normalize_new_row(self, row: dict) -> dict:
+        """Translate a new-pipeline row (the shared PortfolioTracker/Position schema,
+        from LEARNING_DB_PATH) into the OLD learning_trades output shape (target/
+        pnl_pts/pnl_r/metadata/mae_pts/mfe_pts/fees) so historical and new-pipeline
+        trades render identically through the rest of this read API."""
+        options_meta = row.get("options_meta") or {}
+        if not isinstance(options_meta, dict):
+            options_meta = {}
+        meta = dict(options_meta)
+        is_options = row.get("signal_type") == "OPTIONS"
+        if is_options:
+            meta.setdefault("instrument_type", "nse_options")
+        meta.setdefault("hold_type", row.get("hold_type") or "intraday")
+
+        entry     = float(row.get("entry_price") or 0)
+        exitp     = float(row.get("exit_price") or 0)
+        direction = row.get("direction", "LONG")
+        status    = row.get("status")
+
+        pnl_pts = pnl_r = 0.0
+        fees    = 0.0
+        if status == "CLOSED" and entry > 0 and exitp > 0:
+            pts  = (exitp - entry) if (is_options or direction == "LONG") else (entry - exitp)
+            risk = abs(entry - float(row.get("original_stop_loss") or row.get("stop_loss") or 0))
+            pnl_pts = round(pts, 2)
+            pnl_r   = round(pts / risk, 2) if risk > 0 else 0.0
+            qty     = int(row.get("position_size") or 0)
+            realised = row.get("realised_pnl")
+            if qty and realised is not None:
+                fees = round(pts * qty - float(realised), 2)
+
+        return {
+            "id":            row.get("id"),
+            "symbol":        row.get("symbol"),
+            "strategy":      row.get("strategy"),
+            "direction":     direction,
+            "entry_price":   entry,
+            "exit_price":    exitp,
+            "stop_loss":     row.get("stop_loss"),
+            "target":        row.get("target_1"),
+            "rr_planned":    None,
+            "pnl_pts":       pnl_pts,
+            "pnl_r":         pnl_r,
+            "status":        status,
+            "exit_reason":   row.get("exit_reason"),
+            "entry_time":    row.get("entry_time"),
+            "exit_time":     row.get("exit_time"),
+            "metadata":      json.dumps(meta),
+            "mae_pts":       0,
+            "mfe_pts":       0,
+            "fees":          fees,
+            "position_size": row.get("position_size"),   # real qty — _real_qty() checks this first
+        }
+
     def get_trades(self, status: Optional[str] = None, limit: int = 200) -> list[dict]:
+        # Historical rows (pre-slice-6c, legacy "nse" segment schema).
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             if status:
-                rows = conn.execute(
+                legacy_rows = conn.execute(
                     "SELECT * FROM learning_trades WHERE status=? ORDER BY entry_time DESC LIMIT ?",
                     (status.upper(), limit),
                 ).fetchall()
             else:
-                rows = conn.execute(
+                legacy_rows = conn.execute(
                     "SELECT * FROM learning_trades ORDER BY entry_time DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
+        rows = [dict(r) for r in legacy_rows]
+
+        # New-pipeline rows (since slice 6c, isolated file + shared schema) —
+        # normalized to the same shape, then merged and re-sorted.
+        try:
+            new_rows = self._nse_tracker._ledger.get_rows("live", status=status, limit=limit)
+            rows += [self._normalize_new_row(r) for r in new_rows]
+        except Exception as e:
+            logger.debug(f"[Learning] Could not read new-pipeline trades: {e}")
+        rows.sort(key=lambda d: d.get("entry_time") or "", reverse=True)
+        rows = rows[:limit]
 
         result = []
         for r in rows:
