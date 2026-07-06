@@ -7,7 +7,7 @@ trailing-stop maths.
 Imported by EVERY consumer so the logic can never silently diverge:
   • strategies/reversal_5m.py        — live NSE index (Reversal5m / Reversal3m)
   • us_reversal.py                   — live US index ETFs (SPY/QQQ)
-  • learning_engine._check_exits     — the NSE option exits (trail + breakdown)
+  • execution/position_manager.py    — the NSE option exits, learning + live (slice 6c)
   • scripts/_archive/backtest_reversal_*.py — the original dev backtests (archived)
 
 The pattern/exit DECISION is exposed both as scalar predicates (for the vectorised

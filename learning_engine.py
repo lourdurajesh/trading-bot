@@ -1,16 +1,22 @@
 """
 learning_engine.py
 ──────────────────
-Runs simple learning paper trades independently of the main strategy loop.
+Runs the learning strategy bake-off (NSE equity + index options) through the
+SAME shared pipeline production uses — Strategy.evaluate() -> Signal ->
+RiskManager -> OrderManager -> PortfolioTracker -> PositionManager — just with
+this book's own instances (segment "nse", book "LEARNING"): its own risk state
+(kill-switch/daily-P&L never shared with LIVE), its own tracker, its own exit
+engine. No separate entry path, no separate exit loop (see the trading-
+architecture guardrail + memory `one-engine-never-compromise`).
 
 What it does every cycle:
-  1. Evaluates SimpleRSI + SimpleMomentum on the learning watchlist
-  2. Opens paper positions when a signal fires (if not already in one)
-  3. Monitors open positions against stop/target
-  4. Logs everything to learning_trades table (rich metadata for review)
-
-The learning trades are PAPER ONLY and completely isolated from the
-production risk manager and order manager.
+  1. Manages open positions via the shared PositionManager (STOP/target/
+     structural-exit/Chandelier-trail/underlying-point-trail/EOD/DTE — the
+     same decisions the live book gets, plus MAE/MFE instrumentation).
+  2. Evaluates every enabled equity + index-options strategy on the learning
+     watchlist and submits signals through RiskManager/OrderManager.
+  3. Everything lands in the unified ledger's "nse" segment (learning_trades
+     compat VIEW) for review.
 
 Access results via:
   GET /learning/trades   — all trades (open + closed)
@@ -23,7 +29,6 @@ import logging
 import math
 import os
 import sqlite3
-import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -35,33 +40,18 @@ from config import strategy_toggles      # single source for per-strategy on/off
 
 # Equity learning trades carry no lot size, so monetary P&L = pnl_pts × qty where qty is
 # sized to a fixed risk-per-trade (₹). This makes ₹ P&L track R (pnl_pts×qty == pnl_r×risk),
-# consistent with the lab's R metric and the system's fixed-fractional risk sizing. Tunable.
+# consistent with the lab's R metric and the system's fixed-fractional risk sizing. Used only
+# as the read-API's last-resort qty estimate for legacy rows with no stored position_size.
 LEARNING_RISK_RUPEES = float(os.getenv("LEARNING_RISK_RUPEES",
                                        str(TOTAL_CAPITAL * RISK_PER_TRADE_PCT / 100)))
 
 logger = logging.getLogger(__name__)
 
-# ── Slippage model ────────────────────────────────────────────────
-# Applied at entry (worse fill) and exit (worse fill) to make P&L realistic.
-SLIPPAGE_EQUITY  = 0.0005   # 0.05% — liquid large-caps / MCX futures
-SLIPPAGE_OPTIONS = 0.003    # 0.30% — accounts for bid-ask spread on options
-
-# ── Trading fees (round trip) ─────────────────────────────────────
-# Fyers: ₹20 flat per order (not per lot) for all segments.
-# Round trip = entry order + exit order = ₹40 flat regardless of lot count.
-# Transaction costs come from the SINGLE source: execution.fees (txn_fees) →
-# analysis/cost_model.py + config/cost_rates.json. No flat-fee constants here.
-
-# ── Swing vs intraday hold classification ─────────────────────────
-# Swing strategies are NOT forced to close at EOD; they run until
-# stop/target hit or SWING_MAX_HOLD_DAYS trading days have elapsed.
+# Swing strategies are NOT forced to close at EOD by the strategy's own design intent —
+# used only to resolve Signal.hold_type when a strategy object doesn't expose the
+# attribute directly (index-options strategies below). The shared PositionManager's
+# own MAX_HOLDING_DAYS (20 calendar days) governs how long a swing position may run.
 _SWING_STRATEGIES = {"TrendFollow"}
-SWING_MAX_HOLD_DAYS  = 5
-CHANDELIER_MULT      = 2.5   # ATR multiplier for Chandelier trailing stop
-EOD_TIGHT_HOUR       = 14    # after 2pm, tighten stop to protect 50% of intraday gain
-EOD_TIGHT_MINUTE     = 0
-MAX_BARS_INTRADAY    = 10    # 10 × 15min = 2.5hr max; RSI bounces resolve or fail within 2hr
-VOLATILITY_CONTRACTION = 0.50  # exit if current ATR < 50% of entry ATR (momentum gone)
 
 
 def _sanitize_for_json(obj):
@@ -86,10 +76,25 @@ def _sanitize_for_json(obj):
 class LearningEngine:
 
     def __init__(self):
-        self._open_positions: dict[str, dict] = {}  # symbol+strategy → trade
+        from risk.risk_manager import RiskManager
+        from risk.portfolio_tracker import PortfolioTracker
+        from execution.position_manager import PositionManager
+        from data.data_store import store
+
         self._cooldowns: dict[str, datetime] = {}
+
+        # This book's own risk state, tracker and exit engine — never the LIVE
+        # globals (per-book instantiable since slices 0b/1b/6a/6c-1/6c-2).
+        self._nse_risk_manager = RiskManager(book="LEARNING")
+        self._nse_tracker = PortfolioTracker(
+            segment="nse", book="LEARNING", risk_manager_=self._nse_risk_manager,
+        )
+        self._nse_position_manager = PositionManager(
+            tracker=self._nse_tracker, store_=store, book="LEARNING",
+            on_close=self._apply_cooldown,
+        )
+
         self._init_db()
-        self._restore_open_positions()
         self._load_cooldowns()
 
     # ─────────────────────────────────────────────────────────────
@@ -97,7 +102,7 @@ class LearningEngine:
     # ─────────────────────────────────────────────────────────────
 
     def run_cycle(self) -> None:
-        """Evaluate all strategies and manage open positions."""
+        """Manage open positions, then evaluate all strategies."""
         from config.learning_watchlist import (
             LEARNING_NSE_EQUITIES, LEARNING_NSE_INDICES,
         )
@@ -105,7 +110,6 @@ class LearningEngine:
         from strategies.mean_reversion  import MeanReversionStrategy
         from strategies.simple_momentum import SimpleMomentumStrategy
         from strategies.simple_rsi      import SimpleRSIStrategy
-        from data.data_store            import store
 
         equity_strategies = [
             TrendFollowStrategy(),
@@ -114,8 +118,8 @@ class LearningEngine:
             SimpleRSIStrategy(),
         ]
 
-        # ── 1. Monitor existing open positions ───────────────────
-        self._check_exits(store)
+        # ── 1. Monitor existing open positions — the ONE shared exit engine ──
+        self._nse_position_manager.check_all()
 
         # ── 2. Equity entries — 1 trade per symbol per strategy ──
         # MCX commodities are NOT traded here — they trade exclusively as
@@ -131,7 +135,7 @@ class LearningEngine:
             for strat in equity_strategies:
                 if not strategy_toggles.is_enabled(strat.name):
                     continue  # disabled from the dashboard (single source)
-                if f"{symbol}:{strat.name}" in self._open_positions:
+                if self._has_open(symbol, strat.name):
                     continue  # already in this strategy's trade for this symbol
                 try:
                     signal = strat.evaluate(symbol)
@@ -139,67 +143,20 @@ class LearningEngine:
                     logger.debug(f"[Learning] {strat.name}/{symbol} error: {exc}")
                     continue
                 if signal and signal.is_valid():
-                    self._open_trade(self._sig_to_learning_dict(signal, strat.name, strat))
+                    self._submit(signal, strat.name, strat)
                 elif signal:
                     logger.warning(f"[Learning] {strat.name}/{symbol}: signal failed is_valid() template check — skipping")
 
         # ── 3. Index options entries ──────────────────────────────
         self._run_index_options_learning(LEARNING_NSE_INDICES)
 
-    def _sig_to_learning_dict(self, sig, strategy_name: str, strat=None) -> dict:
-        """Serialise a Signal into the learning trade dict that _open_trade stores.
-
-        U2: every strategy now returns a Signal — the old dual-mode dict shim
-        (SimpleRSI/SimpleMomentum used to return raw dicts) is retired.
-        """
-        # Read hold_type from the strategy object itself — each strategy declares
-        # its own type. Fall back to _SWING_STRATEGIES list for any strategy that
-        # hasn't been updated yet.
-        if strat is not None and hasattr(strat, "hold_type"):
-            hold_type = strat.hold_type
-        else:
-            base_name = strategy_name.replace("_LRN", "")
-            hold_type = "swing" if base_name in _SWING_STRATEGIES else "intraday"
-
-        entry = sig.entry
-        stop  = sig.stop_loss
-        tgt   = sig.target_1
-        rr    = sig.risk_reward or (
-            round(abs(tgt - entry) / abs(entry - stop), 2)
-            if abs(entry - stop) > 0 else 0
-        )
-        # Start from the strategy's generic context (RSI/EMA/ATR/BB snapshots etc.),
-        # then layer the canonical Signal fields on top.
-        meta = dict(getattr(sig, "meta", {}) or {})
-        meta.update({
-            "regime":      sig.regime,
-            "reason":      sig.reason,
-            "confidence":  sig.confidence,
-            "signal_type": sig.signal_type.value if hasattr(sig.signal_type, "value") else str(sig.signal_type),
-            "hold_type":   hold_type,
-        })
-        if sig.options_meta:
-            meta.update(sig.options_meta)
-        if getattr(sig, "signal_type", None) and sig.signal_type.value == "OPTIONS":
-            meta["instrument_type"] = "nse_options"
-        return {
-            "strategy":    strategy_name,
-            "symbol":      sig.symbol,
-            "direction":   sig.direction.value,
-            "entry_price": entry,
-            "stop_loss":   stop,
-            "target":      tgt,
-            "target_2":    sig.target_2,
-            "rr":          rr,
-            "metadata":    meta,
-        }
-
     def _run_index_options_learning(self, index_symbols: list) -> None:
         """
-        Evaluate DirectionalOptions and InstitutionalMomentum on NIFTY/BANKNIFTY/FINNIFTY.
-        Tracks using actual option premium (entry=debit cost, stop=50% loss, target=max_profit).
-        _check_exits() uses nfo_symbol LTP for premium-based P&L in rupees.
-        Paper wallet mirrors use lot-based sizing (lots × lot_size × premium).
+        Evaluate DirectionalOptions / InstitutionalMomentum / Reversal5m(+3m) on
+        NIFTY/BANKNIFTY/FINNIFTY. Entries route through the same RiskManager/
+        OrderManager as equity; exits are the shared PositionManager's options
+        path (premium STOP/TARGET, or the underlying point-trail for strategies
+        that opt into options_meta["exit_mode"]="underlying_trail").
         """
         try:
             from strategies.directional_options    import DirectionalOptionsStrategy
@@ -223,7 +180,7 @@ class LearningEngine:
                     if not strategy_toggles.is_enabled(strat.name):
                         continue  # disabled from the dashboard (single source)
                     strat_name = f"{strat.name}_LRN"
-                    if f"{symbol}:{strat_name}" in self._open_positions:
+                    if self._has_open(symbol, strat_name):
                         continue
                     try:
                         sig = strat.evaluate(symbol)
@@ -231,649 +188,56 @@ class LearningEngine:
                         logger.debug(f"[Learning/IndexOptions] {strat.name}/{symbol}: {exc}")
                         continue
                     if sig and sig.is_valid():
-                        self._open_trade(self._sig_to_learning_dict(sig, strat_name))
+                        self._submit(sig, strat_name, strat)
                     elif sig:
                         logger.warning(f"[Learning/IndexOptions] {strat.name}/{symbol}: signal failed is_valid() template check — skipping")
         except Exception as e:
             logger.debug(f"[Learning/IndexOptions] setup error: {e}")
 
     # ─────────────────────────────────────────────────────────────
-    # TRADE MANAGEMENT
+    # TRADE ENTRY — the ONE shared pipeline (RiskManager -> OrderManager -> tracker)
     # ─────────────────────────────────────────────────────────────
 
-    def _open_trade(self, signal: dict) -> None:
-        symbol   = signal["symbol"]
-        strategy = signal["strategy"]
-        meta     = signal.get("metadata") or {}
-        direction        = signal["direction"]
-        instrument_type  = meta.get("instrument_type", "")
+    def _has_open(self, symbol: str, strategy: str) -> bool:
+        """Whether THIS strategy already holds a position on this symbol. Learning
+        allows several strategies on the same symbol at once (the bake-off) —
+        risk_manager's duplicate-symbol check is skipped for this book precisely
+        so this per-(symbol,strategy) check is the only dedup that applies."""
+        return any(p["symbol"] == symbol and p["strategy"] == strategy
+                   for p in self._nse_tracker.get_open_positions())
 
-        # Refuse to open an options trade without a real contract symbol — it cannot be monitored
-        if instrument_type == "nse_options" and not meta.get("nfo_symbol"):
-            logger.warning(f"[Learning] Skipping {strategy} {symbol} — options trade has no nfo_symbol (no chain data)")
-            return
+    def _resolve_hold_type(self, strategy_name: str, strat=None) -> str:
+        """Read hold_type from the strategy object itself when it declares one;
+        otherwise fall back to the swing-strategy allowlist."""
+        if strat is not None and hasattr(strat, "hold_type"):
+            return strat.hold_type
+        base_name = strategy_name.replace("_LRN", "")
+        return "swing" if base_name in _SWING_STRATEGIES else "intraday"
 
-        # Apply entry slippage: buyer pays more, seller receives less
-        slip     = SLIPPAGE_OPTIONS if instrument_type == "nse_options" else SLIPPAGE_EQUITY
-        raw_entry = float(signal["entry_price"])
-        if direction == "LONG" or instrument_type == "nse_options":
-            entry_price = round(raw_entry * (1 + slip), 2)
-        else:
-            entry_price = round(raw_entry * (1 - slip), 2)
+    def _submit(self, sig, strategy_name: str, strat=None) -> None:
+        """Route a learning Signal through the SAME shared pipeline production
+        uses: this book's own RiskManager (sizing + risk gates, own kill-switch)
+        -> OrderManager (record-only, LEARNING context) -> PortfolioTracker.
+        No separate learning entry path, no separate sizing."""
+        sig.strategy  = strategy_name   # preserve the _LRN-suffixed name for reporting
+        sig.hold_type = self._resolve_hold_type(strategy_name, strat)
 
-        # Store risk context for trailing stop — equity/futures only
-        if instrument_type != "nse_options":
-            risk_pts = round(abs(entry_price - float(signal["stop_loss"])), 2)
-            meta["risk_pts"]      = risk_pts
-            meta["original_stop"] = float(signal["stop_loss"])
-            # Persist target_2 in metadata so it survives bot restarts (no DB column)
-            if signal.get("target_2"):
-                meta["target_2"] = float(signal["target_2"])
-
-        trade_id = f"LRN-{uuid.uuid4().hex[:8].upper()}"
-        now_str  = datetime.now(tz=IST).isoformat()
-
-        trade = {
-            "id":           trade_id,
-            "symbol":       symbol,
-            "strategy":     strategy,
-            "direction":    direction,
-            "entry_price":  entry_price,
-            "stop_loss":    signal["stop_loss"],
-            "target":       signal["target"],
-            "target_2":     float(signal.get("target_2") or 0),
-            "rr":           signal["rr"],
-            "metadata":     meta,
-            "entry_time":   now_str,
-            "status":       "OPEN",
-            "mae_pts":      0.0,
-            "mfe_pts":      0.0,
-        }
-
-        self._open_positions[f"{symbol}:{strategy}"] = trade
-        self._db_insert(trade)
-        logger.info(
-            f"[Learning] OPEN {trade_id} | {strategy} {signal['direction']} {symbol} "
-            f"@ {signal['entry_price']:.2f} | SL {signal['stop_loss']:.2f} "
-            f"T {signal['target']:.2f} | R:R {signal['rr']:.1f}"
+        from execution.order_manager import order_manager
+        from execution.run_context import learning_context
+        order_manager.submit(
+            sig, ctx=learning_context(),
+            tracker=self._nse_tracker, risk_manager_=self._nse_risk_manager,
         )
 
-        # Mirror to paper wallet — capital-limited; options use lot-based sizing.
-        # Persist the REAL executed quantity on the trade so P&L everywhere is
-        # (LTP − entry) × qty − fees, identical to the Paper Positions widget
-        # and the live portfolio (no risk-amount proxy).
-        try:
-            from paper_trading import paper_trading_engine
-            exec_qty = paper_trading_engine.mirror_learning_open(trade)
-            if exec_qty:
-                # equity: shares; options: lots × lot_size — the real order size
-                meta["position_size"] = int(exec_qty)
-                self._db_update_metadata(trade_id, meta)
-        except Exception as exc:
-            logger.debug(f"[Learning] Paper mirror open error: {exc}")
+    # ─────────────────────────────────────────────────────────────
+    # MANUAL CLOSE (dashboard)
+    # ─────────────────────────────────────────────────────────────
 
-        # Subscribe NFO option contract for live tick monitoring
-        if instrument_type == "nse_options":
-            syms = []
-            nfo = meta.get("nfo_symbol")
-            if nfo:
-                syms.append(nfo)
-            for leg in meta.get("entry_legs", []):
-                s = leg.get("symbol")
-                if s and s not in syms:
-                    syms.append(s)
-            if syms:
-                try:
-                    from data.fyers_stream import fyers_stream
-                    if fyers_stream is not None:
-                        fyers_stream.subscribe_extra(syms)
-                except Exception as e:
-                    logger.error(f"[Learning] Failed to subscribe options ticks for {symbol}: {e}")
-
-    def _underlying_trail_exit(self, metadata: dict, opt_ltp: float, store):
-        """
-        Underlying index-point trailing stop for an option-BUYING trade.
-
-        Initial stop = entry_spot − sl_pts. As the index makes new highs, ratchet
-        the stop up to (peak_spot − trail_pts). Exit the option at its current
-        premium LTP when the index trades at/through the trailed stop. peak/stop
-        are tracked in `metadata` (in-memory across cycles). Returns
-        (reason, opt_ltp) or (None, None) when not triggered / no index tick.
-        """
-        from execution.exit_rules import underlying_exit
-        und  = metadata.get("underlying")
-        spot = store.get_ltp(und) if und else None
-        if not spot or spot <= 0:
-            return None, None   # no index tick this cycle — re-check next time
-        entry_spot = float(metadata.get("entry_spot") or 0)
-        sl_pts     = float(metadata.get("sl_pts") or 0)
-        trail_pts  = float(metadata.get("trail_pts") or 0)
-        peak = float(metadata.get("peak_spot") or entry_spot)
-        stop = float(metadata.get("trail_stop_spot") or (entry_spot - sl_pts))
-        reason, peak, stop = underlying_exit(spot, entry_spot, sl_pts, trail_pts, peak, stop, pct=False)
-        metadata["peak_spot"] = peak
-        metadata["trail_stop_spot"] = stop
-        return (reason, opt_ltp) if reason else (None, None)
-
-    def _underlying_breakdown_exit(self, metadata: dict, opt_ltp: float, store):
-        """
-        Exit a long index call on either:
-          (a) a hard stop — index trades sl_pts below entry_spot, or
-          (b) a 'bear breakdown' — the latest 5m index candle is red AND closes below
-              the previous 5m candle's low (mirror of the entry trigger).
-        Returns (reason, opt_ltp) or (None, None). Best for NIFTY/BANKNIFTY (backtest).
-        """
-        from execution.exit_rules import underlying_exit, bear_breakdown
-        und = metadata.get("underlying")
-        spot = store.get_ltp(und) if und else None
-        entry_spot = float(metadata.get("entry_spot") or 0)
-        sl_pts     = float(metadata.get("sl_pts") or 0)
-        try:
-            bd = bear_breakdown(store.get_ohlcv(und, "5m", n=3))
-        except Exception:
-            bd = False
-        # hard stop (sl_pts below entry) OR bear breakdown — shared decision (no trail)
-        reason, _, _ = underlying_exit(spot, entry_spot, sl_pts, 0.0,
-                                       entry_spot, entry_spot - sl_pts, breakdown=bd, pct=False)
-        return (reason, opt_ltp) if reason else (None, None)
-
-    def _check_exits(self, store) -> None:
-        from datetime import time as dtime
-        closed_keys = []
-
-        for key, trade in list(self._open_positions.items()):
-            symbol   = trade["symbol"]
-            metadata = trade.get("metadata") or {}
-            if not isinstance(metadata, dict):
-                metadata = {}
-            instrument_type = metadata.get("instrument_type", "")
-            nfo_symbol      = metadata.get("nfo_symbol")
-            lot_size        = int(metadata.get("lot_size", 1)) or 1
-
-            # Options trades without a real contract symbol can't be monitored —
-            # force EOD-close them rather than leaving them open forever
-            if instrument_type == "nse_options" and not nfo_symbol:
-                now_time = datetime.now(tz=IST).time()
-                if now_time >= dtime(15, 20):
-                    self._db_close(trade["id"], trade["entry_price"], "EOD_NO_CONTRACT", 0.0, 0.0, 0.0, 0.0)
-                    closed_keys.append(key)
-                    logger.warning(f"[Learning] EOD-closed {trade['id']} — options trade had no nfo_symbol")
-                    try:
-                        from paper_trading import paper_trading_engine
-                        paper_trading_engine.mirror_learning_close(trade["id"], trade["entry_price"], "EOD_NO_CONTRACT")
-                    except Exception:
-                        pass
-                continue
-
-            # Options must use nfo_symbol LTP — never fall back to index LTP
-            # (index at 25,000 against premium stop at ₹100 would never trigger)
-            if instrument_type == "nse_options":
-                ltp = store.get_ltp(nfo_symbol)
-                _eod_now = datetime.now(tz=IST).time() >= dtime(15, 20)
-                if (not ltp or ltp <= 0) and not _eod_now:
-                    continue  # tick data unavailable — wait for next cycle
-                if not ltp or ltp <= 0:
-                    ltp = trade["entry_price"]  # EOD fallback: record exit at entry (P&L = fees)
-            else:
-                ltp = store.get_ltp(symbol)
-            if not ltp:
-                continue
-
-            direction = trade["direction"]
-            entry     = trade["entry_price"]
-            hold_type = metadata.get("hold_type", "intraday")
-
-            # MAE/MFE — update first; Chandelier derives peak_ltp from mfe_pts
-            if instrument_type == "nse_options":
-                adverse    = entry - ltp
-                favourable = ltp - entry
-            elif direction == "LONG":
-                adverse    = entry - ltp
-                favourable = ltp - entry
-            else:
-                adverse    = ltp - entry
-                favourable = entry - ltp
-            _prev_mae, _prev_mfe = trade["mae_pts"], trade["mfe_pts"]
-            trade["mae_pts"] = max(trade["mae_pts"], adverse)
-            trade["mfe_pts"] = max(trade["mfe_pts"], favourable)
-            # Persist MAE/MFE when they advance so a restart resumes the true
-            # excursion (and the Chandelier peak derived from it) instead of
-            # resetting to entry. Only writes on a new high/low — not every cycle.
-            if trade["mae_pts"] > _prev_mae + 1e-9 or trade["mfe_pts"] > _prev_mfe + 1e-9:
-                try:
-                    ledger.update_fields("nse", trade["id"],
-                                         mae_pts=round(trade["mae_pts"], 2),
-                                         mfe_pts=round(trade["mfe_pts"], 2))
-                except Exception as exc:
-                    logger.debug(f"[Learning] MAE/MFE persist error {trade['id']}: {exc}")
-
-            # Strategy-aware exit style (single source: execution/exit_policy + config).
-            #   trend_trail           → Chandelier trail + 1R partial + run to T2 (let it run)
-            #   mean_reversion_target → hard FULL exit at the target (snap-back reverts)
-            from execution.exit_policy import exit_style, MEAN_REVERSION
-            style = exit_style(trade.get("strategy", ""))
-            is_mean_rev = (style == MEAN_REVERSION)
-
-            # Trail and protect (equity/futures only). Partial booking + run-to-T2 is
-            # a TREND tactic; mean-reversion takes the whole target, so no partial.
-            if instrument_type != "nse_options":
-                self._update_chandelier_stop(trade, ltp)
-                self._apply_time_tightening(trade, ltp)
-                if not is_mean_rev:
-                    self._check_partial_booking(trade, ltp)
-
-            # Read stop/target AFTER all trail updates
-            stop        = trade["stop_loss"]
-            target      = trade["target"]
-            target_2    = trade.get("target_2", 0)
-            # Trend: run to T2 when present. Mean-reversion: hard exit at T1 (target).
-            if is_mean_rev or target_2 <= 0:
-                final_target = target
-                final_reason = "TARGET"
-            else:
-                final_target = target_2
-                final_reason = "TARGET2"
-            exit_reason = None
-            exit_price  = None
-
-            # Stop / target exits
-            if instrument_type == "nse_options":
-                _em = metadata.get("exit_mode")
-                if _em == "underlying_trail":
-                    # Index-point trailing stop on the UNDERLYING (exits the option at
-                    # its premium LTP when the index breaches the trailed stop).
-                    exit_reason, exit_price = self._underlying_trail_exit(metadata, ltp, store)
-                elif _em == "underlying_breakdown":
-                    # Hard SL on the underlying + exit when a red 5m index candle
-                    # closes below the prior 5m low (Reversal5m NIFTY/BANKNIFTY).
-                    exit_reason, exit_price = self._underlying_breakdown_exit(metadata, ltp, store)
-                else:
-                    # Premium-level SL/target — shared decision (execution/exit_rules).
-                    from execution.exit_rules import premium_exit
-                    _pr = premium_exit(ltp, stop, target)
-                    if _pr:
-                        exit_reason, exit_price = _pr, ltp
-            elif direction == "LONG":
-                if ltp <= stop:
-                    original_stop = metadata.get("original_stop", stop)
-                    exit_reason = "TRAIL_STOP" if abs(stop - original_stop) > 0.01 else "STOP"
-                    exit_price  = ltp
-                elif ltp >= final_target:
-                    exit_reason, exit_price = final_reason, ltp
-            else:
-                if ltp >= stop:
-                    original_stop = metadata.get("original_stop", stop)
-                    exit_reason = "TRAIL_STOP" if abs(stop - original_stop) > 0.01 else "STOP"
-                    exit_price  = ltp
-                elif ltp <= final_target:
-                    exit_reason, exit_price = final_reason, ltp
-
-            # ── Structural exits (single source: execution/exit_signals) ──────────
-            # Close a winner that is reversing/stalling BEFORE it round-trips to the
-            # SL — the "exit when the trend turns" logic. Evaluated on the UNDERLYING
-            # (index for options, the symbol for equity). Hard SL/target take priority;
-            # the module self-gates to fire only once the trade is in profit.
-            if exit_reason is None:
-                from execution.exit_signals import structural_exit, config as _xs_cfg
-                _tf = _xs_cfg().get("timeframe", "5m")
-                if instrument_type == "nse_options":
-                    und = metadata.get("underlying")
-                    ref = float(metadata.get("entry_spot") or 0)
-                    und_dir = "SHORT" if "PE" in (nfo_symbol or "").upper() else "LONG"
-                    if und and ref > 0:
-                        sx = structural_exit(store.get_ohlcv(und, _tf), und_dir, ref)
-                        if sx:
-                            exit_reason, exit_price = sx, ltp
-                else:
-                    sx = structural_exit(store.get_ohlcv(symbol, _tf), direction, entry)
-                    if sx:
-                        exit_reason, exit_price = sx, ltp
-
-            # Signal reversal exit — only when profitable; let stop handle losses.
-            # Firing on an unprofitable trade exits at a tiny gain while the stop was
-            # still 1.5×ATR away — terrible risk/reward.
-            if exit_reason is None and instrument_type != "nse_options":
-                is_profitable = (
-                    (direction == "LONG"  and ltp > entry) or
-                    (direction == "SHORT" and ltp < entry)
-                )
-                if is_profitable and self._check_signal_reversal(trade, store):
-                    exit_reason = "SIGNAL_REVERSAL"
-                    exit_price  = ltp
-
-            # BB middle cross — price returned through centre band, bounce failed
-            if exit_reason is None and instrument_type != "nse_options":
-                bb_exit = self._check_bb_middle_exit(trade, ltp, store)
-                if bb_exit:
-                    exit_reason = bb_exit
-                    exit_price  = ltp
-
-            # Time-based exit — max N bars to prevent dead-money trades lingering all day
-            if exit_reason is None and trade.get("strategy") == "SimpleRSI":
-                try:
-                    entry_dt     = datetime.fromisoformat(trade["entry_time"]).astimezone(IST)
-                    elapsed_secs = (datetime.now(tz=IST) - entry_dt).total_seconds()
-                    bars_elapsed = int(elapsed_secs // (15 * 60))
-                    if bars_elapsed >= MAX_BARS_INTRADAY:
-                        exit_reason = "TIME_EXIT"
-                        exit_price  = ltp
-                except Exception:
-                    pass
-
-            # Volatility contraction — ATR collapsed, momentum is gone
-            if exit_reason is None and instrument_type != "nse_options":
-                if self._check_volatility_exit(trade, store):
-                    exit_reason = "VOLATILITY_EXIT"
-                    exit_price  = ltp
-
-            # EOD close only for intraday strategies
-            # Swing strategies run across sessions until stop/target or max hold
-            now_time = datetime.now(tz=IST).time()
-            if now_time >= dtime(15, 20) and exit_reason is None:
-                if hold_type == "intraday":
-                    exit_reason = "EOD"
-                    exit_price  = ltp
-                else:
-                    try:
-                        entry_dt  = datetime.fromisoformat(trade["entry_time"]).astimezone(IST)
-                        days_held = (datetime.now(tz=IST) - entry_dt).days
-                        if days_held >= SWING_MAX_HOLD_DAYS:
-                            exit_reason = "MAX_HOLD"
-                            exit_price  = ltp
-                    except Exception:
-                        pass
-
-            if exit_reason:
-                # Gap 3: apply exit slippage (exit at worse price)
-                slip = SLIPPAGE_OPTIONS if instrument_type == "nse_options" else SLIPPAGE_EQUITY
-                if direction == "LONG" or instrument_type == "nse_options":
-                    eff_exit = round(exit_price * (1 - slip), 2)  # sell at bid
-                else:
-                    eff_exit = round(exit_price * (1 + slip), 2)  # buy back at ask
-
-                # Round-trip transaction cost from the SINGLE source (cost_model),
-                # on the REAL executed quantity (shares, or lots × lot_size).
-                _qty = self._real_qty(trade)
-                if instrument_type == "nse_options":
-                    # pnl_pts = premium move per unit (same units as entry_price)
-                    # monetary P&L = pnl_pts × qty − fees (computed at read time in get_trades)
-                    fees = txn_fees.round_trip("OPTIONS", entry, eff_exit, _qty)
-                    pnl_pts = round(eff_exit - entry, 2)
-                    pnl_r   = round((eff_exit - entry) / abs(entry - stop), 2) if abs(entry - stop) > 0 else 0
-                else:
-                    fees = txn_fees.round_trip("EQUITY", entry, eff_exit, _qty)
-                    # Partial booking: 50% was booked at 1R; blend with final exit
-                    if metadata.get("partial_booked") and metadata.get("partial_price"):
-                        half_price = float(metadata["partial_price"])
-                        half1 = (half_price - entry) if direction == "LONG" else (entry - half_price)
-                        half2 = (eff_exit  - entry) if direction == "LONG" else (entry - eff_exit)
-                        pnl_pts = round((half1 + half2) / 2, 2)
-                    else:
-                        pnl_pts = round((eff_exit - entry) if direction == "LONG" else (entry - eff_exit), 2)
-                    # pnl_r against original risk (not trailed stop) for consistent R reporting
-                    orig_risk = abs(entry - float(metadata.get("original_stop", stop)))
-                    pnl_r = round(pnl_pts / orig_risk, 2) if orig_risk > 0 else 0
-
-                exit_price = eff_exit  # store slippage-adjusted price
-
-                self._db_close(
-                    trade["id"], exit_price, exit_reason, pnl_pts, pnl_r,
-                    trade["mae_pts"], trade["mfe_pts"], fees,
-                )
-                closed_keys.append(key)
-                logger.info(
-                    f"[Learning] CLOSE {trade['id']} | {exit_reason} @ {exit_price:.2f} "
-                    f"| PnL {pnl_pts:+.2f} ({'₹' if instrument_type=='nse_options' else 'pts'}) "
-                    f"fees ₹{fees:.0f} ({pnl_r:+.1f}R)"
-                )
-
-                win_exits = {"TARGET", "TARGET1", "TARGET2", "TRAIL_STOP", "SIGNAL_REVERSAL",
-                             "BB_MID_CROSS", "TIME_EXIT", "VOLATILITY_EXIT"}
-                if exit_reason in win_exits:
-                    self._apply_cooldown(symbol, minutes=30)
-                else:
-                    self._apply_cooldown(symbol, minutes=60)
-
-                try:
-                    from paper_trading import paper_trading_engine
-                    paper_trading_engine.mirror_learning_close(
-                        trade["id"], exit_price, exit_reason
-                    )
-                except Exception as exc:
-                    logger.debug(f"[Learning] Paper mirror close error: {exc}")
-
-        for k in closed_keys:
-            del self._open_positions[k]
-
-    def _update_chandelier_stop(self, trade: dict, ltp: float) -> None:
-        """Chandelier Exit: trail stop at N×ATR from the highest high (LONG) or lowest low (SHORT).
-
-        Adapts to volatility — stays loose in a smooth trend, tightens when ATR expands.
-        Uses ATR from entry metadata; peak_ltp is derived from mfe_pts on first call after restart.
-        """
-        metadata     = trade.get("metadata") or {}
-        direction    = trade["direction"]
-        entry        = trade["entry_price"]
-        atr_val      = float(metadata.get("atr", 0) or 0)
-        if atr_val <= 0:
-            return  # strategy didn't compute ATR — skip
-
-        # Derive peak/trough from mfe_pts if not yet tracked this session
-        if "peak_ltp" not in trade:
-            mfe = trade.get("mfe_pts", 0)
-            trade["peak_ltp"] = (entry + mfe) if direction == "LONG" else (entry - mfe)
-
-        # Mean-reversion strategies (SimpleRSI) need a tight 1×ATR trail so the
-        # SL ratchets up quickly. Trend-following strategies keep the loose 2.5× trail.
-        mult = 1.0 if trade.get("strategy") == "SimpleRSI" else CHANDELIER_MULT
-
-        current_stop = trade["stop_loss"]
-
-        if direction == "LONG":
-            trade["peak_ltp"] = max(trade["peak_ltp"], ltp)
-            chandelier = round(trade["peak_ltp"] - mult * atr_val, 2)
-            if chandelier <= current_stop:
-                return  # don't loosen the stop
-            trade["stop_loss"] = chandelier
-        else:  # SHORT
-            trade["peak_ltp"] = min(trade["peak_ltp"], ltp)
-            chandelier = round(trade["peak_ltp"] + mult * atr_val, 2)
-            if chandelier >= current_stop:
-                return  # don't loosen the stop
-            trade["stop_loss"] = chandelier
-
-        logger.info(
-            f"[Learning] CHANDELIER {trade['id']} | "
-            f"peak {trade['peak_ltp']:.2f} ± {mult}×ATR({atr_val:.2f}) "
-            f"= stop {current_stop:.2f} → {trade['stop_loss']:.2f}"
-        )
-        self._db_update_stop(trade["id"], trade["stop_loss"])
-
-    def _apply_time_tightening(self, trade: dict, ltp: float) -> None:
-        """After 14:00, tighten stop to protect at least 50% of any open intraday gain.
-
-        Prevents giving back profit at EOD when there's no time to reach the target.
-        """
-        from datetime import time as dtime
-        if datetime.now(tz=IST).time() < dtime(EOD_TIGHT_HOUR, EOD_TIGHT_MINUTE):
-            return
-
-        direction    = trade["direction"]
-        entry        = trade["entry_price"]
-        current_stop = trade["stop_loss"]
-
-        if direction == "LONG":
-            profit_pts = ltp - entry
-            if profit_pts <= 0:
-                return
-            protective = round(entry + 0.5 * profit_pts, 2)
-            if protective <= current_stop:
-                return  # already protected at least this much
-            trade["stop_loss"] = protective
-        else:  # SHORT
-            profit_pts = entry - ltp
-            if profit_pts <= 0:
-                return
-            protective = round(entry - 0.5 * profit_pts, 2)
-            if protective >= current_stop:
-                return
-            trade["stop_loss"] = protective
-
-        logger.info(
-            f"[Learning] EOD-TIGHT {trade['id']} | "
-            f"protecting 50% of {profit_pts:.1f} pts | "
-            f"stop {current_stop:.2f} → {trade['stop_loss']:.2f}"
-        )
-        self._db_update_stop(trade["id"], trade["stop_loss"])
-
-    def _check_partial_booking(self, trade: dict, ltp: float) -> None:
-        """Simulate booking 50% of the position when 1R profit is first reached.
-
-        Records partial_booked and partial_price in metadata so the final P&L
-        calculation blends the booked half with the remaining position's outcome.
-        """
-        metadata = trade.get("metadata") or {}
-        if metadata.get("partial_booked"):
-            return  # already recorded
-
-        direction = trade["direction"]
-        entry     = trade["entry_price"]
-        risk_pts  = float(metadata.get("risk_pts", 0) or 0)
-        if risk_pts <= 0:
-            return
-
-        reached_1r = (ltp >= entry + risk_pts) if direction == "LONG" else (ltp <= entry - risk_pts)
-        if not reached_1r:
-            return
-
-        metadata["partial_booked"] = True
-        metadata["partial_price"]  = round(ltp, 2)
-        trade["metadata"] = metadata
-        logger.info(
-            f"[Learning] PARTIAL BOOK {trade['id']} | "
-            f"50% @ {ltp:.2f} (+{risk_pts:.1f} pts, 1R)"
-        )
-        self._db_update_metadata(trade["id"], metadata)
-
-        # Move SL to breakeven — remaining 50% rides for free.
-        # Only tighten: if Chandelier already pushed SL above entry, don't move it back.
-        current_sl = trade.get("stop_loss", entry)
-        if direction == "LONG" and current_sl < entry:
-            trade["stop_loss"] = entry
-            self._db_update_stop(trade["id"], entry)
-            logger.info(f"[Learning] BREAKEVEN {trade['id']} | SL → ₹{entry:.2f} (partial booked)")
-        elif direction == "SHORT" and current_sl > entry:
-            trade["stop_loss"] = entry
-            self._db_update_stop(trade["id"], entry)
-            logger.info(f"[Learning] BREAKEVEN {trade['id']} | SL → ₹{entry:.2f} (partial booked)")
-
-    def _check_signal_reversal(self, trade: dict, store) -> bool:
-        """Return True when the condition that triggered entry has reversed.
-
-        SimpleMomentum: EMA9/21 crossed back the other way.
-        SimpleRSI: RSI returned past the 50 midpoint (bounce/reversion complete).
-        """
-        strategy  = trade.get("strategy", "")
-        symbol    = trade["symbol"]
-        direction = trade["direction"]
-        try:
-            if strategy == "SimpleMomentum":
-                from analysis.indicators import ema
-                df = store.get_ohlcv(symbol, "1H", n=30)
-                if df is None or len(df) < 5:
-                    return False
-                e9   = ema(df["close"], 9)
-                e21  = ema(df["close"], 21)
-                diff = e9.iloc[-1] - e21.iloc[-1]
-                return (direction == "LONG" and diff < 0) or (direction == "SHORT" and diff > 0)
-
-            if strategy == "SimpleRSI":
-                from analysis.indicators import rsi
-                df = store.get_ohlcv(symbol, "15m", n=30)
-                if df is None or len(df) < 5:
-                    return False
-                rsi_val = rsi(df["close"]).iloc[-1]
-                # 50 is too close to the midline — RSI oscillates through it on every normal
-                # candle. Use 55/45 to confirm momentum is genuinely lost, not just a wobble.
-                return (direction == "LONG" and rsi_val > 55) or (direction == "SHORT" and rsi_val < 45)
-
-        except Exception as e:
-            logger.debug(f"[Learning] Signal reversal check error for {trade['id']}: {e}")
-        return False
-
-    def _check_bb_middle_exit(self, trade: dict, ltp: float, store) -> Optional[str]:
-        """
-        Exit when price crosses BACK through the BB middle after having crossed it first.
-
-        At entry, oversold LONG is below BB mid and overbought SHORT is above BB mid.
-        Firing immediately would exit every trade on the first cycle — so we guard with
-        mfe_pts: the trade must have moved past the BB midline before the exit can fire.
-        """
-        if trade.get("strategy") != "SimpleRSI":
-            return None
-        direction = trade["direction"]
-        entry     = trade["entry_price"]
-        metadata  = trade.get("metadata") or {}
-        try:
-            from analysis.indicators import bollinger_bands
-            df = store.get_ohlcv(trade["symbol"], "15m", n=30)
-            if df is None or len(df) < 20:
-                return None
-            _, middle, _ = bollinger_bands(df["close"])
-            bb_mid = middle.iloc[-1]
-
-            # Guard: price must have crossed the BB midline from entry before we use this exit.
-            # bb_middle stored at entry tells us how far price needed to travel.
-            bb_mid_at_entry = float(metadata.get("bb_middle", 0))
-            if bb_mid_at_entry > 0:
-                required_mfe = abs(entry - bb_mid_at_entry)
-                if trade.get("mfe_pts", 0) < required_mfe:
-                    return None  # price never crossed BB midline — not a valid reversal
-
-            if direction == "LONG" and ltp < bb_mid:
-                return "BB_MID_CROSS"
-            if direction == "SHORT" and ltp > bb_mid:
-                return "BB_MID_CROSS"
-        except Exception as e:
-            logger.debug(f"[Learning] BB middle exit check error for {trade['id']}: {e}")
-        return None
-
-    def _check_volatility_exit(self, trade: dict, store) -> bool:
-        """
-        Exit if current ATR has dropped below 50% of entry ATR — momentum has dried up
-        and the trade is unlikely to reach its target. Recycle capital elsewhere.
-        Only applied to SimpleRSI trades (entry_atr stored in metadata).
-        """
-        if trade.get("strategy") != "SimpleRSI":
-            return False
-        metadata  = trade.get("metadata") or {}
-        entry_atr = float(metadata.get("entry_atr") or 0)
-        if entry_atr <= 0:
-            return False
-        try:
-            from analysis.indicators import atr
-            df = store.get_ohlcv(trade["symbol"], "15m", n=30)
-            if df is None or len(df) < 15:
-                return False
-            current_atr = atr(df).iloc[-1]
-            return current_atr < VOLATILITY_CONTRACTION * entry_atr
-        except Exception as e:
-            logger.debug(f"[Learning] Volatility exit check error for {trade['id']}: {e}")
-        return False
-
-    def _db_update_stop(self, trade_id: str, new_stop: float) -> None:
-        try:
-            from execution import ledger
-            ledger.update_fields("nse", trade_id, stop_loss=new_stop)
-        except Exception as e:
-            logger.debug(f"[Learning] Could not persist trailing stop for {trade_id}: {e}")
-
-    def _db_update_metadata(self, trade_id: str, metadata: dict) -> None:
-        try:
-            from execution import ledger
-            ledger.update_fields("nse", trade_id, metadata=json.dumps(metadata))
-        except Exception as e:
-            logger.debug(f"[Learning] Could not persist metadata for {trade_id}: {e}")
+    def manual_close(self, trade_id: str, reason: str = "MANUAL") -> bool:
+        """Close an OPEN learning trade now (dashboard manual close). Trade-id
+        based — a symbol can have several open positions at once (the bake-off),
+        so a symbol-keyed close would be ambiguous."""
+        return self._nse_tracker.force_close_by_id(trade_id, reason)
 
     # ─────────────────────────────────────────────────────────────
     # COOLDOWN + EARNINGS VETO
@@ -944,11 +308,8 @@ class LearningEngine:
     # ─────────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
-        # Trades now live in the unified `ledger` store; `learning_trades` is a
-        # compatibility VIEW created by ledger.init() (U5-slice-2). This engine reads
-        # that view (SELECT * FROM learning_trades) and writes via execution.ledger.
-        from execution import ledger
-        ledger.init()
+        # Trades live in the unified ledger (PortfolioTracker.__init__ already
+        # calls ledger.init()); only the cooldowns table is learning-specific.
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS learning_cooldowns (
@@ -957,135 +318,6 @@ class LearningEngine:
                 )
             """)
         logger.info("[Learning] DB tables ready")
-
-    def _restore_open_positions(self) -> None:
-        """Reload OPEN positions from DB into memory — prevents duplicates across restarts.
-        Trades from a previous day are immediately marked STALE (they missed EOD close)."""
-        today = datetime.now(tz=IST).date()
-
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM learning_trades WHERE status='OPEN'"
-            ).fetchall()
-
-        restored = 0
-        stale    = 0
-        for r in rows:
-            trade = dict(r)
-            try:
-                trade["metadata"] = json.loads(trade.get("metadata") or "{}")
-            except Exception:
-                trade["metadata"] = {}
-            trade["mae_pts"]  = trade.get("mae_pts") or 0.0
-            trade["mfe_pts"]  = trade.get("mfe_pts") or 0.0
-            trade["target_2"] = float(trade.get("metadata", {}).get("target_2") or 0)
-
-            # Trades from a prior day missed their EOD close — mark STALE
-            try:
-                entry_date = datetime.fromisoformat(trade["entry_time"]).astimezone(IST).date()
-            except Exception:
-                entry_date = today
-
-            if entry_date < today:
-                hold_type = trade.get("metadata", {}).get("hold_type", "intraday")
-                days_held = (today - entry_date).days
-                # Swing trades within max hold window resume normally
-                if hold_type == "swing" and days_held <= SWING_MAX_HOLD_DAYS:
-                    self._open_positions[f"{trade['symbol']}:{trade['strategy']}"] = trade
-                    restored += 1
-                    logger.info(
-                        f"[Learning] RESUME swing {trade['id']} | {trade['strategy']} "
-                        f"{trade['symbol']} — day {days_held}/{SWING_MAX_HOLD_DAYS}"
-                    )
-                    continue
-                self._db_close(
-                    trade["id"], trade["entry_price"], "STALE",
-                    0.0, 0.0, trade["mae_pts"], trade["mfe_pts"],
-                )
-                stale += 1
-                logger.info(f"[Learning] STALE {trade['id']} | {trade['strategy']} {trade['symbol']} — missed EOD close on {entry_date}")
-                try:
-                    from paper_trading import paper_trading_engine
-                    paper_trading_engine.mirror_learning_close(
-                        trade["id"], trade["entry_price"], "STALE"
-                    )
-                except Exception:
-                    pass
-                continue
-
-            self._open_positions[f"{trade['symbol']}:{trade['strategy']}"] = trade
-            restored += 1
-
-        if stale:
-            logger.info(f"[Learning] Closed {stale} stale position(s) from previous day(s)")
-        if restored:
-            logger.info(f"[Learning] Restored {restored} open position(s) from DB")
-
-    def _db_insert(self, trade: dict) -> None:
-        from execution import ledger
-        ledger.record("nse", {
-            "id":          trade["id"],
-            "symbol":      trade["symbol"],
-            "strategy":    trade["strategy"],
-            "direction":   trade["direction"],
-            "entry_price": trade["entry_price"],
-            "stop_loss":   trade["stop_loss"],
-            "target":      trade["target"],
-            "rr_planned":  trade["rr"],
-            "status":      trade["status"],
-            "entry_time":  trade["entry_time"],
-            "metadata":    json.dumps(trade.get("metadata", {})),
-        })
-
-    def _db_close(
-        self, trade_id: str, exit_price: float,
-        exit_reason: str, pnl_pts: float, pnl_r: float,
-        mae_pts: float = 0.0, mfe_pts: float = 0.0,
-        fees: float = 0.0,
-    ) -> None:
-        from execution import ledger
-        ledger.update_fields("nse", trade_id,
-            exit_price=exit_price, exit_reason=exit_reason,
-            pnl_pts=round(pnl_pts, 2), pnl_r=round(pnl_r, 2),
-            status="CLOSED", exit_time=datetime.now(tz=IST).isoformat(),
-            mae_pts=round(mae_pts, 2), mfe_pts=round(mfe_pts, 2),
-            fees=round(fees, 2))
-
-    def manual_close(self, trade_id: str, reason: str = "MANUAL") -> bool:
-        """Close an OPEN learning trade now at its live price (dashboard manual close).
-        Uses the same close path as auto-exits (_db_close + paper mirror close)."""
-        trade, key = None, None
-        for k, t in self._open_positions.items():
-            if t.get("id") == trade_id:
-                trade, key = t, k
-                break
-        if trade is None:   # not in memory (e.g. reloaded/seeded) — read from DB
-            for t in self.get_trades(status="OPEN", limit=2000):
-                if t.get("id") == trade_id:
-                    trade = t
-                    break
-        if trade is None:
-            return False
-        u = self._unrealized(trade) or {}
-        entry = float(trade.get("entry_price") or 0)
-        ltp   = float(u.get("ltp") or entry)
-        meta  = trade.get("metadata") or {}
-        seg   = "OPTIONS" if meta.get("instrument_type") == "nse_options" else "EQUITY"
-        qty   = self._real_qty(trade)
-        fees  = txn_fees.round_trip(seg, entry, ltp, qty)
-        self._db_close(trade_id, ltp, reason, float(u.get("pnl_pts") or 0),
-                       float(u.get("pnl_r") or 0), float(trade.get("mae_pts") or 0),
-                       float(trade.get("mfe_pts") or 0), fees)
-        try:
-            from paper_trading import paper_trading_engine
-            paper_trading_engine.mirror_learning_close(trade_id, ltp, reason)
-        except Exception as exc:
-            logger.debug(f"[Learning] manual_close mirror error: {exc}")
-        if key:
-            self._open_positions.pop(key, None)
-        logger.info(f"[Learning] MANUAL CLOSE {trade_id} @ {ltp:.2f} ({reason})")
-        return True
 
     # ─────────────────────────────────────────────────────────────
     # READ API — used by dashboard
@@ -1139,8 +371,8 @@ class LearningEngine:
 
     def _paper_position_size(self, trade_id: str) -> int:
         """Read the REAL executed share qty from the mirrored paper trade
-        (PAPER-LRN-<id>). This is the authoritative order size for legacy trades
-        opened before position_size was stored on the learning row itself."""
+        (PAPER-LRN-<id>), for legacy trades that predate risk_manager-based
+        sizing (position_size stored on the row itself, see _real_qty)."""
         try:
             paper_id = f"PAPER-LRN-{trade_id[-8:]}"
             with sqlite3.connect(DB_PATH) as conn:
@@ -1152,13 +384,16 @@ class LearningEngine:
             return 0
 
     def _real_qty(self, trade: dict) -> int:
-        """The actual executed quantity P&L is computed against — identical to the
-        Paper Positions widget and the live portfolio. Shares for equity, lots ×
-        lot_size for options. Priority:
-          1. metadata["position_size"] — stored at open from the paper mirror (new trades)
-          2. paper_trades.position_size  — looked up by id (legacy trades)
+        """The actual executed quantity P&L is computed against. Priority:
+          1. row's own position_size — set by RiskManager/PortfolioTracker.open_position()
+             for every trade going through the shared pipeline (the real order size).
+          2. metadata["position_size"] / paper_trades lookup — legacy trades from
+             before this book was routed through the shared pipeline.
           3. fallback — options: lot_size (1 lot); equity: LEARNING_RISK_RUPEES / risk_pts
         """
+        qty = int(trade.get("position_size") or 0)
+        if qty:
+            return qty
         meta = trade.get("metadata") or {}
         if not isinstance(meta, dict):
             meta = {}
@@ -1183,9 +418,9 @@ class LearningEngine:
 
     def _unrealized(self, trade: dict) -> Optional[dict]:
         """
-        Mark an OPEN trade to market using the SAME live LTP source as _check_exits
-        (store.get_ltp on the option contract, or the equity symbol). Returns
-        {ltp, pnl_pts, pnl_r, pnl_inr} or None when no live price is available.
+        Mark an OPEN trade to market using the live LTP (option contract or
+        equity symbol). Returns {ltp, pnl_pts, pnl_r, pnl_inr} or None when no
+        live price is available.
         """
         try:
             from data.data_store import store

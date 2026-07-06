@@ -353,6 +353,38 @@ class PortfolioTracker:
                 return True
         return False
 
+    def force_close_by_id(self, trade_id: str, reason: str = "MANUAL_CLOSE") -> bool:
+        """Trade-id variant of force_close — the multi-position-safe manual close
+        (a book may hold several positions per symbol, e.g. LEARNING's bake-off,
+        where a symbol-keyed lookup would be ambiguous)."""
+        pos = self._open_positions.pop(trade_id, None)
+        if pos:
+            nfo = (pos.options_meta or {}).get("nfo_symbol")
+            ltp = store.get_ltp(nfo or pos.symbol)
+            exit_price = ltp or pos.entry_price
+            pos.status      = "CLOSED"
+            pos.exit_time   = datetime.now(tz=IST)
+            pos.exit_reason = reason
+            pos.exit_price  = exit_price
+            if pos.direction == "LONG":
+                pos.realised_pnl = (exit_price - pos.entry_price) * pos.position_size
+            else:
+                pos.realised_pnl = (pos.entry_price - exit_price) * pos.position_size
+            self._closed_trades.append(pos)
+            self._update_position_db(pos)
+            logger.warning(f"[Portfolio] FORCE CLOSED {trade_id} ({pos.symbol}) reason={reason} est_pnl={pos.realised_pnl:+.0f}")
+            return True
+
+        # Not in memory — patch the ledger row directly (restored-but-not-in-memory edge case)
+        try:
+            self._ledger.update_fields(self._segment, trade_id,
+                                       status="CLOSED", exit_reason=reason,
+                                       exit_time=datetime.now(tz=IST).isoformat())
+            logger.warning(f"[Portfolio] FORCE CLOSED from DB only: {trade_id}")
+            return True
+        except Exception:
+            return False
+
     def has_open_position(self, symbol: str) -> bool:
         return any(p.symbol == symbol for p in self._open_positions.values())
 

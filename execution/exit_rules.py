@@ -10,7 +10,7 @@ ACTION — computing the exit fill price (live LTP vs BS-modelled) and recording
 close — because those differ by data source, not by rule.
 
 Consumers (being migrated, U3):
-  • learning_engine._check_exits   — NSE index options  ✅
+  • execution/position_manager.py  — NSE index options (learning + live, slice 6c) ✅
   • us_reversal                    — US SPY/QQQ options  ✅
   • commodity_options._check_exits — MCX options          (slice-2)
   • execution/position_manager     — production options   (slice-3)

@@ -3,9 +3,9 @@ exit_policy.py
 ──────────────
 SINGLE source for strategy-aware exit STYLE selection. Maps a strategy name to
 how its winners should be managed, from config/strategy_exits.json (no hard-coded
-classification in code). Used by every exit engine (learning_engine._check_exits
-now; PositionManager when exits unify in Phase U) so Equity/Options/MCX and the
-live/paper/learning books all classify exits identically.
+classification in code). Used by PositionManager (the ONE exit engine every book —
+live, paper, and learning since slice 6c — runs through) so Equity/Options/MCX
+all classify exits identically.
 
 Styles:
   trend_trail           — Chandelier trail + 1R partial book + run to T2 (let it run).

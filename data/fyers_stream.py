@@ -473,7 +473,17 @@ class FyersStream:
         """
         try:
             from risk.portfolio_tracker import portfolio_tracker
-            positions = portfolio_tracker.get_open_positions()
+            positions = list(portfolio_tracker.get_open_positions())
+
+            # Learning's book uses the SAME PortfolioTracker class (segment "nse"),
+            # so its open positions are the identical dict shape — just extend the
+            # list rather than duplicating the extraction logic below.
+            try:
+                from learning_engine import learning_engine
+                positions += learning_engine._nse_tracker.get_open_positions()
+            except Exception:
+                pass  # learning engine may not be initialised yet at startup
+
             nfo_syms = []
             for pos in positions:
                 # monitor_symbol: single symbol for single-leg strategies
@@ -490,22 +500,6 @@ class FyersStream:
                 for s in meta.get("monitor_symbols", []):
                     if s and s not in self._invalid_symbols:
                         nfo_syms.append(s)
-            # Also cover open options positions from the learning engine's own table
-            try:
-                from learning_engine import learning_engine
-                for trade in learning_engine._open_positions.values():
-                    lmeta = trade.get("metadata") or {}
-                    if lmeta.get("instrument_type") != "nse_options":
-                        continue
-                    nfo = lmeta.get("nfo_symbol")
-                    if nfo and nfo not in self._invalid_symbols:
-                        nfo_syms.append(nfo)
-                    for leg in lmeta.get("entry_legs", []):
-                        s = leg.get("symbol")
-                        if s and s not in self._invalid_symbols:
-                            nfo_syms.append(s)
-            except Exception:
-                pass  # learning engine may not be initialised yet at startup
 
             unique = list(dict.fromkeys(nfo_syms))  # deduplicate preserving order
             if unique:
