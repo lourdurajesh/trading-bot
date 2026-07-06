@@ -88,7 +88,10 @@ class NSEMainAdapter(SegmentAdapter):
 
 
 class NSELearningAdapter(SegmentAdapter):
-    """NSE learning lab (all strategies, paper). Exits run inside its run_cycle."""
+    """NSE learning lab (all strategies, paper). Since slice 6c, exits run through
+    its own PositionManager instance (the ONE shared exit engine, per-book) --
+    same fast-monitor cadence as the production book, not just once per 60s
+    generation tick."""
     name = "NSE-learning"
 
     def __init__(self, is_nse_open):
@@ -100,6 +103,11 @@ class NSELearningAdapter(SegmentAdapter):
     def generate(self) -> None:
         from learning_engine import learning_engine
         learning_engine.run_cycle()
+
+    def fast_monitor(self) -> None:
+        if self._is_open():
+            from learning_engine import learning_engine
+            learning_engine._nse_position_manager.check_all()
 
 
 class MCXAdapter(SegmentAdapter):

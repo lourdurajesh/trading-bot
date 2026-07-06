@@ -102,7 +102,10 @@ class LearningEngine:
     # ─────────────────────────────────────────────────────────────
 
     def run_cycle(self) -> None:
-        """Manage open positions, then evaluate all strategies."""
+        """Evaluate all strategies and submit entries. Exits run separately, on
+        the orchestrator's fast-monitor tick (NSELearningAdapter.fast_monitor →
+        self._nse_position_manager.check_all()) — same cadence the production
+        book gets, not tied to this 60s generation cycle."""
         from config.learning_watchlist import (
             LEARNING_NSE_EQUITIES, LEARNING_NSE_INDICES,
         )
@@ -118,10 +121,7 @@ class LearningEngine:
             SimpleRSIStrategy(),
         ]
 
-        # ── 1. Monitor existing open positions — the ONE shared exit engine ──
-        self._nse_position_manager.check_all()
-
-        # ── 2. Equity entries — 1 trade per symbol per strategy ──
+        # ── 1. Equity entries — 1 trade per symbol per strategy ──
         # MCX commodities are NOT traded here — they trade exclusively as
         # options via commodity_options_learning.py (the MCX tab).
         for symbol in LEARNING_NSE_EQUITIES:
@@ -147,7 +147,7 @@ class LearningEngine:
                 elif signal:
                     logger.warning(f"[Learning] {strat.name}/{symbol}: signal failed is_valid() template check — skipping")
 
-        # ── 3. Index options entries ──────────────────────────────
+        # ── 2. Index options entries ──────────────────────────────
         self._run_index_options_learning(LEARNING_NSE_INDICES)
 
     def _run_index_options_learning(self, index_symbols: list) -> None:
