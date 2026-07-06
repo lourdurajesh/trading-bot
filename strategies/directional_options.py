@@ -194,6 +194,12 @@ class DirectionalOptionsStrategy(BaseStrategy):
                 "nfo_symbol":  nfo_symbol,
                 "entry_legs":  entry_legs,
                 "exit_legs":   exit_legs,
+                # Underlying + entry spot — required by the shared structural-exit
+                # engine (execution/exit_signals.structural_exit) for single-leg
+                # directional options trades. Every strategy that sets
+                # monitor_symbol (single NFO contract) must set these two.
+                "underlying":  symbol,
+                "entry_spot":  round(spot, 2),
             }
         )
         signal.calculate_rr()

@@ -138,8 +138,10 @@ class LearningEngine:
                 except Exception as exc:
                     logger.debug(f"[Learning] {strat.name}/{symbol} error: {exc}")
                     continue
-                if signal:
+                if signal and signal.is_valid():
                     self._open_trade(self._sig_to_learning_dict(signal, strat.name, strat))
+                elif signal:
+                    logger.warning(f"[Learning] {strat.name}/{symbol}: signal failed is_valid() template check — skipping")
 
         # ── 3. Index options entries ──────────────────────────────
         self._run_index_options_learning(LEARNING_NSE_INDICES)
@@ -228,8 +230,10 @@ class LearningEngine:
                     except Exception as exc:
                         logger.debug(f"[Learning/IndexOptions] {strat.name}/{symbol}: {exc}")
                         continue
-                    if sig:
+                    if sig and sig.is_valid():
                         self._open_trade(self._sig_to_learning_dict(sig, strat_name))
+                    elif sig:
+                        logger.warning(f"[Learning/IndexOptions] {strat.name}/{symbol}: signal failed is_valid() template check — skipping")
         except Exception as e:
             logger.debug(f"[Learning/IndexOptions] setup error: {e}")
 

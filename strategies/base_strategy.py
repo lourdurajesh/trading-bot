@@ -104,6 +104,17 @@ class Signal:
                 # Debit spread: entry = premium paid; stop < entry (exit when premium decays 50%)
                 if self.stop_loss >= self.entry:
                     return False
+            # Single-leg directional options (monitor_symbol set) rely on the shared
+            # structural-exit engine (execution/exit_signals.structural_exit), which
+            # needs the underlying + entry spot to trail the trade. Every strategy of
+            # this shape (one monitor_symbol == one NFO contract) MUST populate both —
+            # this is the template contract, not a per-strategy opt-in. Missing this
+            # silently killed ATR_TRAIL/SWING_BREAK/etc. for one strategy before.
+            if self.monitor_symbol:
+                if not (self.options_meta or {}).get("underlying"):
+                    return False
+                if float((self.options_meta or {}).get("entry_spot") or 0) <= 0:
+                    return False
         else:
             if self.direction == Direction.LONG and self.stop_loss >= self.entry:
                 return False
