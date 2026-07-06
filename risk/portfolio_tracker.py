@@ -381,6 +381,24 @@ class PortfolioTracker:
             pos.sl_order_id = order_id
             self._update_position_db(pos)
 
+    def update_options_meta(self, trade_id: str, options_meta: dict) -> None:
+        """Persist an updated options_meta dict (e.g. the underlying point-trail's
+        peak_spot/trail_stop_spot ratchet). Keyed by trade-id."""
+        pos = self.get_position_by_id(trade_id)
+        if pos:
+            pos.options_meta = options_meta
+            self._update_position_db(pos)
+
+    def update_fields(self, trade_id: str, **fields) -> None:
+        """Generic passthrough to this book's ledger for fields with no dedicated
+        Position attribute (e.g. mae_pts/mfe_pts instrumentation) — same mechanism
+        learning_engine already uses via ledger.update_fields(segment, id, **fields),
+        just scoped to this tracker's own segment."""
+        try:
+            self._ledger.update_fields(self._segment, trade_id, **fields)
+        except Exception as e:
+            logger.debug(f"[Portfolio] update_fields({trade_id}) error: {e}")
+
     def mark_t1_hit(self, trade_id: str) -> None:
         """Persist T1-hit flag so reconstruction after restart knows partial exit already fired.
         Keyed by trade-id (a book may hold several positions per symbol)."""

@@ -42,6 +42,8 @@ TRAIL_TRIGGER           = 1.5   # start trailing after 1.5R profit
 PARTIAL_EXIT_PCT        = 0.5   # exit 50% at T1
 DYNAMIC_TARGET_START_R  = 3.0   # first dynamic milestone after T1 (~2R)
 DYNAMIC_TARGET_STEP     = 1.0   # advance target by this many R per milestone
+CHANDELIER_MULT         = 2.5   # ATR multiplier for the volatility-adaptive trail (TREND_TRAIL style)
+CHANDELIER_TF           = "15m" # timeframe ATR is computed on
 
 
 
@@ -69,6 +71,9 @@ class PositionManager:
         self._partial_exited:    set[str] = set()   # symbols where 50% already exited
         self._trailing_stops:    dict[str, float] = {}  # symbol → current trail SL
         self._dynamic_target_r:  dict[str, float] = {}  # symbol → next R-milestone target
+        self._chandelier_atr:    dict[str, float] = {}  # pid → ATR captured near entry (TREND_TRAIL)
+        self._chandelier_peak:   dict[str, float] = {}  # pid → running peak/trough for the chandelier calc
+        self._mae_mfe:           dict[str, tuple] = {}  # pid → (max_adverse_pts, max_favourable_pts)
 
     def check_all(self) -> None:
         """
@@ -130,9 +135,15 @@ class PositionManager:
 
         # Strategy-aware exit policy — the SAME shared source the learning engine uses
         # (execution/exit_policy + config). Mean-reversion takes a hard full exit at the
-        # target; trend/momentum keeps partial + trail + T2.
-        from execution.exit_policy import exit_style, MEAN_REVERSION
-        is_mean_rev = (exit_style(pos.strategy) == MEAN_REVERSION)
+        # target; trend/momentum keeps partial + trail + T2 (+ the Chandelier ATR
+        # ratchet below, for TREND_TRAIL specifically).
+        from execution.exit_policy import exit_style, MEAN_REVERSION, TREND_TRAIL
+        style        = exit_style(pos.strategy)
+        is_mean_rev  = (style == MEAN_REVERSION)
+        is_trend_trail = (style == TREND_TRAIL)
+
+        # Trade-quality instrumentation (not an exit decision) — every book, every strategy.
+        self._update_mae_mfe(pid, direction, entry, ltp)
 
         with self._lock:
             already_partial = pid in self._partial_exited
@@ -252,6 +263,12 @@ class PositionManager:
                 with self._lock:
                     self._breakeven_applied.add(pid)
 
+            # Chandelier ATR trail — active from entry (no profit-R gate), only
+            # for TREND_TRAIL-styled strategies. Tightens the stop above; never
+            # overrides a tighter one already set.
+            if is_trend_trail:
+                self._chandelier_ratchet(pid, symbol, direction, ltp)
+
         # ── 4. SHORT position management ──────────────────────────
         elif direction == "SHORT":
             original_sl = (pos.original_stop_loss if pos.original_stop_loss else stop)
@@ -316,6 +333,10 @@ class PositionManager:
             if profit_r >= TRAIL_TRIGGER:
                 self._update_trailing_stop(pid, symbol, ltp, direction, risk)
 
+            # Chandelier ATR trail — same as the LONG path above.
+            if is_trend_trail:
+                self._chandelier_ratchet(pid, symbol, direction, ltp)
+
     # ─────────────────────────────────────────────────────────────
     # STRUCTURAL EXIT — shared single source (execution/exit_signals)
     # ─────────────────────────────────────────────────────────────
@@ -336,6 +357,39 @@ class PositionManager:
         except Exception as e:
             logger.error(f"[PositionManager] structural_exit error {df_symbol}: {e}")
             return None
+
+    def _underlying_point_trail(self, symbol: str, pid: str, options_meta: dict) -> Optional[str]:
+        """Underlying index-point trailing stop for an option-BUYING trade — the
+        proven learning-engine mechanism (InstitutionalMomentum, Reversal5m/3m),
+        now shared. Trails the UNDERLYING's spot (clean price action) instead of
+        the noisy option premium: initial stop = entry_spot − sl_pts, ratcheted up
+        to peak_spot − trail_pts as the index makes new highs. Exits at the
+        option's current premium when the index trades at/through the trailed
+        stop. peak_spot/trail_stop_spot persist in options_meta across ticks
+        (same fields institutional_momentum.py/reversal_5m.py already seed at
+        entry). LONG-underlying only, matching the original — these strategies
+        only ever emit long-call signals today.
+        """
+        entry_spot = float(options_meta.get("entry_spot") or 0)
+        if entry_spot <= 0:
+            return None
+        spot = self._store.get_ltp(symbol)   # the option position's symbol IS the underlying
+        if not spot or spot <= 0:
+            return None
+        sl_pts    = float(options_meta.get("sl_pts") or 0)
+        trail_pts = float(options_meta.get("trail_pts") or 0)
+        peak      = float(options_meta.get("peak_spot") or entry_spot)
+        stop      = float(options_meta.get("trail_stop_spot") or (entry_spot - sl_pts))
+
+        from execution.exit_rules import underlying_exit
+        reason, new_peak, new_stop = underlying_exit(spot, entry_spot, sl_pts, trail_pts, peak, stop, pct=False)
+
+        if new_peak != peak or new_stop != stop:
+            options_meta["peak_spot"]       = new_peak
+            options_meta["trail_stop_spot"] = new_stop
+            self._tracker.update_options_meta(pid, options_meta)
+
+        return reason
 
     # ─────────────────────────────────────────────────────────────
     # OPTIONS EXIT MANAGEMENT
@@ -406,6 +460,11 @@ class PositionManager:
             logger.warning(f"[PositionManager] {symbol}: monitor LTP unavailable — stop/target checks skipped (WS subscription may be pending)")
             return
 
+        # Trade-quality instrumentation — premium excursion (buying options is
+        # always long-premium cost basis, so adverse/favourable don't mirror by
+        # direction here, same as the equity path).
+        self._update_mae_mfe(pid, "LONG", entry, option_ltp)
+
         # ── 4. Time stop (optional — set in options_meta["time_stop"]) ───
         time_stop_str = options_meta.get("time_stop")
         if time_stop_str:
@@ -418,27 +477,40 @@ class PositionManager:
             except Exception:
                 pass
 
-        # ── 5/6. Premium STOP / TARGET — shared decision (execution/exit_rules) ──
-        # LONG (buying): STOP when premium ≤ stop, TARGET when ≥ target.
-        # SHORT (selling/strangle): mirrored. One predicate, no LONG/SHORT fork here.
-        from execution.exit_rules import premium_exit
-        _pdec = premium_exit(option_ltp, stop, target_1, direction)
-        if _pdec == "STOP" and stop > 0:
-            logger.warning(
-                f"[PositionManager] OPTIONS STOP {symbol}: "
-                f"{'value' if direction == 'SHORT' else 'premium'} {option_ltp:.2f} "
-                f"{'≥' if direction == 'SHORT' else '≤'} stop {stop:.2f}"
-            )
-            self._exit_options_position(symbol, pid, size, "STOP", options_meta)
-            return
-        if _pdec == "TARGET" and target_1 > 0 and pid not in self._partial_exited:
-            logger.info(
-                f"[PositionManager] OPTIONS TARGET {symbol}: "
-                f"ltp {option_ltp:.2f} {'≥' if direction == 'LONG' else '≤'} target {target_1:.2f}"
-            )
-            self._exit_options_position(symbol, pid, size, "TARGET", options_meta)
-            self._partial_exited.add(pid)
-            return
+        # ── 5/6. Underlying point-trail OR premium STOP/TARGET ──────────────
+        # Strategies that opt into options_meta["exit_mode"]="underlying_trail"
+        # (InstitutionalMomentum, Reversal5m/3m) ride the underlying's clean price
+        # action instead of the noisy option premium — their premium target_1 is
+        # intentionally nominal ("trail governs exit"), so the point-trail REPLACES
+        # the premium check for them, exactly like the learning engine. Everyone
+        # else keeps the premium STOP/TARGET decision (execution/exit_rules).
+        if options_meta.get("exit_mode") == "underlying_trail":
+            _ut_reason = self._underlying_point_trail(symbol, pid, options_meta)
+            if _ut_reason:
+                logger.info(f"[PositionManager] UNDERLYING TRAIL {symbol}: {_ut_reason} @ {option_ltp:.2f}")
+                self._exit_options_position(symbol, pid, size, _ut_reason, options_meta)
+                return
+        else:
+            # LONG (buying): STOP when premium ≤ stop, TARGET when ≥ target.
+            # SHORT (selling/strangle): mirrored. One predicate, no LONG/SHORT fork here.
+            from execution.exit_rules import premium_exit
+            _pdec = premium_exit(option_ltp, stop, target_1, direction)
+            if _pdec == "STOP" and stop > 0:
+                logger.warning(
+                    f"[PositionManager] OPTIONS STOP {symbol}: "
+                    f"{'value' if direction == 'SHORT' else 'premium'} {option_ltp:.2f} "
+                    f"{'≥' if direction == 'SHORT' else '≤'} stop {stop:.2f}"
+                )
+                self._exit_options_position(symbol, pid, size, "STOP", options_meta)
+                return
+            if _pdec == "TARGET" and target_1 > 0 and pid not in self._partial_exited:
+                logger.info(
+                    f"[PositionManager] OPTIONS TARGET {symbol}: "
+                    f"ltp {option_ltp:.2f} {'≥' if direction == 'LONG' else '≤'} target {target_1:.2f}"
+                )
+                self._exit_options_position(symbol, pid, size, "TARGET", options_meta)
+                self._partial_exited.add(pid)
+                return
 
         # ── 7. Structural exit on the UNDERLYING — shared single source ──────────
         # Close a reversing/stalling option winner before it round-trips, using the SAME
@@ -725,6 +797,65 @@ class PositionManager:
             self._tracker.update_stop_loss(pid, new_sl)
             logger.info(f"[PositionManager] Trail SL updated SHORT: {symbol} → ₹{new_sl:.2f}")
             self._update_broker_sl(symbol, new_sl)
+
+    def _chandelier_ratchet(self, pid: str, symbol: str, direction: str, ltp: float) -> None:
+        """Volatility-adaptive trail for TREND_TRAIL-styled strategies: ratchet the
+        stop toward peak/trough ± CHANDELIER_MULT×ATR, tightening only, never
+        loosening — the proven learning-engine Chandelier exit, now available to
+        every book. ATR is captured once (first tick this position is seen) and
+        held for the trade's life, same as the original. Feeds the SAME
+        _trailing_stops dict _update_trailing_stop uses, so whichever trail is
+        more protective wins — this never overrides a tighter existing stop.
+        """
+        atr_val = self._chandelier_atr.get(pid)
+        if atr_val is None:
+            try:
+                from analysis.indicators import atr as _atr
+                df = self._store.get_ohlcv(symbol, CHANDELIER_TF, n=60)
+                atr_val = float(_atr(df, 14).iloc[-1]) if df is not None and len(df) >= 14 else 0.0
+            except Exception:
+                atr_val = 0.0
+            self._chandelier_atr[pid] = atr_val
+        if atr_val <= 0:
+            return  # no ATR data yet — skip, fixed trail above still protects the trade
+
+        peak = self._chandelier_peak.get(pid, ltp)
+        current = self._trailing_stops.get(pid, 0)
+
+        if direction == "LONG":
+            peak = max(peak, ltp)
+            self._chandelier_peak[pid] = peak
+            chandelier = round(peak - CHANDELIER_MULT * atr_val, 2)
+            if chandelier <= current:
+                return
+        else:
+            peak = min(peak, ltp)
+            self._chandelier_peak[pid] = peak
+            chandelier = round(peak + CHANDELIER_MULT * atr_val, 2)
+            if current != 0 and chandelier >= current:
+                return
+
+        self._trailing_stops[pid] = chandelier
+        self._tracker.update_stop_loss(pid, chandelier)
+        logger.info(
+            f"[PositionManager] CHANDELIER {symbol}: peak {peak:.2f} "
+            f"± {CHANDELIER_MULT}×ATR({atr_val:.2f}) → stop {chandelier:.2f}"
+        )
+        self._update_broker_sl(symbol, chandelier)
+
+    def _update_mae_mfe(self, pid: str, direction: str, entry: float, ltp: float) -> None:
+        """Track max adverse/favourable excursion in points — trade-quality
+        instrumentation, not an exit decision. Persists only on a new high/low
+        (same optimisation the learning engine used) via the tracker's generic
+        update_fields (this book's own segment)."""
+        adverse    = (entry - ltp) if direction == "LONG" else (ltp - entry)
+        favourable = (ltp - entry) if direction == "LONG" else (entry - ltp)
+        prev_mae, prev_mfe = self._mae_mfe.get(pid, (0.0, 0.0))
+        mae = max(prev_mae, adverse)
+        mfe = max(prev_mfe, favourable)
+        if mae > prev_mae + 1e-9 or mfe > prev_mfe + 1e-9:
+            self._mae_mfe[pid] = (mae, mfe)
+            self._tracker.update_fields(pid, mae_pts=round(mae, 2), mfe_pts=round(mfe, 2))
 
     def _reconstruct_state_from_position(
         self, pos, direction: str, entry: float, original_stop: float, ltp: float
