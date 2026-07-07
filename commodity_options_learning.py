@@ -141,8 +141,14 @@ _MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DE
 
 # Days-before-month-end trigger for rolling to next contract.
 # Rule: roll when calendar day >= (days_in_month - buffer).
-# NATURALGAS uses 32 (> any month) so it always resolves to next month —
-# MCX NG expires ~25th of the month PRIOR to the contract month.
+# NATURALGAS was previously set to 32 (> any month, so it always resolved to
+# next month) on the assumption MCX NG expires ~25th of the PRIOR month. Live
+# Fyers data disproved this (2026-07-06): with the future rolled to AUG, the
+# option chain's own embedded underlying was still MCX:NATURALGAS26JULFUT at a
+# materially different price — the JUL contract was in fact still the real
+# front-month, expiring near JUL's own month-end like every other MCX contract.
+# Fixed to 5, matching its sibling NATGASMINI (same commodity, same expiry
+# calendar, was already correct at 5).
 # _ROLLOVER_BUFFER and _VALID_MONTHS are populated from DB — see _load_contracts_from_db().
 
 
