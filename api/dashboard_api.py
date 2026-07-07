@@ -527,8 +527,20 @@ def _collect_book_trades(limit: int = 300, status: str = None) -> dict:
             for r in cur.fetchall():
                 d = dict(r)
                 seg = "OPTIONS" if (d.get("signal_type") == "OPTIONS") else "EQUITY"
+                # options_meta comes back from the view's json_extract as a JSON
+                # TEXT string (it was json.dumps'd into the payload as a nested
+                # value by _save_position) -- parse it to get nfo_symbol, same as
+                # the Learning/main-positions sections above already do. Without
+                # this, every options trade here showed the underlying index
+                # instead of the real contract (equity trades are unaffected --
+                # symbol IS the right instrument for those).
+                try:
+                    om = json.loads(d.get("options_meta") or "{}")
+                except Exception:
+                    om = {}
+                nfo = om.get("nfo_symbol") if isinstance(om, dict) else None
                 rows.append(_row(d.get("id"), mode, seg, d.get("strategy"), d.get("symbol"),
-                                 None, d.get("direction"), d.get("status"), d.get("entry_time"),
+                                 nfo, d.get("direction"), d.get("status"), d.get("entry_time"),
                                  d.get("exit_time"), d.get("entry_price"), d.get("exit_price"),
                                  d.get("position_size"), d.get("realised_pnl"), None,
                                  d.get("stop_loss"), d.get("target_1"), d.get("exit_reason")))
