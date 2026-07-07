@@ -8,6 +8,7 @@ Persists trade history to SQLite so nothing is lost on restart.
 Feeds the dashboard API with real-time stats.
 """
 
+import json
 import logging
 import os
 import sqlite3
@@ -25,6 +26,21 @@ from execution import fees as txn_fees  # single source for transaction costs
 
 def _fee_segment(signal_type: str) -> str:
     return "OPTIONS" if signal_type == "OPTIONS" else "EQUITY"
+
+
+def _parse_options_meta(value) -> dict:
+    """options_meta comes back from Ledger.get_rows() double-encoded: the outer
+    payload is parsed once by get_rows(), but options_meta was itself
+    json.dumps'd into a string value inside that payload by _save_position, so
+    it's still a raw string here, not a dict. Parse it before use — treating a
+    JSON string as "not a dict, use {}" (the original bug) silently drops
+    nfo_symbol/entry_spot/etc. for every restored position."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            value = {}
+    return value if isinstance(value, dict) else {}
 from strategies.base_strategy import Direction, Signal
 
 logger = logging.getLogger(__name__)
@@ -528,9 +544,7 @@ class PortfolioTracker:
                     if r.get("status") in ("OPEN", "PENDING_CLOSE")]
 
             for row in rows:
-                options_meta = row.get("options_meta") or {}
-                if not isinstance(options_meta, dict):
-                    options_meta = {}
+                options_meta = _parse_options_meta(row.get("options_meta"))
 
                 pos = Position(
                     id                 = row["id"],
@@ -572,9 +586,7 @@ class PortfolioTracker:
             closed_rows = [r for r in self._ledger.get_rows(self._segment, status="CLOSED")
                           if (r.get("entry_time") or "") >= today_str]
             for row in closed_rows:
-                options_meta = row.get("options_meta") or {}
-                if not isinstance(options_meta, dict):
-                    options_meta = {}
+                options_meta = _parse_options_meta(row.get("options_meta"))
                 pos = Position(
                     id              = row["id"],
                     symbol          = row["symbol"],
