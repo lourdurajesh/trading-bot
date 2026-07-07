@@ -354,6 +354,14 @@ class LearningEngine:
         pnl_pts/pnl_r/metadata/mae_pts/mfe_pts/fees) so historical and new-pipeline
         trades render identically through the rest of this read API."""
         options_meta = row.get("options_meta") or {}
+        if isinstance(options_meta, str):
+            # Ledger.get_rows() parses the outer payload once; options_meta is
+            # stored double-encoded (json.dumps'd into a string value inside
+            # that payload by _save_position), so it's still a raw string here.
+            try:
+                options_meta = json.loads(options_meta)
+            except Exception:
+                options_meta = {}
         if not isinstance(options_meta, dict):
             options_meta = {}
         meta = dict(options_meta)
@@ -396,8 +404,8 @@ class LearningEngine:
             "entry_time":    row.get("entry_time"),
             "exit_time":     row.get("exit_time"),
             "metadata":      json.dumps(meta),
-            "mae_pts":       0,
-            "mfe_pts":       0,
+            "mae_pts":       float(row.get("mae_pts") or 0),
+            "mfe_pts":       float(row.get("mfe_pts") or 0),
             "fees":          fees,
             "position_size": row.get("position_size"),   # real qty — _real_qty() checks this first
         }

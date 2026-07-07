@@ -96,6 +96,12 @@ SEGMENT_SCHEMA: dict[str, dict] = {
             ("target_2", 0),
             ("hold_type", "intraday"), ("original_stop_loss", 0), ("sl_order_id", ""),
             ("options_meta", "{}"), ("t1_hit", 0), ("monitor_symbol", ""),
+            # Appended (safe: json_extract-based view, name-addressed by every
+            # reader — no positional dependency for new trailing columns).
+            # PositionManager tracks MAE/MFE for every book since slice 6c;
+            # without these columns update_fields(mae_pts=..., mfe_pts=...)
+            # was silently dropped by _full_row's schema projection.
+            ("mae_pts", 0), ("mfe_pts", 0),
         ],
     },
 }
