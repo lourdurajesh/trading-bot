@@ -1632,11 +1632,21 @@ class CommodityOptionsLearning:
         closed = []
         for key, trade in list(self._open_positions.items()):
             instrument = trade["instrument"]
+            # Always monitor the SAME contract the position was entered on —
+            # never re-resolve "current front month", which can silently roll
+            # to a different (and differently-priced) contract while the trade
+            # is still open. trade["symbol"] is fixed at entry for exactly this.
             stored_sym = trade["symbol"]
-            symbol = _fyers_sym(instrument)
-            spot   = store.get_ltp(symbol)
-            if not spot and symbol != stored_sym:
-                spot = store.get_ltp(stored_sym)
+            spot = store.get_ltp(stored_sym)
+            if not spot:
+                fresh_sym = _fyers_sym(instrument)
+                if fresh_sym != stored_sym:
+                    logger.warning(
+                        f"[CommOpts] {instrument}: no live price on entry contract "
+                        f"{stored_sym} — falling back to current front-month "
+                        f"{fresh_sym} (rollover crossed while this trade was open)"
+                    )
+                spot = store.get_ltp(fresh_sym)
             if not spot:
                 continue
 
@@ -1792,7 +1802,7 @@ class CommodityOptionsLearning:
             # thesis is gone. Exit immediately instead of waiting for SL to grind in.
             # Theta decay makes sitting in a directionless debit spread costly.
             if exit_reason is None and strategy == "TrendSpread":
-                _df_exit = store.get_ohlcv(_fyers_sym(instrument), "1H", n=30)
+                _df_exit = store.get_ohlcv(stored_sym, "1H", n=30)
                 if _df_exit is not None and len(_df_exit) >= 20:
                     from analysis.indicators import ema as _ema_fn
                     _close_exit = _df_exit["close"]
@@ -2106,7 +2116,11 @@ class CommodityOptionsLearning:
                 held = 0
             rem_dte = max(0, entry_dte - held)
 
-            chain = self._get_chain(_fyers_sym(instrument))
+            # Use the contract this position was actually entered on, not a freshly
+            # re-resolved "current front month" (Fyers' optionchain endpoint has been
+            # observed to ignore the month suffix and return the real listed chain
+            # regardless, but relying on that is fragile — be explicit).
+            chain = self._get_chain(trade.get("symbol") or _fyers_sym(instrument))
             if not chain:
                 return None, None, None, None, None
 
@@ -2281,9 +2295,11 @@ class CommodityOptionsLearning:
         out = []
         for _key, t in list(self._open_positions.items()):
             instrument = t.get("instrument", "")
-            sym        = _fyers_sym(instrument)
-            spot       = (store.get_last_price(sym)
-                          or store.get_last_price(t.get("symbol") or "")
+            # Same rule as _check_exits: price the contract this position was
+            # actually entered on first, not a freshly re-resolved front month.
+            stored_sym = t.get("symbol") or ""
+            spot       = (store.get_last_price(stored_sym)
+                          or store.get_last_price(_fyers_sym(instrument))
                           or float(t.get("spot_at_entry", 0) or 0))
             entry_spot = float(t.get("spot_at_entry", 0) or 0)
             direction  = t.get("direction", "LONG")
