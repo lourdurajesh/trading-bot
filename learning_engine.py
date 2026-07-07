@@ -375,13 +375,16 @@ class LearningEngine:
         direction = row.get("direction", "LONG")
         status    = row.get("status")
 
-        pnl_pts = pnl_r = 0.0
+        pnl_pts = 0.0
         fees    = 0.0
+        # pnl_r itself is NOT recomputed here -- it's persisted once by
+        # PortfolioTracker.close_position_by_id/force_close(_by_id) (the one
+        # shared close path every book's PortfolioTracker instance uses), so
+        # this is a straight read-through, same as pnl_pts's inputs.
+        pnl_r = row.get("pnl_r") or 0.0
         if status == "CLOSED" and entry > 0 and exitp > 0:
             pts  = (exitp - entry) if (is_options or direction == "LONG") else (entry - exitp)
-            risk = abs(entry - float(row.get("original_stop_loss") or row.get("stop_loss") or 0))
             pnl_pts = round(pts, 2)
-            pnl_r   = round(pts / risk, 2) if risk > 0 else 0.0
             qty     = int(row.get("position_size") or 0)
             realised = row.get("realised_pnl")
             if qty and realised is not None:

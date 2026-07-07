@@ -102,6 +102,10 @@ SEGMENT_SCHEMA: dict[str, dict] = {
             # without these columns update_fields(mae_pts=..., mfe_pts=...)
             # was silently dropped by _full_row's schema projection.
             ("mae_pts", 0), ("mfe_pts", 0),
+            # R-multiple, computed once in PortfolioTracker.close_position_by_id/
+            # force_close/force_close_by_id (the one shared close path every book
+            # uses) — never recomputed per-reader.
+            ("pnl_r", 0),
         ],
     },
 }

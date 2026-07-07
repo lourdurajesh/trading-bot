@@ -28,6 +28,25 @@ def _fee_segment(signal_type: str) -> str:
     return "OPTIONS" if signal_type == "OPTIONS" else "EQUITY"
 
 
+def _compute_pnl_r(position_size: float, entry_price: float, original_stop_loss: float,
+                    realised_pnl: float) -> float:
+    """R-multiple = fee-inclusive realised P&L / rupee risk to the ORIGINAL stop.
+    The ONE place this is computed — every book (LIVE/PAPER/LEARNING) closes a
+    position through this same PortfolioTracker class, so every close path calls
+    this instead of each recomputing its own formula. Uses original_stop_loss (not
+    the current trailed stop) so R reflects the trade's planned risk, and
+    realised_pnl (not price delta) so fees are netted in. Deliberately NOT
+    realised_pnl/capital_at_risk: for options, capital_at_risk stores full premium
+    paid, not stop-distance risk, so that ratio means something different for
+    options vs equity."""
+    if not position_size or not entry_price or not original_stop_loss:
+        return 0.0
+    risk = abs(float(entry_price) - float(original_stop_loss)) * float(position_size)
+    if risk <= 0:
+        return 0.0
+    return round(float(realised_pnl or 0) / risk, 3)
+
+
 def _parse_options_meta(value) -> dict:
     """options_meta comes back from Ledger.get_rows() double-encoded: the outer
     payload is parsed once by get_rows(), but options_meta was itself
@@ -65,6 +84,7 @@ class Position:
     exit_price:          float   = 0.0
     exit_time:           Optional[datetime] = None
     realised_pnl:        float   = 0.0
+    pnl_r:               float   = 0.0
     status:              str     = "OPEN"   # OPEN | PENDING_CLOSE | CLOSED | STOPPED | CANCELLED
     exit_reason:         str     = ""
     options_meta:        dict    = field(default_factory=dict)
@@ -224,6 +244,8 @@ class PortfolioTracker:
         fee = txn_fees.round_trip(_fee_segment(position.signal_type),
                                   position.entry_price, fill_price, position.position_size)
         position.realised_pnl = round(gross - fee, 2)
+        position.pnl_r = _compute_pnl_r(position.position_size, position.entry_price,
+                                         position.original_stop_loss, position.realised_pnl)
 
         self._closed_trades.append(position)
         self._update_position_db(position)
@@ -352,6 +374,8 @@ class PortfolioTracker:
                 pos.realised_pnl = (exit_price - pos.entry_price) * pos.position_size
             else:
                 pos.realised_pnl = (pos.entry_price - exit_price) * pos.position_size
+            pos.pnl_r = _compute_pnl_r(pos.position_size, pos.entry_price,
+                                        pos.original_stop_loss, pos.realised_pnl)
             self._closed_trades.append(pos)
             self._update_position_db(pos)
             logger.warning(f"[Portfolio] FORCE CLOSED {symbol} reason={reason} est_pnl={pos.realised_pnl:+.0f}")
@@ -386,6 +410,8 @@ class PortfolioTracker:
                 pos.realised_pnl = (exit_price - pos.entry_price) * pos.position_size
             else:
                 pos.realised_pnl = (pos.entry_price - exit_price) * pos.position_size
+            pos.pnl_r = _compute_pnl_r(pos.position_size, pos.entry_price,
+                                        pos.original_stop_loss, pos.realised_pnl)
             self._closed_trades.append(pos)
             self._update_position_db(pos)
             logger.warning(f"[Portfolio] FORCE CLOSED {trade_id} ({pos.symbol}) reason={reason} est_pnl={pos.realised_pnl:+.0f}")
@@ -517,6 +543,7 @@ class PortfolioTracker:
             "position_size":      pos.position_size,
             "capital_at_risk":    pos.capital_at_risk,
             "realised_pnl":       pos.realised_pnl,
+            "pnl_r":              pos.pnl_r,
             "status":             pos.status,
             "exit_reason":        pos.exit_reason,
             "entry_time":         pos.entry_time.isoformat() if pos.entry_time else None,

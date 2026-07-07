@@ -542,7 +542,7 @@ def _collect_book_trades(limit: int = 300, status: str = None) -> dict:
                 rows.append(_row(d.get("id"), mode, seg, d.get("strategy"), d.get("symbol"),
                                  nfo, d.get("direction"), d.get("status"), d.get("entry_time"),
                                  d.get("exit_time"), d.get("entry_price"), d.get("exit_price"),
-                                 d.get("position_size"), d.get("realised_pnl"), None,
+                                 d.get("position_size"), d.get("realised_pnl"), d.get("pnl_r"),
                                  d.get("stop_loss"), d.get("target_1"), d.get("exit_reason")))
     except Exception as e:
         logger.error(f"[book_trades] main: {e}")
