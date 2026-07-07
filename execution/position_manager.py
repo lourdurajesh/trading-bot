@@ -45,6 +45,12 @@ DYNAMIC_TARGET_STEP     = 1.0   # advance target by this many R per milestone
 CHANDELIER_MULT         = 2.5   # ATR multiplier for the volatility-adaptive trail (TREND_TRAIL style)
 CHANDELIER_TF           = "15m" # timeframe ATR is computed on
 
+# Shadow-mode candidates for exit_signals.json's arm_profit_pct (2026-07 backtest: flat
+# 0.15% underperformed both an ATR-relative arm AND doing nothing at all, on LONG; SHORT
+# showed no such edge in the same window, likely a mild-uptrend regime effect). Logs ONLY
+# — never changes real exit behavior. See _shadow_structural_exit_check.
+SHADOW_ATR_MULTS        = (0.75, 1.0)
+
 
 
 
@@ -79,6 +85,7 @@ class PositionManager:
         self._chandelier_atr:    dict[str, float] = {}  # pid → ATR captured near entry (TREND_TRAIL)
         self._chandelier_peak:   dict[str, float] = {}  # pid → running peak/trough for the chandelier calc
         self._mae_mfe:           dict[str, tuple] = {}  # pid → (max_adverse_pts, max_favourable_pts)
+        self._shadow_logged:     set[tuple] = set()  # (pid, k) already logged — fire once per position
 
     def check_all(self) -> None:
         """
@@ -214,6 +221,7 @@ class PositionManager:
             # Structural exit — close an in-profit trade reversing/stalling BEFORE it
             # round-trips to the stop (shared single source; same as the learning engine).
             sx = self._structural_exit_reason(symbol, direction, entry)
+            self._shadow_structural_exit_check(symbol, direction, entry, symbol, pid, sx)
             if sx:
                 logger.info(f"[PositionManager] STRUCTURAL EXIT {symbol}: {sx} @ {ltp:.2f}")
                 self._exit_position(pos, remaining_size, sx, ltp)
@@ -293,6 +301,7 @@ class PositionManager:
             # Structural exit — close an in-profit short reversing/stalling BEFORE it
             # round-trips to the stop (shared single source; same as the LONG path).
             sx = self._structural_exit_reason(symbol, direction, entry)
+            self._shadow_structural_exit_check(symbol, direction, entry, symbol, pid, sx)
             if sx:
                 logger.info(f"[PositionManager] STRUCTURAL EXIT SHORT {symbol}: {sx} @ {ltp:.2f}")
                 self._exit_position(pos, remaining_size, sx, ltp)
@@ -362,6 +371,54 @@ class PositionManager:
         except Exception as e:
             logger.error(f"[PositionManager] structural_exit error {df_symbol}: {e}")
             return None
+
+    def _shadow_structural_exit_check(self, df_symbol: str, direction: str, entry_ref: float,
+                                       symbol: str, pid: str, live_reason: Optional[str]) -> None:
+        """SHADOW MODE ONLY — logs what an ATR-relative arm gate would have decided,
+        alongside the real (flat arm_profit_pct) decision already computed by
+        _structural_exit_reason. Never changes behavior: no return value is consumed,
+        exceptions are swallowed, and it costs nothing once a (pid, k) has fired once.
+
+        Why this exists instead of just changing exit_signals.json: the 2026-07 backtest
+        (41 days of NIFTY 5m closed-bar data) showed the flat gate underperforms both an
+        ATR-relative arm AND doing nothing at all on LONG, but showed no such edge on
+        SHORT — and a closed-bar offline replay doesn't exactly match how the live system
+        reacts to a forming candle. This validates the candidate against genuine live tick
+        data before arm_profit_pct itself is touched — one shared exit_signals.structural_exit
+        call, same as the real decision, just fed a different (ungated) cfg.
+        """
+        if entry_ref <= 0 or not pid:
+            return
+        try:
+            from execution.exit_signals import structural_exit, config as _xs_cfg
+            from analysis.indicators import atr as _atr
+            base_cfg = _xs_cfg()
+            df = self._store.get_ohlcv(df_symbol, base_cfg.get("timeframe", "5m"))
+            if df is None or len(df) < int(base_cfg.get("min_bars", 20)):
+                return
+            price = float(df["close"].iloc[-1])
+            atr_now = float(_atr(df, 14).iloc[-1])
+            if atr_now <= 0:
+                return
+            moved = (price - entry_ref) if direction == "LONG" else (entry_ref - price)
+            for k in SHADOW_ATR_MULTS:
+                key = (pid, k)
+                if key in self._shadow_logged:
+                    continue
+                if moved < k * atr_now:
+                    continue
+                cfg2 = dict(base_cfg)
+                cfg2["arm_profit_pct"] = 0.0
+                shadow_reason = structural_exit(df, direction, entry_ref, cfg=cfg2)
+                if shadow_reason:
+                    self._shadow_logged.add(key)
+                    logger.info(
+                        f"[ShadowExit] {symbol} pid={pid} k={k} ATR-relative would exit "
+                        f"NOW via {shadow_reason} (live gate: {live_reason or 'holding'}) "
+                        f"price={price:.2f} entry_ref={entry_ref:.2f} atr={atr_now:.2f}"
+                    )
+        except Exception as e:
+            logger.debug(f"[PositionManager] shadow_structural_exit error {symbol}: {e}")
 
     def _underlying_point_trail(self, symbol: str, pid: str, options_meta: dict) -> Optional[str]:
         """Underlying index-point trailing stop for an option-BUYING trade — the
@@ -529,6 +586,7 @@ class PositionManager:
             nfo = (options_meta.get("nfo_symbol") or pos_dict.get("monitor_symbol") or "").upper()
             und_dir = "SHORT" if (opt_type == "PE" or "PE" in nfo) else "LONG"
             sx = self._structural_exit_reason(symbol, und_dir, entry_spot)
+            self._shadow_structural_exit_check(symbol, und_dir, entry_spot, symbol, pid, sx)
             if sx:
                 logger.info(
                     f"[PositionManager] OPTIONS STRUCTURAL EXIT {symbol}: {sx} "
