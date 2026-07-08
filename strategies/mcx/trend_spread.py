@@ -68,7 +68,7 @@ from typing import Optional
 
 import pandas as pd
 
-from strategies.mcx_base import MCXStrategy, MCXStrategyConfig
+from strategies.mcx_base import MCXStrategy, MCXStrategyConfig, mcx_live_volume
 from strategies.base_strategy import Signal, Direction
 
 
@@ -124,9 +124,11 @@ class TrendSpreadStrategy(MCXStrategy):
         rvol         = calc_rvol(df).iloc[-1]
 
         # Fyers MCX data feed does not provide real-time volume for commodity
-        # futures (vol_traded_today=0 on every tick). When no volume data exists
-        # at all, skip the RVOL gate so RSI+EMA+ADX can still fire trades.
-        volume_available = df["volume"].sum() > 0
+        # futures (vol_traded_today=0 on every tick). Skip the RVOL gate unless
+        # the CURRENT bar has genuinely live volume — checking df.volume.sum()
+        # instead saw seeded historical volume and enforced the gate against a
+        # stale ffill-carried RVOL (see mcx_live_volume). Shared single source.
+        volume_available = mcx_live_volume(df)
         rvol_ok_long     = (not volume_available) or (rvol >= cfg.min_rvol_trend)
         rvol_ok_short    = rvol_ok_long
         rvol_label       = f"RVOL={rvol:.1f}x" if volume_available else "RVOL=N/A(no feed)"

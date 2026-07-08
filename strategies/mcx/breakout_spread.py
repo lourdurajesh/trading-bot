@@ -60,7 +60,7 @@ from typing import Optional
 
 import pandas as pd
 
-from strategies.mcx_base import MCXStrategy, MCXStrategyConfig
+from strategies.mcx_base import MCXStrategy, MCXStrategyConfig, mcx_live_volume
 from strategies.base_strategy import Signal, Direction
 
 
@@ -121,9 +121,11 @@ class BreakoutSpreadStrategy(MCXStrategy):
         macd_h           = macd_hist.iloc[-1]
         rvol             = calc_rvol(df).iloc[-1]
 
-        # Fyers MCX data feed does not provide volume for commodity futures.
-        # When no volume data exists, skip the RVOL gate entirely.
-        volume_available = df["volume"].sum() > 0
+        # Fyers MCX data feed does not provide real-time volume for commodity
+        # futures. Skip the RVOL gate unless the CURRENT bar has genuinely live
+        # volume — df.volume.sum() saw seeded historical volume and enforced the
+        # gate against a stale ffill-carried RVOL (see mcx_live_volume). Shared.
+        volume_available = mcx_live_volume(df)
         rvol_ok          = (not volume_available) or (rvol >= cfg.min_rvol_breakout)
         rvol_label       = f"RVOL={rvol:.1f}x" if volume_available else "RVOL=N/A(no feed)"
 

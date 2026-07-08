@@ -37,6 +37,35 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────
+# SHARED VOLUME GUARD  (single source for every MCX strategy's RVOL gate)
+# ─────────────────────────────────────────────────────────────────────
+
+def mcx_live_volume(df: pd.DataFrame) -> bool:
+    """Whether the CURRENT (last) bar carries real, live volume.
+
+    Fyers' MCX futures feed reports vol_traded_today=0 on every live tick, so
+    the live-forming bars are all zero-volume while the daily-seeded HISTORICAL
+    bars still retain their volume. relative_volume() ffills over zero-volume
+    bars, so once live bars start arriving it just carries the last historical
+    RVOL forward unchanged (observed: RVOL pinned at ~0.4 for an entire session,
+    never once clearing the 1.3/1.5 gate — MCX went dark from 2026-07-06).
+
+    The old guard `df["volume"].sum() > 0` saw that seeded historical volume and
+    wrongly concluded the feed was live, enforcing the RVOL gate against a stale
+    ffill-carried value. This checks only THIS bar — the exact bar RVOL is read
+    from (calc_rvol(df).iloc[-1]) — so the gate is enforced only when that
+    reading is genuinely live, and skipped (RSI+EMA+ADX+DI still trade) when it
+    is not, which is the originally intended 'no feed → skip' behaviour.
+    """
+    if "volume" not in df.columns or len(df) == 0:
+        return False
+    try:
+        return float(df["volume"].iloc[-1]) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────
 # UNIFORM CONFIG CONTRACT
 # ─────────────────────────────────────────────────────────────────────
 
