@@ -517,6 +517,12 @@ def _collect_book_trades(limit: int = 300, status: str = None) -> dict:
 
     # Main book (LIVE/PAPER) — trades table
     try:
+        # Live-marked OPEN positions, keyed by id — the SAME source (and the SAME
+        # pnl_r formula) /book/positions uses, so an OPEN row here shows the real
+        # current unrealised R instead of the stored (always-zero-until-close) field.
+        from risk.portfolio_tracker import portfolio_tracker
+        open_by_id = {p["id"]: p for p in portfolio_tracker.get_open_positions()}
+
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             if status:
@@ -539,10 +545,13 @@ def _collect_book_trades(limit: int = 300, status: str = None) -> dict:
                 except Exception:
                     om = {}
                 nfo = om.get("nfo_symbol") if isinstance(om, dict) else None
+                live = open_by_id.get(d.get("id")) if d.get("status") == "OPEN" else None
+                pnl_inr = live["unrealised_pnl"] if live else d.get("realised_pnl")
+                pnl_r   = live["pnl_r"] if live else d.get("pnl_r")
                 rows.append(_row(d.get("id"), mode, seg, d.get("strategy"), d.get("symbol"),
                                  nfo, d.get("direction"), d.get("status"), d.get("entry_time"),
                                  d.get("exit_time"), d.get("entry_price"), d.get("exit_price"),
-                                 d.get("position_size"), d.get("realised_pnl"), d.get("pnl_r"),
+                                 d.get("position_size"), pnl_inr, pnl_r,
                                  d.get("stop_loss"), d.get("target_1"), d.get("exit_reason")))
     except Exception as e:
         logger.error(f"[book_trades] main: {e}")

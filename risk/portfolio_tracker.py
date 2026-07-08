@@ -292,6 +292,12 @@ class PortfolioTracker:
             # Entry-leg cost from the single source — same model as paper & learning
             fee = txn_fees.open_leg(_fee_segment(pos.signal_type), pos.entry_price, pos.position_size)
             unrealised = gross - fee
+            # Live R — SAME shared formula/function as the realised R computed at
+            # close (_compute_pnl_r), just fed the current unrealised P&L instead of
+            # realised_pnl. This is the ONE place open-position R is computed; both
+            # books' dashboard readers use this instead of keeping their own copy.
+            pnl_r = _compute_pnl_r(pos.position_size, pos.entry_price,
+                                    pos.original_stop_loss, unrealised)
 
             result.append({
                 "id":              pos.id,
@@ -308,6 +314,7 @@ class PortfolioTracker:
                 "position_size":   pos.position_size,
                 "capital_at_risk": pos.capital_at_risk,
                 "unrealised_pnl":  round(unrealised, 2),
+                "pnl_r":           pnl_r,
                 "entry_time":      pos.entry_time.isoformat(),
                 "options_meta":    options_meta,
                 "monitor_symbol":  pos.monitor_symbol or pos.symbol,

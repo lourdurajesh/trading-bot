@@ -439,6 +439,17 @@ class LearningEngine:
         rows.sort(key=lambda d: d.get("entry_time") or "", reverse=True)
         rows = rows[:limit]
 
+        # Live-marked OPEN positions from this book's own PortfolioTracker, keyed by
+        # id — the SAME source (and SAME pnl_r formula) the PAPER/LIVE book uses, so
+        # an OPEN row's R means the same thing in both books. Only new-pipeline rows
+        # (post slice-6c) are in here; pre-slice-6c legacy rows fall back to the old
+        # per-row _unrealized() calc below.
+        open_by_id = {}
+        try:
+            open_by_id = {p["id"]: p for p in self._nse_tracker.get_open_positions()}
+        except Exception as e:
+            logger.debug(f"[Learning] Could not read live open positions: {e}")
+
         result = []
         for r in rows:
             d = dict(r)
@@ -458,11 +469,17 @@ class LearningEngine:
             # Live mark-to-market for OPEN trades so the dashboard summary reflects
             # unrealized P&L instead of only updating when a trade closes.
             if d.get("status") == "OPEN":
-                u = self._unrealized(d)
-                if u:
-                    d["live_ltp"]       = u["ltp"]
-                    d["unrealized_r"]   = u["pnl_r"]
-                    d["unrealized_inr"] = u["pnl_inr"]
+                live = open_by_id.get(d.get("id"))
+                if live:
+                    d["live_ltp"]       = live["ltp"]
+                    d["unrealized_r"]   = live["pnl_r"]
+                    d["unrealized_inr"] = live["unrealised_pnl"]
+                else:
+                    u = self._unrealized(d)
+                    if u:
+                        d["live_ltp"]       = u["ltp"]
+                        d["unrealized_r"]   = u["pnl_r"]
+                        d["unrealized_inr"] = u["pnl_inr"]
             # SQLite can store NaN/Inf from edge-case calculations; JSON cannot.
             # Apply recursively so nested metadata values (e.g. rvol=nan) are
             # also sanitised — a shallow loop misses dict/list nesting and
