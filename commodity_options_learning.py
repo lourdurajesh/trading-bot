@@ -2313,7 +2313,7 @@ class CommodityOptionsLearning:
             out.append({
                 "id":             t.get("id"),
                 "instrument":     instrument,
-                "symbol":         sym,
+                "symbol":         stored_sym,
                 "strategy":       t.get("strategy", ""),
                 "direction":      direction,
                 "qty":            qty,
