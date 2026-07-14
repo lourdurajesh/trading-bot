@@ -29,7 +29,6 @@ CATALOG = {
     "SimpleMomentum":        "EQUITY",
     "DirectionalOptions":    "OPTIONS",
     "OptionsIncome":         "OPTIONS",
-    "IronCondor":            "OPTIONS",
     "Reversal3m":            "OPTIONS",
     "Reversal5m":            "OPTIONS",
     "TrendSpread":           "MCX",

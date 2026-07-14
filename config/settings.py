@@ -50,7 +50,7 @@ RISK_PER_TRADE_PCT    = float(os.getenv("RISK_PER_TRADE_PCT", "1.5")) # % of cap
 # Comma-separated; matched against strategy names (suffix-tolerant). EMPTY = all enabled
 # (current behaviour — no suppression). Set e.g. "TrendFollow,DirectionalOptions" to
 # restrict the live book to a curated few. Available: TrendFollow, ShortTrend,
-# MeanReversion, OptionsIncome, DirectionalOptions, IronCondor, InstitutionalMomentum,
+# MeanReversion, OptionsIncome, DirectionalOptions, InstitutionalMomentum,
 # GapFade, MomentumReversal.
 LIVE_STRATEGIES       = os.getenv("LIVE_STRATEGIES", "")
 MAX_OPEN_POSITIONS    = int(os.getenv("MAX_OPEN_POSITIONS", "10"))
@@ -149,21 +149,7 @@ OPTIONS_STRATEGY_CONFIG: dict = {
         "net_debit_ratio":  float(os.getenv("SPREAD_NET_DEBIT_RATIO", "0.65")),
     },
 
-    # Iron Condor — defined-risk strangle (4 legs), best in moderate-IV ranging markets
-    "iron_condor": {
-        "enabled":            os.getenv("OPTIONS_IC_ENABLED", "true").lower() == "true",
-        "min_dte":            int(os.getenv("IC_MIN_DTE",             "21")),
-        "max_dte":            int(os.getenv("IC_MAX_DTE",             "45")),
-        "short_call_delta":   float(os.getenv("IC_SHORT_CALL_DELTA",  "0.20")),
-        "short_put_delta":    float(os.getenv("IC_SHORT_PUT_DELTA",   "0.20")),
-        "wing_width_pct":     float(os.getenv("IC_WING_WIDTH_PCT",    "0.02")),   # 2% of spot
-        "min_iv_rank":        float(os.getenv("IC_MIN_IV_RANK",       "30.0")),
-        "max_iv_rank":        float(os.getenv("IC_MAX_IV_RANK",       "80.0")),
-        "profit_target":      float(os.getenv("IC_PROFIT_TARGET",     "0.50")),
-        "stop_mult":          float(os.getenv("IC_STOP_MULT",         "2.0")),
-        "allow_equities":     os.getenv("IC_ALLOW_EQUITIES", "true").lower() == "true",
-        "min_stock_price":    float(os.getenv("IC_MIN_STOCK_PRICE",   "500.0")),
-    },
+    # IronCondor removed 2026-07-14 — backtest-confirmed net-negative on indices (see docs/ADR.md).
 }
 
 # ─────────────────────────────────────────

@@ -27,7 +27,6 @@ from strategies.short_trend import ShortTrendStrategy
 from strategies.mean_reversion import MeanReversionStrategy
 from strategies.options_income import OptionsIncomeStrategy
 from strategies.directional_options import DirectionalOptionsStrategy
-from strategies.iron_condor import IronCondorStrategy
 from strategies.institutional_momentum import InstitutionalMomentumStrategy
 from strategies.gap_fade import GapFadeStrategy
 from strategies.momentum_reversal import MomentumReversalStrategy
@@ -51,7 +50,6 @@ class StrategySelector:
         self._reversion    = MeanReversionStrategy()
         self._opt_income   = OptionsIncomeStrategy()
         self._opt_direct   = DirectionalOptionsStrategy()
-        self._iron_condor  = IronCondorStrategy()
         self._institutional  = InstitutionalMomentumStrategy()
         self._gap_fade       = GapFadeStrategy()
         self._momentum_rev   = MomentumReversalStrategy()
@@ -274,7 +272,6 @@ class StrategySelector:
                 "mean_reversion":         self._reversion.enabled,
                 "options_income":         self._opt_income.enabled,
                 "directional_options":    self._opt_direct.enabled,
-                "iron_condor":            self._iron_condor.enabled,
                 "gap_fade":               self._gap_fade.enabled,
                 "momentum_reversal":      self._momentum_rev.enabled,
             },
@@ -389,8 +386,9 @@ class StrategySelector:
             signal = self._try_strategy(self._momentum_rev, symbol)
             if signal:
                 return signal
-            # IronCondor disabled: 3-year backtest shows win rate of 1% on index regimes —
-            # indices almost never stay in a tight ±2% range for a full 30-day cycle.
+            # IronCondor removed 2026-07-14: BS-repriced backtest (49 trades, 3 indices, 12mo)
+            # was net-negative across all 9 param configs — 1:4 reward:risk needs ~80% WR,
+            # got 57-73%. Indices breach the short strikes too often. See docs/ADR.md.
             return self._evaluate_options_parallel(symbol, [self._opt_income])
 
         if regime == Regime.VOLATILE:
@@ -402,7 +400,7 @@ class StrategySelector:
             signal = self._evaluate_options_parallel(symbol, [self._opt_direct])
             if signal:
                 return signal
-            # IronCondor disabled — see RANGING comment above.
+            # IronCondor removed — see RANGING comment above.
             return self._evaluate_options_parallel(symbol, [self._opt_income])
 
         return None

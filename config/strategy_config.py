@@ -69,10 +69,6 @@ STRATEGY_CONFIGS: dict = {
         "enabled":            {"value": True,  "type": "bool",  "description": "Enable OptionsIncome (short strangle/premium collection)"},
     },
 
-    "iron_condor": {
-        "enabled":            {"value": False, "type": "bool",  "description": "Enable IronCondor (disabled — poor backtest on indices)"},
-    },
-
     "gap_fade": {
         "enabled":            {"value": True,  "type": "bool",  "description": "Enable GapFade (fade gaps at open 9:15–9:45 AM)"},
         "MIN_GAP_PCT":        {"value": 1.5,   "type": "float", "min": 0.5, "max": 5.0, "description": "Min gap % to trade"},
@@ -104,7 +100,6 @@ _MODULE_MAP = {
     "institutional_momentum": "strategies.institutional_momentum",
     "directional_options":    "strategies.directional_options",
     "options_income":         "strategies.options_income",
-    "iron_condor":            "strategies.iron_condor",
     "gap_fade":               "strategies.gap_fade",
     "momentum_reversal":      "strategies.momentum_reversal",
 }
@@ -117,7 +112,6 @@ _SELECTOR_ATTR = {
     "institutional_momentum": "_institutional",
     "directional_options":    "_opt_direct",
     "options_income":         "_opt_income",
-    "iron_condor":            "_iron_condor",
     "gap_fade":               "_gap_fade",
     "momentum_reversal":      "_momentum_rev",
 }

@@ -96,7 +96,7 @@ class Signal:
             return False
         if self.signal_type == SignalType.OPTIONS:
             strategy_type = (self.options_meta or {}).get("strategy", "")
-            if strategy_type in ("short_strangle", "iron_condor"):
+            if strategy_type == "short_strangle":
                 # Short premium: entry = credit received; stop = 2× credit (value rises = loss)
                 if self.stop_loss <= self.entry:
                     return False
