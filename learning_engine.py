@@ -37,6 +37,7 @@ IST    = ZoneInfo("Asia/Kolkata")
 from config.settings import DB_PATH, TOTAL_CAPITAL, RISK_PER_TRADE_PCT  # single source for paths/sizing
 from execution import fees as txn_fees  # single source for transaction costs (cost_model facade)
 from config import strategy_toggles      # single source for per-strategy on/off (UI)
+from execution.evaluator import Evaluator  # shared loop engine (Phase 5 step 1)
 
 # Equity learning trades carry no lot size, so monetary P&L = pnl_pts × qty where qty is
 # sized to a fixed risk-per-trade (₹). This makes ₹ P&L track R (pnl_pts×qty == pnl_r×risk),
@@ -85,6 +86,93 @@ def _sanitize_for_json(obj):
     return obj
 
 
+class _LearningEntryEvaluator(Evaluator):
+    """The LEARNING book's entry loop on the shared Evaluator (Phase 5 step 2).
+
+    Bake-off semantics preserved from the old run_cycle: every ENABLED strategy is
+    evaluated on every watchlist symbol, deduped per (symbol, strategy) so a symbol can
+    hold several strategies at once. Equity symbols and index-option symbols are two item
+    kinds differing only in the strategy list, the naming (`_LRN` suffix for options), and
+    the earnings block (equity only). Signals are prepped and submitted through the SAME
+    shared pipeline production uses (this book's RiskManager/tracker, LEARNING context)."""
+
+    def __init__(self, engine):
+        super().__init__("Learning")
+        self._eng = engine
+
+    def _index_strategies(self):
+        try:
+            from strategies.directional_options    import DirectionalOptionsStrategy
+            from strategies.institutional_momentum import InstitutionalMomentumStrategy
+            from strategies.reversal_5m            import Reversal5mStrategy
+            return [
+                DirectionalOptionsStrategy(),
+                InstitutionalMomentumStrategy(),
+                Reversal5mStrategy(),    # 5m red→green reclaim, ATM call, per-index exit
+                Reversal5mStrategy(      # 3m NIFTY/FINNIFTY trailing variant (A/B vs 5m)
+                    timeframe="3m", name="Reversal3m",
+                    allowed={"NSE:NIFTY50-INDEX", "NSE:FINNIFTY-INDEX"},
+                    force_exit_mode="underlying_trail",
+                ),
+            ]
+        except Exception as e:
+            logger.debug(f"[Learning/IndexOptions] setup error: {e}")
+            return []
+
+    def scope(self, now):
+        from config.learning_watchlist import LEARNING_NSE_EQUITIES, LEARNING_NSE_INDICES
+        from strategies.trend_follow    import TrendFollowStrategy
+        from strategies.mean_reversion  import MeanReversionStrategy
+        from strategies.simple_momentum import SimpleMomentumStrategy
+        from strategies.simple_rsi      import SimpleRSIStrategy
+        equity = [TrendFollowStrategy(), MeanReversionStrategy(),
+                  SimpleMomentumStrategy(), SimpleRSIStrategy()]
+        index  = self._index_strategies()
+        # Equity first (indices excluded from equity strategies), then index options.
+        items  = [("equity", s, equity) for s in LEARNING_NSE_EQUITIES if "-INDEX" not in s]
+        items += [("options", s, index) for s in LEARNING_NSE_INDICES]
+        return items
+
+    def skip(self, item, now):
+        kind, symbol, _ = item
+        if self._eng._is_on_cooldown(symbol):
+            return True
+        if kind == "equity" and self._eng._is_earnings_blocked(symbol):
+            return True
+        return False
+
+    def evaluate(self, item, now):
+        kind, symbol, strategies = item
+        prepared = []
+        for strat in strategies:
+            if not strategy_toggles.is_enabled(strat.name):
+                continue  # disabled from the dashboard (single source)
+            name = f"{strat.name}_LRN" if kind == "options" else strat.name
+            if self._eng._has_open(symbol, name):
+                continue  # already in this strategy's trade for this symbol
+            try:
+                sig = strat.evaluate(symbol)
+            except Exception as exc:
+                logger.debug(f"[Learning] {strat.name}/{symbol} error: {exc}")
+                continue
+            if sig and sig.is_valid():
+                sig.strategy  = name                                   # _LRN-suffixed for options
+                sig.hold_type = self._eng._resolve_hold_type(name, strat)
+                prepared.append(sig)
+            elif sig:
+                logger.warning(f"[Learning] {strat.name}/{symbol}: signal failed is_valid() template check — skipping")
+        return prepared
+
+    def on_signal(self, signal, now):
+        # Same shared pipeline production uses: this book's RiskManager + tracker, LEARNING ctx.
+        from execution.order_manager import order_manager
+        from execution.run_context import learning_context
+        order_manager.submit(signal, ctx=learning_context(),
+                             tracker=self._eng._nse_tracker,
+                             risk_manager_=self._eng._nse_risk_manager)
+        return True
+
+
 class LearningEngine:
 
     def __init__(self):
@@ -118,6 +206,7 @@ class LearningEngine:
             tracker=self._nse_tracker, store_=store, book="LEARNING",
             on_close=self._apply_cooldown,
         )
+        self._entry_evaluator = None   # lazy — shared Evaluator loop (Phase 5 step 2)
 
         self._init_db()
         self._load_cooldowns()
@@ -127,97 +216,14 @@ class LearningEngine:
     # ─────────────────────────────────────────────────────────────
 
     def run_cycle(self) -> None:
-        """Evaluate all strategies and submit entries. Exits run separately, on
-        the orchestrator's fast-monitor tick (NSELearningAdapter.fast_monitor →
-        self._nse_position_manager.check_all()) — same cadence the production
-        book gets, not tied to this 60s generation cycle."""
-        from config.learning_watchlist import (
-            LEARNING_NSE_EQUITIES, LEARNING_NSE_INDICES,
-        )
-        from strategies.trend_follow    import TrendFollowStrategy
-        from strategies.mean_reversion  import MeanReversionStrategy
-        from strategies.simple_momentum import SimpleMomentumStrategy
-        from strategies.simple_rsi      import SimpleRSIStrategy
-
-        equity_strategies = [
-            TrendFollowStrategy(),
-            MeanReversionStrategy(),
-            SimpleMomentumStrategy(),
-            SimpleRSIStrategy(),
-        ]
-
-        # ── 1. Equity entries — 1 trade per symbol per strategy ──
-        # MCX commodities are NOT traded here — they trade exclusively as
-        # options via commodity_options_learning.py (the MCX tab).
-        for symbol in LEARNING_NSE_EQUITIES:
-            if "-INDEX" in symbol:
-                continue  # safety: indices must never go through equity strategies
-            if self._is_on_cooldown(symbol):
-                continue
-            if self._is_earnings_blocked(symbol):
-                continue
-
-            for strat in equity_strategies:
-                if not strategy_toggles.is_enabled(strat.name):
-                    continue  # disabled from the dashboard (single source)
-                if self._has_open(symbol, strat.name):
-                    continue  # already in this strategy's trade for this symbol
-                try:
-                    signal = strat.evaluate(symbol)
-                except Exception as exc:
-                    logger.debug(f"[Learning] {strat.name}/{symbol} error: {exc}")
-                    continue
-                if signal and signal.is_valid():
-                    self._submit(signal, strat.name, strat)
-                elif signal:
-                    logger.warning(f"[Learning] {strat.name}/{symbol}: signal failed is_valid() template check — skipping")
-
-        # ── 2. Index options entries ──────────────────────────────
-        self._run_index_options_learning(LEARNING_NSE_INDICES)
-
-    def _run_index_options_learning(self, index_symbols: list) -> None:
-        """
-        Evaluate DirectionalOptions / InstitutionalMomentum / Reversal5m(+3m) on
-        NIFTY/BANKNIFTY/FINNIFTY. Entries route through the same RiskManager/
-        OrderManager as equity; exits are the shared PositionManager's options
-        path (premium STOP/TARGET, or the underlying point-trail for strategies
-        that opt into options_meta["exit_mode"]="underlying_trail").
-        """
-        try:
-            from strategies.directional_options    import DirectionalOptionsStrategy
-            from strategies.institutional_momentum import InstitutionalMomentumStrategy
-            from strategies.reversal_5m            import Reversal5mStrategy
-            index_strategies = [
-                DirectionalOptionsStrategy(),
-                InstitutionalMomentumStrategy(),
-                Reversal5mStrategy(),    # 5m red→green reclaim, ATM call, per-index exit
-                # 3m NIFTY/FINNIFTY trailing variant — A/B against the 5m version.
-                Reversal5mStrategy(
-                    timeframe="3m", name="Reversal3m",
-                    allowed={"NSE:NIFTY50-INDEX", "NSE:FINNIFTY-INDEX"},
-                    force_exit_mode="underlying_trail",
-                ),
-            ]
-            for symbol in index_symbols:
-                if self._is_on_cooldown(symbol):
-                    continue
-                for strat in index_strategies:
-                    if not strategy_toggles.is_enabled(strat.name):
-                        continue  # disabled from the dashboard (single source)
-                    strat_name = f"{strat.name}_LRN"
-                    if self._has_open(symbol, strat_name):
-                        continue
-                    try:
-                        sig = strat.evaluate(symbol)
-                    except Exception as exc:
-                        logger.debug(f"[Learning/IndexOptions] {strat.name}/{symbol}: {exc}")
-                        continue
-                    if sig and sig.is_valid():
-                        self._submit(sig, strat_name, strat)
-                    elif sig:
-                        logger.warning(f"[Learning/IndexOptions] {strat.name}/{symbol}: signal failed is_valid() template check — skipping")
-        except Exception as e:
-            logger.debug(f"[Learning/IndexOptions] setup error: {e}")
+        """Evaluate all strategies and submit entries via the shared Evaluator loop
+        (Phase 5 step 2 — folds the old equity + index-options loops onto one
+        `_LearningEntryEvaluator`, behaviour preserved). Exits run separately, on the
+        orchestrator's fast-monitor tick (NSELearningAdapter.fast_monitor →
+        self._nse_position_manager.check_all()) — same cadence the production book gets."""
+        if self._entry_evaluator is None:
+            self._entry_evaluator = _LearningEntryEvaluator(self)
+        self._entry_evaluator.evaluate_once()
 
     # ─────────────────────────────────────────────────────────────
     # TRADE ENTRY — the ONE shared pipeline (RiskManager -> OrderManager -> tracker)
