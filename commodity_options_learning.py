@@ -1684,6 +1684,11 @@ class CommodityOptionsLearning:
             trail_trig_pct  = strat_cfg.get("trail_trigger_pct",   0.50)
             tgt_up_pct      = strat_cfg.get("target_upgraded_pct", 0.75)
             tgt_up_mult     = strat_cfg.get("target_upgrade_mult", 2.0)
+            # Profit-lock (STOPGAP — see ADR-003 / UNIFICATION_TASKS Phase 2b: this belongs in the
+            # shared ExitEvaluator, not here). Once trailing is active, never let the stop sit below
+            # this fraction of the SL distance ABOVE entry, so a winner can't round-trip to a loss
+            # when trail_dist exceeds the actual move (the COPPER pattern). 0 disables.
+            profit_lock_pct = strat_cfg.get("profit_lock_buffer_pct", 0.10)
 
             # Convert debit-% params to spot-point distances for this trade
             sl_dist    = round((sl_debit_pct    * net_debit) / _delta, 2) if net_debit > 0 else round(entry_spot * 0.015, 2)
@@ -1729,6 +1734,17 @@ class CommodityOptionsLearning:
                 from execution.exit_rules import ratchet_stop
                 new_sl = round(ratchet_stop(sl_price, peak_spot, sl_price, trail_dist,
                                             long=(direction == "LONG")), 2)
+                # PROFIT-LOCK FLOOR (stopgap, ADR-003). The debit-based trail_dist is often wider
+                # than the actual favourable move, so the ratchet leaves the stop BELOW entry and a
+                # winner round-trips to a loss (COPPER 2026-07-13: +₹4,070 peak → −₹2,397). Once we
+                # are trailing (a real gain), clamp the stop to a small profit above entry so the
+                # trade can no longer close negative. lock_buffer covers round-trip fees with margin.
+                if profit_lock_pct > 0:
+                    lock_buffer = round(profit_lock_pct * sl_dist, 2)
+                    if direction == "LONG":
+                        new_sl = max(new_sl, round(entry_spot + lock_buffer, 2))
+                    else:
+                        new_sl = min(new_sl, round(entry_spot - lock_buffer, 2))
                 if new_sl != sl_price:
                     sl_price = new_sl
                     trade_meta["trail_active"] = True
