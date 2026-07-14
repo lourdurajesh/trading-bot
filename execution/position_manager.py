@@ -700,12 +700,12 @@ class PositionManager:
         Data-driven — no strategy name branching.
         """
         try:
-            from execution.fyers_broker import fyers_broker
+            from execution.order_router import order_router
             exit_legs = options_meta.get("exit_legs", [])
             lot_size  = int(options_meta.get("lot_size", 1))
             ids = []
             for leg in exit_legs:
-                oid = fyers_broker.place_order(
+                oid = order_router.place(
                     symbol=leg["symbol"], direction=leg["direction"],
                     qty=lot_size, order_type="MARKET",
                 )
@@ -748,11 +748,9 @@ class PositionManager:
             )
             order_id = f"PAPER-EXIT"
         else:
-            from execution.fyers_broker import fyers_broker
-            from execution.alpaca_broker import alpaca_broker
+            from execution.order_router import order_router
             exit_direction = "SHORT" if pos.direction == "LONG" else "LONG"
-            broker = fyers_broker if symbol.startswith("NSE:") else alpaca_broker
-            order_id = broker.place_order(
+            order_id = order_router.place(
                 symbol     = symbol,
                 direction  = exit_direction,
                 qty        = size,
@@ -805,11 +803,9 @@ class PositionManager:
                 reason    = f"PARTIAL_{reason}",
             )
         else:
-            from execution.fyers_broker import fyers_broker
-            from execution.alpaca_broker import alpaca_broker
+            from execution.order_router import order_router
             exit_direction = "SHORT" if pos.direction == "LONG" else "LONG"
-            broker = fyers_broker if symbol.startswith("NSE:") else alpaca_broker
-            order_id = broker.place_order(
+            order_id = order_router.place(
                 symbol     = symbol,
                 direction  = exit_direction,
                 qty        = size,
@@ -1032,7 +1028,7 @@ class PositionManager:
         if PAPER_TRADING:   # Bug 16: imported at top of module
             return
         try:
-            from execution.fyers_broker import fyers_broker
+            from execution.order_router import order_router
             pos = self._tracker.get_position(symbol)
             if not pos:
                 return
@@ -1043,7 +1039,7 @@ class PositionManager:
             # Cancel old SL order before placing the updated one (Bug 2)
             if pos.sl_order_id:
                 try:
-                    fyers_broker.cancel_order(pos.sl_order_id)
+                    order_router.cancel(symbol, pos.sl_order_id)
                     logger.debug(f"[PositionManager] Cancelled old SL {pos.sl_order_id} for {symbol}")
                 except Exception as ce:
                     logger.warning(f"[PositionManager] Could not cancel old SL {pos.sl_order_id}: {ce}")
@@ -1051,7 +1047,7 @@ class PositionManager:
             exit_dir = "SHORT" if pos.direction == "LONG" else "LONG"
             # Pass correct product so swing CNC SL isn't rejected (Bug 7)
             product = "CNC" if pos.hold_type == "swing" else "INTRADAY"
-            new_sl_id = fyers_broker.place_order(
+            new_sl_id = order_router.place(
                 symbol     = symbol,
                 direction  = exit_dir,
                 qty        = remaining_size,
