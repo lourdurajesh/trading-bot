@@ -19,6 +19,7 @@ IST = ZoneInfo("Asia/Kolkata")
 from analysis.regime_detector import Regime, regime_detector
 from config.settings import MIN_SIGNAL_CONFIDENCE, SYMBOL_COOLDOWN_MINUTES
 from execution.order_manager import order_manager
+from execution.evaluator import Evaluator  # shared loop engine (Phase 5)
 from intelligence.intelligence_engine import intelligence_engine
 from risk.portfolio_tracker import portfolio_tracker
 from strategies.base_strategy import Signal
@@ -32,6 +33,111 @@ from strategies.gap_fade import GapFadeStrategy
 from strategies.momentum_reversal import MomentumReversalStrategy
 
 logger = logging.getLogger(__name__)
+
+
+class _ProductionEntryEvaluator(Evaluator):
+    """NSE production entry loop on the shared Evaluator (Phase 5 step 2b).
+
+    Behaviour preserved from StrategySelector.run_cycle: ordered symbols; cooldown +
+    open-position skips (with the six diagnostic counters); regime-routed single-strategy
+    evaluate; conflict-direction block; is_valid gate; intelligence gate (60m cooldown on
+    reject, audit-logged); analyst size adjust; submit (5m cooldown on a post-intelligence
+    reject); cycle logging + signal-health feed. The base adds per-item error isolation."""
+
+    def __init__(self, selector):
+        super().__init__("StrategySelector")
+        self._sel = selector
+
+    def scope(self, now):
+        # per-cycle diagnostics (reset here — scope() runs first each evaluate_once)
+        self._c = {"cooldown": 0, "position": 0, "no_data": 0,
+                   "regime": 0, "no_signal": 0, "invalid": 0}
+        syms = self._sel._get_ordered_symbols()
+        self._n_symbols = len(syms)
+        return syms
+
+    def skip(self, symbol, now):
+        if self._sel._is_on_cooldown(symbol):
+            self._c["cooldown"] += 1
+            return True
+        if portfolio_tracker.has_open_position(symbol):
+            self._c["position"] += 1
+            return True
+        return False
+
+    def evaluate(self, symbol, now):
+        signal = self._sel._evaluate_symbol(symbol)
+        if signal is not None and self._sel._is_conflicting_direction(symbol, signal.direction.value):
+            logger.warning(
+                f"[StrategySelector] CONFLICT BLOCKED: {signal.strategy} wants "
+                f"{signal.direction.value} {symbol} but an opposite position is already open"
+            )
+            signal = None
+        if signal is None:
+            from data.data_store import store
+            if not store.is_ready(symbol, "1H", min_candles=50):
+                self._c["no_data"] += 1
+            else:
+                regime_result = regime_detector.get_regime(symbol, "1H")
+                if regime_result.regime == Regime.UNKNOWN:
+                    self._c["regime"] += 1
+                else:
+                    self._c["no_signal"] += 1
+            return []
+        if not signal.is_valid():
+            logger.warning(
+                f"[StrategySelector] {symbol} signal invalid before intelligence "
+                f"(entry={signal.entry}, sl={signal.stop_loss}, t1={signal.target_1}) — skipping"
+            )
+            self._c["invalid"] += 1
+            return []
+        return [signal]
+
+    def on_signal(self, signal, now):
+        intel = intelligence_engine.evaluate(signal)
+        if not intel.approved:
+            logger.info(f"[StrategySelector] {signal.symbol} blocked by intelligence: {intel.summary[:100]}")
+            try:
+                from audit_log import audit_log
+                audit_log.rejection(signal, reason=intel.summary[:300], layer="intelligence")
+            except Exception:
+                pass
+            self._sel.apply_cooldown(signal.symbol, minutes=60)
+            return False
+        if intel.size_factor < 1.0:
+            signal.position_size = int(signal.position_size * intel.size_factor)
+            logger.info(f"[StrategySelector] {signal.symbol} size reduced to {intel.size_factor:.0%} by analyst")
+        signal.reason = f"{signal.reason} | AI: {intel.verdict} ({intel.conviction:.1f}/10)"
+        signal_id = order_manager.submit(signal)
+        if signal_id:
+            return True
+        # Order rejected post-intelligence (risk/margin/profit check) — short cooldown.
+        self._sel.apply_cooldown(signal.symbol, minutes=5)
+        return False
+
+    def after_cycle(self, acted, now):
+        if acted:
+            logger.info(
+                f"[StrategySelector] Cycle {self._sel._cycle_count}: "
+                f"{len(acted)} signal(s) submitted from {self._n_symbols} symbols."
+            )
+        else:
+            c = self._c
+            logger.info(
+                f"[StrategySelector] Cycle {self._sel._cycle_count} — no signals | "
+                f"{self._n_symbols} symbols: "
+                f"no_data={c['no_data']} regime_unknown={c['regime']} "
+                f"no_setup={c['no_signal']} cooldown={c['cooldown']} "
+                f"open_pos={c['position']} invalid={c['invalid']}"
+            )
+        try:
+            from analysis.signal_health import skip_collector, health_monitor
+            skip_records = skip_collector.flush()
+            health_monitor.update(skip_records, signals_fired=len(acted))
+            if acted:
+                health_monitor.record_trade()
+        except Exception:
+            pass
 
 
 class StrategySelector:
@@ -53,6 +159,7 @@ class StrategySelector:
         self._institutional  = InstitutionalMomentumStrategy()
         self._gap_fade       = GapFadeStrategy()
         self._momentum_rev   = MomentumReversalStrategy()
+        self._entry_evaluator = None   # lazy — shared Evaluator loop (Phase 5 step 2b)
 
         # Re-push any persisted overrides now that all strategy modules are imported.
         # _load_overrides() ran at strategy_config import time (before these modules
@@ -85,115 +192,16 @@ class StrategySelector:
         """
         Main evaluation loop. Runs all symbols through their assigned strategy.
         Returns list of signals submitted this cycle.
+
+        Phase 5 step 2b: the loop now lives in the shared `_ProductionEntryEvaluator`
+        on the Evaluator base (one loop engine for every book). Behaviour preserved —
+        ordered symbols, cooldown/open-position skips + diagnostics, regime routing,
+        conflict block, is_valid gate, intelligence gate, submit, health feed.
         """
         self._cycle_count += 1
-        signals_submitted = []
-
-        # Diagnostic counters — logged at INFO so dry runs are visible
-        skipped_cooldown  = 0
-        skipped_position  = 0
-        skipped_no_data   = 0
-        skipped_regime    = 0
-        skipped_no_signal = 0
-        skipped_invalid   = 0
-
-        # Prioritise high-liquidity symbols first
-        symbols = self._get_ordered_symbols()
-
-        for symbol in symbols:
-            if self._is_on_cooldown(symbol):
-                skipped_cooldown += 1
-                continue
-            if portfolio_tracker.has_open_position(symbol):
-                skipped_position += 1
-                continue
-
-            signal = self._evaluate_symbol(symbol)
-            if signal is not None and self._is_conflicting_direction(symbol, signal.direction.value):
-                # Conflict gate: another strategy already holds this symbol in the
-                # opposite direction. Allowed in learning (independent strategy eval)
-                # but blocked here — real capital never holds both sides of a trade.
-                logger.warning(
-                    f"[StrategySelector] CONFLICT BLOCKED: {signal.strategy} wants "
-                    f"{signal.direction.value} {symbol} but an opposite position is already open"
-                )
-                signal = None
-
-            if signal is None:
-                # Distinguish no-data from no-setup by checking data availability
-                from data.data_store import store
-                if not store.is_ready(symbol, "1H", min_candles=50):
-                    skipped_no_data += 1
-                else:
-                    regime_result = regime_detector.get_regime(symbol, "1H")
-                    from analysis.regime_detector import Regime
-                    if regime_result.regime == Regime.UNKNOWN:
-                        skipped_regime += 1
-                    else:
-                        skipped_no_signal += 1
-                continue
-
-            # Gate: reject structurally invalid signals before the expensive
-            # intelligence layer (news scraper, macro, Claude analyst).
-            if not signal.is_valid():
-                logger.warning(
-                    f"[StrategySelector] {symbol} signal invalid before intelligence "
-                    f"(entry={signal.entry}, sl={signal.stop_loss}, t1={signal.target_1}) — skipping"
-                )
-                skipped_invalid += 1
-                continue
-
-            # Run intelligence layer before submission
-            intel = intelligence_engine.evaluate(signal)
-            if not intel.approved:
-                logger.info(f"[StrategySelector] {symbol} blocked by intelligence: {intel.summary[:100]}")
-                try:
-                    from audit_log import audit_log
-                    audit_log.rejection(signal, reason=intel.summary[:300], layer="intelligence")
-                except Exception:
-                    pass
-                # Apply cooldown so we don't re-evaluate every 60 seconds
-                self.apply_cooldown(symbol, minutes=60)
-                continue
-            # Adjust position size if analyst says reduce
-            if intel.size_factor < 1.0:
-                signal.position_size = int(signal.position_size * intel.size_factor)
-                logger.info(f"[StrategySelector] {symbol} size reduced to {intel.size_factor:.0%} by analyst")
-            # Attach intelligence summary to signal reason
-            signal.reason = f"{signal.reason} | AI: {intel.verdict} ({intel.conviction:.1f}/10)"
-            signal_id = order_manager.submit(signal)
-            if signal_id:
-                signals_submitted.append(signal)
-            else:
-                # Order rejected post-intelligence (risk/margin/profit check failed).
-                # Apply a short cooldown to avoid hammering the same symbol next cycle.
-                self.apply_cooldown(symbol, minutes=5)
-
-        if signals_submitted:
-            logger.info(
-                f"[StrategySelector] Cycle {self._cycle_count}: "
-                f"{len(signals_submitted)} signal(s) submitted from {len(symbols)} symbols."
-            )
-        else:
-            logger.info(
-                f"[StrategySelector] Cycle {self._cycle_count} — no signals | "
-                f"{len(symbols)} symbols: "
-                f"no_data={skipped_no_data} regime_unknown={skipped_regime} "
-                f"no_setup={skipped_no_signal} cooldown={skipped_cooldown} "
-                f"open_pos={skipped_position} invalid={skipped_invalid}"
-            )
-
-        # Feed health monitor — records skip reasons + drought tracking
-        try:
-            from analysis.signal_health import skip_collector, health_monitor
-            skip_records = skip_collector.flush()
-            health_monitor.update(skip_records, signals_fired=len(signals_submitted))
-            if signals_submitted:
-                health_monitor.record_trade()
-        except Exception:
-            pass
-
-        return signals_submitted
+        if self._entry_evaluator is None:
+            self._entry_evaluator = _ProductionEntryEvaluator(self)
+        return self._entry_evaluator.evaluate_once()
 
     def apply_cooldown(self, symbol: str, minutes: int = None) -> None:
         """
