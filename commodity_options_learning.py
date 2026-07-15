@@ -46,6 +46,7 @@ from strategies.mcx_base import MCXStrategy, MCXStrategyConfig
 from strategies.base_strategy import Signal
 from strategies.mcx import TrendSpreadStrategy, RSIReversalSpreadStrategy, BreakoutSpreadStrategy
 from config.mcx_calendar import mcx_calendar, SessionPhase, SessionStatus
+from execution.evaluator import Evaluator  # shared loop engine (Phase 5)
 from config.mcx_engine_settings import engine_settings
 
 # ── Enhancement modules (fail-safe imports) ───────────────────────
@@ -339,6 +340,48 @@ def _debit_sl_price(spot: float, direction: str, net_debit: float, strat_cfg: di
 
 # ─────────────────────────────────────────────────────────────────
 
+class _MCXEntryEvaluator(Evaluator):
+    """The MCX book's entry loop on the shared Evaluator (Phase 5 step 2c).
+
+    scope() carries the once-per-cycle session gate, daily-counter reset, and cycle log
+    (returns [] when entry isn't allowed); each enabled instrument is one item whose
+    evaluate() delegates to the engine's existing _evaluate (spread construction, sizing,
+    placement and recording still live there — folding *that* onto the shared risk/order/
+    ledger path is Phase 3). The base adds per-instrument error isolation the old loop
+    lacked, so one bad instrument no longer aborts the whole MCX cycle."""
+
+    def __init__(self, engine):
+        super().__init__("CommOpts")
+        self._eng = engine
+
+    def scope(self, now):
+        status = mcx_calendar.get_status(now)
+        if not status.allows_entry:
+            # Log only on phase transition (run_cycle fires every 60s).
+            if status.phase != self._eng._last_session_phase:
+                logger.info(f"[CommOpts] {status.message}")
+                self._eng._last_session_phase = status.phase
+            else:
+                logger.debug(f"[CommOpts] {status.message}")
+            if status.phase in (SessionPhase.HOLIDAY_MORNING, SessionPhase.FULL_HOLIDAY):
+                self._eng._clear_data_alerts()
+            return []
+        # Market open — reset phase tracker so the next closure logs at INFO again.
+        self._eng._last_session_phase = None
+        today = now.date()
+        if today != self._eng._daily_entries_date:
+            self._eng._daily_entries.clear()
+            self._eng._daily_entries_date = today
+            logger.info("[CommOpts] Daily entry counters reset for new trading day")
+        logger.info(f"[CommOpts] Cycle @ {now.strftime('%H:%M')} IST | open={len(self._eng._open_positions)}")
+        return [s for s in MCX_CONTRACTS.keys() if s in self._eng._enabled_commodities]
+
+    def evaluate(self, short, now):
+        from data.data_store import store
+        self._eng._evaluate(short, store, now)   # inline: spread + size + place + record
+        return ()   # no Signal handed back — placement happens inside _evaluate (Phase 3 to unify)
+
+
 class CommodityOptionsLearning:
     """
     Standalone paper-trade engine for MCX commodity options.
@@ -364,6 +407,7 @@ class CommodityOptionsLearning:
         # Track the last session phase we logged so we only print INFO on phase transitions,
         # not on every cycle (run_cycle fires every 60 s).
         self._last_session_phase: Optional[SessionPhase] = None
+        self._entry_evaluator = None   # lazy — shared Evaluator loop (Phase 5 step 2c)
         # Record startup time so _record_data_miss() can suppress false-positive alerts
         # during the WebSocket warmup period (first N minutes after restart).
         self._start_time: datetime = datetime.now(tz=IST)
@@ -1145,46 +1189,13 @@ class CommodityOptionsLearning:
         return True, ""
 
     def run_cycle(self) -> None:
-        """Entry evaluation once per EVAL_INTERVAL during MCX hours.
-        Exit monitoring is handled by check_exits() on the 5-second fast loop."""
-        now    = datetime.now(tz=IST)
-        status = mcx_calendar.get_status(now)
-
-        if not status.allows_entry:
-            # Log only on phase transition — run_cycle fires every 60 s so
-            # repeating the same message fills the log pointlessly.
-            # First occurrence of a phase → INFO; repeated same phase → DEBUG.
-            if status.phase != self._last_session_phase:
-                logger.info(f"[CommOpts] {status.message}")
-                self._last_session_phase = status.phase
-            else:
-                logger.debug(f"[CommOpts] {status.message}")
-
-            # On a holiday or MCX full-day closure, clear any persisted data-miss
-            # alerts — data unavailability is expected and not actionable.
-            # Alerts will be re-raised if the issue persists into the next live session.
-            if status.phase in (SessionPhase.HOLIDAY_MORNING, SessionPhase.FULL_HOLIDAY):
-                self._clear_data_alerts()
-
-            return
-
-        # Market is open — reset phase tracker so the next closure logs at INFO again
-        self._last_session_phase = None
-
-        today = now.date()
-        if today != self._daily_entries_date:
-            self._daily_entries.clear()
-            self._daily_entries_date = today
-            logger.info("[CommOpts] Daily entry counters reset for new trading day")
-
-        from data.data_store import store
-        open_count = len(self._open_positions)
-        logger.info(f"[CommOpts] Cycle @ {now.strftime('%H:%M')} IST | open={open_count}")
-
-        for short in list(MCX_CONTRACTS.keys()):
-            if short not in self._enabled_commodities:
-                continue
-            self._evaluate(short, store, now)
+        """Entry evaluation once per EVAL_INTERVAL during MCX hours, via the shared
+        Evaluator loop (Phase 5 step 2c). Exit monitoring is handled by check_exits()
+        on the 5-second fast loop. Behaviour preserved — session gate, daily reset,
+        cycle log, and per-instrument _evaluate — plus per-instrument error isolation."""
+        if self._entry_evaluator is None:
+            self._entry_evaluator = _MCXEntryEvaluator(self)
+        self._entry_evaluator.evaluate_once(datetime.now(tz=IST))
 
     # ─────────────────────────────────────────────────────────────
     # STRATEGY LOGIC
