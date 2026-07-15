@@ -30,6 +30,7 @@ from config.settings import OPTIONS_DTE_FORCE_EXIT, PAPER_TRADING, EOD_EXIT_TIME
 from data.data_store import store
 from risk.portfolio_tracker import portfolio_tracker, Position
 from notifications.alert_service import alert_service
+from execution.evaluator import Evaluator  # shared loop engine (Phase 5 — exit side)
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +55,19 @@ SHADOW_ATR_MULTS        = (0.75, 1.0)
 
 
 
-class PositionManager:
+class PositionManager(Evaluator):
     """
-    Monitors all open positions on every tick and manages exits.
+    The shared ExitEvaluator (Phase 5 — exit side). Monitors all open positions on every
+    tick and manages exits. Runs on the one Evaluator base: scope() = this book's open
+    positions, evaluate() = the per-position exit check. Per-book instantiable (LIVE /
+    LEARNING) so one exit engine serves every book.
 
     Usage:
         position_manager.check_all()   # called by fast loop every 5s
     """
 
     def __init__(self, tracker=None, store_=None, book: str = "PAPER", on_close=None):
+        super().__init__(f"PositionManager[{book}]")
         # Per-book instantiable (library-safe). The portfolio engine uses the default
         # globals; a second runtime (the forward-test harness, slice 6) injects its own
         # tracker/store/book so one exit engine serves multiple books without globals.
@@ -88,22 +93,22 @@ class PositionManager:
         self._shadow_logged:     set[tuple] = set()  # (pid, k) already logged — fire once per position
 
     def check_all(self) -> None:
-        """
-        Check all open positions against current prices.
-        Called every 5 seconds from main.py fast loop.
-        """
-        positions = self._tracker.get_open_positions()
-        if not positions:
-            return
+        """Check all open positions against current prices (called every 5s from the
+        fast loop). Delegates to the shared Evaluator loop; the hooks below are this
+        book's exit scope + per-position check."""
+        self.evaluate_once(datetime.now(tz=IST))   # always IST regardless of server tz
 
-        now_ist = datetime.now(tz=IST)   # always IST regardless of server timezone
+    # ── Evaluator hooks (exit side) ──────────────────────────────
+    def scope(self, now):
+        return self._tracker.get_open_positions()
 
-        for pos_dict in positions:
-            symbol = pos_dict.get("symbol", "")
-            try:
-                self._check_position(pos_dict, now_ist)
-            except Exception as e:
-                logger.error(f"[PositionManager] Error checking {symbol}: {e}")
+    def evaluate(self, pos_dict, now):
+        symbol = pos_dict.get("symbol", "")
+        try:
+            self._check_position(pos_dict, now)   # runs SL/target/trail/structural/EOD inline
+        except Exception as e:
+            logger.error(f"[PositionManager] Error checking {symbol}: {e}")
+        return ()   # exits happen inside _check_position; no signal handed to on_signal
 
     # ─────────────────────────────────────────────────────────────
     # INTERNAL — per-position check
