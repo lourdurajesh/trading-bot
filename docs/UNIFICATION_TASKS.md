@@ -63,11 +63,21 @@ Target end-state unchanged: the orchestrator schedules `EntryEvaluator` (slow) +
 (fast) per segment. Entry side reached this; exit side reached it for NSE, shares rules for MCX.
 
 ## Phase 6 — Retire the parallel machinery
-| # | Task | Files | Verify (local) | Risk |
-|---|---|---|---|---|
-| 6a | Repoint Paper tab + `daily_review` to ledger; remove PM `close_order` remnant; **delete `paper_trading.py`** | `paper_trading.py`, `position_manager.py`, `daily_review.py`, `dashboard_api.py` | Paper tab matches ledger | medium |
-| 6b | Retire `/commodity\|learning\|us\|paper` trade/stat clones → `/book` + `/ledger?segment=`; split the 2497-line `dashboard_api.py` | `api/dashboard_api.py`, `dashboard/index.html` | UI renders only from unified feeds | medium |
-| 6c | **Split the API into its own process** (out of `main.py`'s daemon thread) — bot runs headless (ADR-010) | `main.py`, `api/dashboard_api.py`, `deploy/` (new service unit) | bot trades with the API stopped; UI still reads ledger / writes config; no shared process | low |
+| # | Task | Files | Verify (local) | Risk | Status |
+|---|---|---|---|---|---|
+| 6a | Repoint Paper tab to ledger; remove PM `close_order` remnant; **delete `paper_trading.py`** | `paper_trading.py`, `position_manager.py`, `dashboard_api.py`, `risk/portfolio_tracker.py`, `dashboard/index.html` | Paper tab matches ledger | medium | ✅ **done & live** (`b4554e8`) |
+| 6b | Retire `/commodity\|learning\|us\|paper` trade/stat clones → `/book` + `/ledger?segment=` | `api/dashboard_api.py`, `dashboard/index.html` | UI renders only from unified feeds | medium | ✅ **done** (U7 shims + dead routes removed, `b4554e8`) |
+| 6c | **Split the API into its own process** (out of `main.py`'s daemon thread) — bot runs headless (ADR-010) | `main.py`, `api/dashboard_api.py`, `deploy/` (new service unit) | bot trades with the API stopped; UI still reads ledger / writes config; no shared process | low | ⏳ remaining |
+
+**6a/6b done (2026-07-15, `b4554e8`):** the standalone `paper_trading.py` ₹5L wallet is deleted. It
+had **frozen on 2026-07-06** (order_manager stopped feeding it), so the dashboard's PAPER-mode numbers
+were 9 days stale. Now `PAPER_TRADING` means the production book *is* the paper book, and
+`risk/portfolio_tracker.get_stats()` is the ONE ledger-backed source for portfolio value / P&L /
+win-rate / drawdown (enriched with `mode`/`profit_factor`/`avg_winner`/`avg_loser`/`capital_deployed`/
+`balance_pct`). The frontend `isPaper ? paperStats : stats` split is gone; Trading + Paper P&L tabs read
+`stats`. Removing the 3 `paper_trading.close_order()` calls from the exit path also fixed a latent bug
+where a missing wallet LTP could fail a real exit with "MANUAL INTERVENTION". The `dashboard_api.py`
+split (into smaller routers) was **not** done — deferred with 6c as pure structural tidy. Net −907 lines.
 
 ## Phase 7 — Config tidy
 | # | Task | Files | Verify (local) | Risk |
