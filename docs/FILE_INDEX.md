@@ -1,206 +1,262 @@
 # File Index
 
-> Every module and what it does, grouped by role. Updated 2026-06-23 (Phase-U + Phase-V
-> unification complete: one `TradingOrchestrator` over all segments; single sources for
-> sizing/fees/exit-policy/run-mode/strategy-toggles; one positions+trades feed and one
-> dashboard table. New modules: `execution/{fees,run_context,exit_policy,exit_signals,orchestrator}.py`,
-> `config/strategy_toggles.py`. Prior (2026-06-21): `execution/{sizing,ledger,exit_rules,order_router}.py`,
-> `api/segment_readers.py`, `strategies/reversal_core.py`. See `docs/UNIFIED_EXECUTION_SPEC.md`
-> and `docs/REFINEMENT_PLAN.md`.
+> **Rebuilt 2026-07-09 from a line-by-line audit against the actual code.** Supersedes the
+> 2026-06-23 version, which claimed "Phase-U + Phase-V unification complete" — that claim was
+> **false**: NSE (production + learning) is unified, but **MCX and US remain full private
+> pipelines**, and the dashboard/config/risk layers are only half-migrated. This index records
+> the real state so future sessions resume from ground truth. See `docs/TECH_SPEC.md` (target)
+> and `docs/UNIFICATION_TASKS.md` (work plan).
 
-**Entry points (how the bot actually runs):**
-- `watchdog.py` → systemd `trading-bot.service`; supervises and restarts `main.py`.
-- `main.py` → master orchestrator: streams, strategy loop, dashboard thread, scheduled jobs.
-- `generate_token.py`, `nightly_agent.py`, `weekly_agent.py` → cron jobs.
-- `api/dashboard_api.py` → FastAPI dashboard (started by `main.py` on :8000).
+## How to read this
+
+Every file maps to **one** architectural component. A file is healthy when it belongs cleanly to
+one component; the core problem is the three "engines" that each span C1–C5 + C10 by themselves.
+
+**Pipeline components (the trade control-flow):**
+`C1` Strategy Layer (data→Signal) · `C2` Risk & Sizing · `C3` Order Routing · `C4` Exit
+Management · `C5` Ledger & P&L · `C6` Run Context (LIVE/PAPER/LEARNING) · `C7` Instrument
+Adapter (chain/lot/tick/session) · `C8` Broker Adapter (Fyers/Alpaca) · `C9` Market Data ·
+`C10` Orchestration.
+
+**Supporting components:** `C11` Analytics · `C12` Intelligence · `C13` Dashboard/API ·
+`C14` Reviews & Agents · `C15` Backtesting · `C16` Ops/Scripts/Tests · `C17` Infra.
+
+**Target control-flow (spec):**
+```
+price feed → Strategy.evaluate → Signal → RiskSizer.size_and_gate
+          → OrderRouter.place → PositionManager.manage → Ledger.record
+   asset-class differences live in ADAPTERS, never in duplicated control flow
+```
+
+**Verdict legend:**
+- ✅ **CORE** — in the unified pipeline, single-source, compliant
+- 🔶 **PARTIAL** — shared in principle but still diverges / only half-wired
+- ❌ **DIVERGENT** — a parallel/duplicate engine that violates "one engine"
+- 🧰 **SUPPORT** — legitimate non-pipeline tool (compliance N/A, just needs to be correct)
+- 🗑️ **DEAD/JUNK** — unused, vestigial, or stale — deletion candidate
+
+**Entry points (how the bot runs):** `watchdog.py` (systemd) → `main.py` → `execution/orchestrator.py`
+→ segment adapters. `api/dashboard_api.py` serves the UI on :8000. Cron: `generate_token.py`,
+`nightly_agent.py`, `weekly_agent.py`.
 
 ---
 
-## Root — orchestration & engines
+## `execution/` — order & exit plumbing
 
-| File | Purpose |
-|------|---------|
-| `main.py` | Master loop: boot brokers/streams, then drive ALL segments via one `TradingOrchestrator` (`run_generation`/`run_fast_monitors`) instead of separate engine calls; scheduled hooks (conviction score, OI snapshot, FII collect, token refresh). |
-| `watchdog.py` | Process supervisor (systemd entry) — keeps `main.py` alive. |
-| `learning_engine.py` | Paper "learning lab": runs simple equity strategies + index-options path on a watchlist, logs labeled trades. |
-| `commodity_options_learning.py` | MCX commodity-options engine: signals, spread construction, exits, P&L for `strategies/mcx/`. |
-| `us_reversal.py` | US index-ETF (SPY/QQQ) Reversal options PAPER engine; logic shared via `strategies/reversal_core.py`; now a `US` segment adapter under `execution/orchestrator.py`. |
-| `token_manager.py` | Fyers token lifecycle — refresh, health check, proactive pre-6 AM renewal. |
-| `generate_token.py` | One-time/daily Fyers auth token generation (cron). |
-| `audit_log.py` | Append-only audit trail (bot events, rejections). |
+| File | LoC | Component | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|---|
+| `run_context.py` | 90 | C6 | `RunContext` (LIVE/PAPER/LEARNING) mode flags | ✅ CORE | Keep — the one mode source |
+| `sizing.py` | 109 | C2 | `shares_to_fit`/`lots_to_fit` size primitive | ✅ CORE | Keep; make MCX/US size only via this |
+| `fees.py` | 55 | C5 | Transaction-cost facade over `cost_model` | ✅ CORE | Keep |
+| `ledger.py` | 299 | C5 | Unified trades store (`ledger` + `segment`, compat views nse/mcx/us/live) | ✅ CORE | Keep; converge the 4 segment schemas over time |
+| `exit_rules.py` | 84 | C4 | Exit primitives (premium SL/target, underlying trail, ratchet) | ✅ CORE | Keep — shared by all segments |
+| `exit_signals.py` | 152 | C4 | Structural exits (ATR trail, swing/trend break, momentum fade) | ✅ CORE | Keep |
+| `exit_policy.py` | 54 | C4 | Strategy→exit-style map from config | ✅ CORE | Keep |
+| `position_manager.py` | 1112 | C4 | Exit engine — **only NSE prod+learning use it** | 🔶 PARTIAL | **Make it THE exit engine**; migrate MCX & US onto it |
+| `orchestrator.py` | 147 | C10 | `TradingOrchestrator` — unifies scheduling, wraps **4 `run_cycle`s** | 🔶 PARTIAL | Extend so adapters delegate to shared risk→router→PM path |
+| `order_manager.py` | 645 | C3 | NSE signal→order; calls `broker.place_order` **directly** | 🔶 PARTIAL | Route through `order_router`; keep only signal-intake/confirm role |
+| `order_router.py` | 45 | C3 | Broker place/cancel wrapper — **not used by `order_manager`** | 🔶 PARTIAL | Make it the single placement path for all segments incl. NSE |
+| `options_executor.py` | 698 | C7 | NSE chain fetch (→`chain_service`), strike/expiry select, BS fallback | ✅ CORE | Keep (NSE options adapter) |
+| `fyers_broker.py` | 277 | C8 | Fyers REST adapter (NSE+MCX) | ✅ CORE | Keep; stop callers reaching into `_client` |
+| `alpaca_broker.py` | 152 | C8 | Alpaca (US) adapter — sim until keyed | ✅ CORE | Keep |
 
-## Root — scheduled agents & reviews (cron / manual)
+## `strategies/` — the C1 layer (mostly healthy)
 
-| File | Purpose |
-|------|---------|
-| `nightly_agent.py` | Nightly: dynamic watchlist, IV history, housekeeping (cron). |
-| `weekly_agent.py` | Weekly maintenance/analytics (cron). |
-| `daily_plan.py` | Pre-market plan (consumed by dashboard). |
-| `daily_review.py` | End-of-day review (dashboard). |
-| `weekly_review.py` | Weekly performance review (manual). |
-| `journal_analyser.py` | Trade-journal analytics (dashboard). |
-| `portfolio_analyser.py` | Portfolio analytics (dashboard). |
-| `system_health.py` | Health snapshot. |
+| File | LoC | Component | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|---|
+| `base_strategy.py` | 228 | C1 | Base class: `Signal`/`Direction`, data access, `evaluate()` contract | ✅ CORE | Keep — the strategy contract |
+| `strategy_selector.py` | 463 | C1+C2+C3+C10 | NSE production loop: routing + gates + submit — **one of the 4 `run_cycle`s** | 🔶 PARTIAL | Split: keep routing table; move gating/submit to shared path |
+| `directional_options.py` | 207 | C1 | Index single long call/put | ✅ CORE | Keep (routed: prod + learning) |
+| `institutional_momentum.py` | 353 | C1 | Conviction-driven ATM index options | ✅ CORE | Keep (routed) |
+| `trend_follow.py` | 265 | C1 | Equity long breakout | ✅ CORE | Keep (routed: prod + learning) |
+| `short_trend.py` | 306 | C1 | Equity short breakdown | ✅ CORE | Keep (routed) |
+| `mean_reversion.py` | 325 | C1 | Range fade | ✅ CORE | Keep (routed: prod + learning) |
+| `momentum_reversal.py` | 261 | C1 | Extreme-RSI snap-back | ✅ CORE | Keep (routed) |
+| `gap_fade.py` | 271 | C1 | Opening-gap fade (9:15–9:45) | ✅ CORE | Keep (routed) |
+| `options_income.py` | 174 | C1 | Short strangle (premium selling) | ✅ CORE | Keep (routed) |
+| `iron_condor.py` | 265 | C1 | Defined-risk condor — **instantiated + toggle-listed but NEVER routed** | 🗑️ DEAD | Delete (or wire). Dead since ≥2026-06 |
+| `options_strategy_config.py` | 39 | C1 cfg | Config **only for `iron_condor`** | 🗑️ DEAD | Delete with condor |
+| `simple_rsi.py` | 150 | C1 | Learning baseline (returns `Signal`) | ✅ CORE | Keep (learning) |
+| `simple_momentum.py` | 144 | C1 | Learning baseline | ✅ CORE | Keep (learning) |
+| `reversal_core.py` | 91 | C1+C4 | **SINGLE SOURCE** reversal pattern+exit+trail math (NSE/US/learning) | ✅ CORE | Keep — a model of the target |
+| `reversal_5m.py` | 235 | C1 | Live NSE index reversal (5m/3m) — learning-wired only | ✅ CORE | Keep (learning) |
+| `mcx_base.py` | 268 | C1 | Base for MCX spreads (+ `mcx_live_volume`, config) | ✅ CORE | Keep |
+| `mcx/__init__.py` | 6 | C17 | Package exports | 🧰 SUPPORT | Keep |
+| `mcx/trend_spread.py` | 196 | C1 | MCX trend debit spread | ✅ CORE | Keep (registered) |
+| `mcx/breakout_spread.py` | 202 | C1 | MCX breakout debit spread | ✅ CORE | Keep (registered) |
+| `mcx/rsi_reversal.py` | 99 | C1 | MCX RSI-reversal spread | ✅ CORE | Keep (registered) |
 
-## Root — other
+## Root — engines & orchestration
 
-| File | Purpose |
-|------|---------|
-| `paper_trading.py` | Paper-trading harness (imported by `position_manager`/`learning_engine`; mirrors live trades to a paper wallet). |
+| File | LoC | Component | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|---|
+| `main.py` | 629 | C10 | Master loop: boot brokers/streams, build orchestrator, scheduled jobs | ✅ CORE | Keep — drives everything via orchestrator |
+| `learning_engine.py` | 678 | C10 (+shared C2/C3/C4/C5) | NSE learning book — **risk/order/exit/ledger already shared**; only its scan loop + dashboard read-shims remain private | 🔶 PARTIAL | **The migration template.** Later fold scan into orchestrator, drop read-shims |
+| `commodity_options_learning.py` | 2629 | C1–C5+C10 | MCX engine — **complete private pipeline**: own entry loop, sizing, order path, **exit engine (`_check_exits` = COPPER bug)**, chain-mark P&L | ❌ DIVERGENT | **Worst offender.** Migrate exits→PositionManager first, then sizing→RiskManager, then entry→orchestrator |
+| `us_reversal.py` | 204 | C1+C4+C5+C10 | US reversal engine — private loop; **reuses `reversal_core`+`exit_rules`+`ledger`** | ❌ DIVERGENT | Small; migrate exit loop→PositionManager, entry→orchestrator |
+| `paper_trading.py` | 686 | C5 (parallel) | Old paper wallet — `mirror_learning_*` **dead** (~150 LoC); only `close_order` + Paper-tab stats still wired | 🗑️ DEAD/JUNK | Repoint Paper tab to ledger, remove PM remnant call, delete file |
 
-> Manual backtest/analysis runners moved to `scripts/` (2026-06-21): `run_backtest.py`,
-> `run_full_backtest.py`, `run_analysis.py` — run as `PYTHONPATH=. python scripts/run_backtest.py …`.
-> `validate_edges_v2.py` / `validate_fo_leverage.py` were deleted (stale one-off analyses).
+## `risk/` — the C2 layer (+ misfiled C4/C5)
 
-## `strategies/` — see [STRATEGIES.md](STRATEGIES.md) for full logic
-
-| File | Purpose |
-|------|---------|
-| `strategy_selector.py` | Routes each symbol → strategy by regime; runs intelligence + risk gates; submits orders. |
-| `base_strategy.py` | Base class: data access, Signal/Direction types, logging. |
-| `directional_options.py` | Index single long call/put (TRENDING/BREAKOUT/VOLATILE). |
-| `institutional_momentum.py` | Conviction-driven ATM index options. |
-| `trend_follow.py` / `short_trend.py` | Equity long-breakout / short-breakdown. |
-| `mean_reversion.py` / `momentum_reversal.py` | Range fade / extreme-RSI snap-back. |
-| `gap_fade.py` | Opening-gap fade (9:15–9:45). |
-| `options_income.py` | Short strangle (premium selling). |
-| `iron_condor.py` + `options_strategy_config.py` | Defined-risk condor (**disabled**). |
-| `simple_rsi.py` / `simple_momentum.py` | Learning-lab baselines (paper only). |
-| `reversal_core.py` | **SINGLE SOURCE** for the Reversal pattern + exit + trailing-stop maths (shared by NSE live, US, learning exits, and the archived backtests). |
-| `reversal_5m.py` | Live NSE index Reversal (Reversal5m / Reversal3m) on 5m/3m bars. |
-| `mcx_base.py` | Base class for MCX spread strategies. |
-| `mcx/trend_spread.py` · `mcx/breakout_spread.py` · `mcx/rsi_reversal.py` | MCX commodity-option spreads. |
-
-## `execution/` — broker & order plumbing
-
-| File | Purpose |
-|------|---------|
-| `fyers_broker.py` | Fyers REST wrapper: orders, positions, funds, chain fetch. |
-| `alpaca_broker.py` | Alpaca (US) wrapper — simulation until keyed (Part C). |
-| `options_executor.py` | Option-chain fetch/parse, expiry+strike selection, lot/strike resolution, BS fallback. |
-| `order_manager.py` | Signal → order: risk submit, fills, alerts, position open. |
-| `position_manager.py` | Open-position monitor: stops/targets/trailing, EOD/DTE/time exits. |
-| `exit_rules.py` | **ONE** option-exit decision module — premium SL/target, underlying trail, spot-breach, breakdown (U3; used by learning/US/MCX/production). |
-| `order_router.py` | **ONE** broker-selection + place/cancel entry — Fyers (NSE/MCX) / Alpaca (US) (U5). |
-| `sizing.py` | **ONE** size-to-fit sizer — lots/shares for every asset class (U4). |
-| `ledger.py` | **ONE** trades store: the `ledger` table (+ `segment`) behind read-only compat views `learning_trades`/`commodity_learning_trades`/`us_reversal_trades` (U5-slice-2). |
-| `fees.py` | **ONE** transaction-cost facade over `analysis/cost_model.py` + `config/cost_rates.json` — `round_trip()`/`open_leg()`; every engine + dashboard P&L use it (Stage 1). |
-| `run_context.py` | **ONE** source for run mode — `RunContext` (LIVE/PAPER/LEARNING): `place_real_orders`, `enforce_funds`, `strategy_set`, `risk_budget`; `active_context()`/`is_paper()` (Stage 2–3). |
-| `exit_policy.py` | **ONE** strategy→exit-style map (trend_trail / mean_reversion_target / convex_trail) from `config/strategy_exits.json`; used by both learning + position_manager exits. |
-| `exit_signals.py` | **ONE** structural-exit decision (ATR trail, swing break, trend break, momentum fade, stagnation) on the underlying; config `config/exit_signals.json`; arms only in profit. |
-| `orchestrator.py` | **ONE** `TradingOrchestrator` + per-segment adapters (NSE-main/NSE-learning/MCX/US) — owns the cycle, session gate, error isolation; replaces main.py's 4 run_cycles (U6/V4). |
-
-## `data/` — market data
-
-| File | Purpose |
-|------|---------|
-| `data_store.py` | In-memory OHLCV + LTP store, snapshot persistence. |
-| `fyers_stream.py` | Fyers WebSocket consumer (NSE + MCX). |
-| `alpaca_stream.py` | Alpaca WebSocket consumer (US). |
-
-## `analysis/` — indicators & market analytics
-
-| File | Purpose |
-|------|---------|
-| `indicators.py` | TA indicators (EMA, RSI, ATR, ADX, Bollinger, RVOL, etc.). |
-| `cost_model.py` | **SINGLE SOURCE** for transaction costs (brokerage + STT/CTT + exchange + SEBI + stamp + GST) from `config/cost_rates.json`; wrapped by `execution/fees.py`. |
-| `regime_detector.py` | Market regime classification (**used by trading**). |
-| `regime_engine.py` | Regime analytics for dashboard (consolidation candidate C1). |
-| `options_engine.py` | IV rank / options analytics. |
-| `oi_analyzer.py` | Open-interest analysis (feeds conviction score). |
-| `iv_percentile.py` · `vwap_engine.py` · `opening_range.py` · `breadth_engine.py` | Dashboard analytics panels. |
-| `spread_quality.py` | Option spread liquidity/quality checks (used by MCX engine). |
-| `signal_health.py` | Skip-reason / drought health monitor. |
-| `trade_analytics.py` · `trade_decision_audit.py` | Post-trade analytics + decision audit. |
-| `edge_monitor.py` | Weekly edge-degradation monitor. |
-
-## `intelligence/` — the "AI/context" layer
-
-| File | Purpose |
-|------|---------|
-| `intelligence_engine.py` | Orchestrates the 4 layers; returns approve/reject/resize (now **fail-open**). |
-| `analyst_agent.py` | Claude analyst (configurable; simulation heuristics when AI off). |
-| `macro_data.py` · `news_scraper.py` · `fundamental_guard.py` | Macro snapshot · news · fundamental veto. |
-| `conviction_scorer.py` | Pre-market F&O conviction score (drives InstitutionalMomentum). |
-| `nse_participant_collector.py` | FII participant OI collector. |
-| `premarket_analyzer.py` · `theme_detector.py` · `universe_scanner.py` | Pre-market context, theme/universe scans. |
-
-## `risk/` — capital protection
-
-| File | Purpose |
-|------|---------|
-| `portfolio_tracker.py` | Positions, P&L, paper wallet, stats (DB-backed). |
-| `risk_manager.py` | Kill switch, daily loss limit, portfolio heat. |
-| `options_risk.py` | Options-specific risk gates (allocation, lots, per-trade caps). |
-| `daily_risk_budget.py` | Per-strategy / daily loss budgeting (see B2.1 — sizing fix). |
+| File | LoC | Component | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|---|
+| `portfolio_tracker.py` | 653 | C4+C5 | Position state, live P&L, stats; per-book; holds unified `_compute_pnl_r`. 11 importers — **not MCX/US** | 🔶 PARTIAL | Keep; make MCX/US route through it. Belongs in `execution/`, not `risk/` |
+| `risk_manager.py` | 380 | C2 | Kill switch, daily loss, heat; per-book. **NSE prod+learning only** | 🔶 PARTIAL | Keep as the one gate; migrate MCX/US onto it |
+| `options_risk.py` | 443 | C2 | Options allocation/lots/caps; per-book `OptionsRiskGate`. NSE options | ✅ CORE | Keep; MCX options should gate here too |
+| `daily_risk_budget.py` | 260 | C2 | Per-strategy/daily budget — **MCX-only, parallel to `RiskManager`** | ❌ DIVERGENT | Fold into `RiskManager`, then delete |
 
 ## `config/` — settings & reference data
 
-| File | Purpose |
-|------|---------|
-| `settings.py` | Central env-backed config (all tunables) — incl. `RUN_MODE` (LIVE/PAPER), `LIVE_STRATEGIES`. |
-| `nse_instruments.json` + `scripts/fetch_lot_sizes.py` | F&O lot sizes / strike steps (auto-refreshable). |
-| `watchlist.py` · `learning_watchlist.py` | NSE/US universe · learning-lab universe. |
-| `strategy_config.py` · `strategy_matrix.py` | Per-strategy param overrides · strategy/regime matrix (dashboard). |
-| `strategy_toggles.py` | **ONE** per-strategy on/off source (`strategy_settings` table) — UI `/strategies`; gated at every generation point. |
-| `strategy_exits.json` | Strategy→exit-style map for `execution/exit_policy.py`. |
-| `exit_signals.json` | Structural-exit thresholds for `execution/exit_signals.py`. |
-| `cost_rates.json` | Transaction-cost rates for `analysis/cost_model.py` (edit here — no hard-coded fees). |
-| `market_holidays.py` · `mcx_calendar.py` | NSE holidays · MCX session calendar. |
-| `mcx_engine_settings.py` | MCX engine tunables. |
-| `logging_ist.py` | IST-timestamped logging setup. |
+| File | LoC | Component | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|---|
+| `settings.py` | 329 | C6/C17 | Central env config; `RUN_MODE` **derived** from `PAPER_TRADING`; `LIVE_STRATEGIES`; `BOT_MODE` | 🔶 PARTIAL | Make `RUN_MODE` primary, retire derivation |
+| `strategy_toggles.py` | 97 | C1 cfg | On/off source via `strategy_settings` table | ✅ CORE | Keep — the intended single on/off source |
+| `strategy_config.py` | 328 | C1 cfg | Per-strategy params — **also carries `enabled` flags (dup of toggles)** | 🔶 PARTIAL | Keep params, remove `enabled` flags |
+| `strategy_matrix.py` | 134 | C1/C13 | Strategy×regime matrix (dashboard display) | 🧰 SUPPORT | Keep |
+| `mcx_engine_settings.py` | 369 | C7/C2 | MCX tunables — parallel settings namespace | 🔶 PARTIAL | Keep for now; consolidate long-term |
+| `market_holidays.py` | 386 | C7 | NSE holiday calendar | 🧰 SUPPORT | Keep |
+| `mcx_calendar.py` | 208 | C7 | MCX session calendar | 🧰 SUPPORT | Keep |
+| `watchlist.py` | 116 | C1/C9 | NSE/US universe | 🧰 SUPPORT | Keep |
+| `learning_watchlist.py` | 74 | C1/C9 | Learning-lab universe | 🧰 SUPPORT | Keep |
+| `logging_ist.py` | 76 | C17 | IST logging setup | 🧰 SUPPORT | Keep |
+| `__init__.py` | 0 | C17 | Package init | 🧰 SUPPORT | Keep |
+| `cost_rates.json` | — | C5 | Transaction-cost rates | ✅ CORE | Keep (single fee source) |
+| `exit_signals.json` | — | C4 | Structural-exit thresholds | ✅ CORE | Keep |
+| `strategy_exits.json` | — | C4 | Strategy→exit-style map | ✅ CORE | Keep |
+| `nse_instruments.json` | — | C7 | F&O lot sizes / strike steps | ✅ CORE | Keep |
+| `entry_filters.json` | — | C11 | S/R config — read only by `support_resistance` | 🧰 SUPPORT | Keep; verify still wanted |
 
-## `backtesting/` — validation harness (central to B3)
+## `data/` — C9 market data (fully unified — the model pattern)
 
-| File | Purpose |
-|------|---------|
-| `backtest_engine.py` | Core backtest loop. |
-| `data_fetcher.py` | Historical data for backtests. |
-| `performance.py` | Metrics (win rate, expectancy, drawdown). |
-| `walk_forward.py` | Out-of-sample walk-forward validation (**wire in — C3/B3.2**). |
-| `monte_carlo.py` | Risk-of-ruin / drawdown distribution (**wire in — C3/B3.3**). |
+| File | LoC | Component | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|---|
+| `data_store.py` | 377 | C9 | In-memory OHLCV+LTP store — one store, 33 importers, no parallel store | ✅ CORE | Keep |
+| `fyers_stream.py` | 671 | C8/C9 | Fyers WS (NSE **and** MCX) → `data_store` | ✅ CORE (adapter) | Keep |
+| `alpaca_stream.py` | 244 | C8/C9 | Alpaca WS (US) → `data_store` | ✅ CORE (adapter) | Keep |
+| `__init__.py` | 0 | C17 | Package init | 🧰 SUPPORT | Keep |
 
-## `notifications/`, `api/`, `dashboard/`, `tests/`, `deploy/`
+## `analysis/` — C11 analytics (+ C5/C7 living here)
 
-| Path | Purpose |
-|------|---------|
-| `notifications/alert_service.py` | Telegram/alert dispatch. |
-| `api/dashboard_api.py` | FastAPI backend: serves the UI + API on :8000; loopback-bound, write-auth middleware (X-API-Key on all writes). |
-| `api/segment_readers.py` | Maps a `segment` (nse/mcx/us) → trades/stats/review reader behind the unified `/ledger/*` endpoints (U7). |
-| `dashboard/index.html` | React dashboard UI (served by `dashboard_api` at `/`; API base derived from `window.location`). |
-| `tests/test_pipeline.py` | Pipeline smoke test. |
-| `tests/test_sizing.py` | U4 sizing regression (new == old across a grid). |
-| `deploy/trading-bot.service` | systemd unit. |
-| `scripts/` | Manual runners — `run_backtest.py`, `run_full_backtest.py`, `run_analysis.py`; analysis — `strategy_pnl.py` (epoch-aware strategy ranking); ops/one-offs — `fetch_lot_sizes.py`, `migrate_unified_ledger.py`, `repair_paper_wallet.py`, `resize_open_learning_unified.py`, `seed_test_trades.py` (sandbox seeding `--clean`), `backup_db.sh`. `_archive/` holds one-off dev backtests. |
+| File | LoC | Component | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|---|
+| `indicators.py` | 356 | C11 | TA indicators (26 importers) | ✅ CORE | Keep — one indicator source |
+| `cost_model.py` | 100 | C5 | Transaction costs from `cost_rates.json` | ✅ CORE | Keep |
+| `options_chain.py` | 215 | C7 | **`chain_service` — the ONE chain parser** (NSE + MCX) | ✅ CORE | Keep — U1 win |
+| `regime_detector.py` | 248 | C11 | Regime classification used by **trading** | ✅ CORE | Keep |
+| `options_engine.py` | 292 | C11 | IV rank / options analytics (16 importers) | ✅ CORE | Keep |
+| `regime_engine.py` | 224 | C11 | **Second** regime module — dashboard/`strategy_matrix` only | 🔶 PARTIAL | Verify no logic dup with `regime_detector`; keep only display |
+| `oi_analyzer.py` | 552 | C11 | OI analysis → conviction | 🧰 SUPPORT | Keep |
+| `spread_quality.py` | 231 | C11 | Option-spread liquidity (MCX) | 🧰 SUPPORT | Keep |
+| `signal_health.py` | 296 | C11 | Skip-reason / drought monitor | 🧰 SUPPORT | Keep |
+| `support_resistance.py` | 113 | C11 | S/R levels (reads `entry_filters.json`) | 🧰 SUPPORT | Keep |
+| `trade_analytics.py` | 396 | C11 | Post-trade analytics | 🧰 SUPPORT | Keep |
+| `trade_decision_audit.py` | 323 | C11 | Decision audit trail | 🧰 SUPPORT | Keep |
+| `edge_monitor.py` | 626 | C11 | Weekly edge-degradation monitor | 🧰 SUPPORT | Keep |
+| `iv_percentile.py` | 182 | C11 | IV percentile — dashboard only | 🧰 SUPPORT | Keep |
+| `vwap_engine.py` | 205 | C11 | VWAP — dashboard only | 🧰 SUPPORT | Keep |
+| `opening_range.py` | 249 | C11 | Opening range — dashboard only | 🧰 SUPPORT | Keep |
+| `breadth_engine.py` | 183 | C11 | Market breadth — dashboard only | 🧰 SUPPORT | Keep |
+| `__init__.py` | 0 | C17 | Package init | 🧰 SUPPORT | Keep |
+
+## `intelligence/` — C12 AI/context
+
+| File | LoC | Component | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|---|
+| `intelligence_engine.py` | 200 | C12 | Approve/reject/resize gate (fail-open) — **only NSE production** | 🔶 PARTIAL | Route all books through it (or scope NSE-only consciously) |
+| `conviction_scorer.py` | 496 | C12 | Pre-market F&O conviction → `InstitutionalMomentum` | ✅ CORE | Keep — feeds a strategy |
+| `analyst_agent.py` | 327 | C12 | Claude analyst (sim when AI off) | 🧰 SUPPORT | Keep |
+| `fundamental_guard.py` | 245 | C12 | Fundamental veto — engine + `learning_engine` direct | 🧰 SUPPORT | Keep |
+| `macro_data.py` | 314 | C12 | Macro snapshot (7 consumers) | 🧰 SUPPORT | Keep |
+| `news_scraper.py` | 343 | C12 | News feed | 🧰 SUPPORT | Keep |
+| `nse_participant_collector.py` | 376 | C12 | FII participant OI collector | 🧰 SUPPORT | Keep |
+| `premarket_analyzer.py` | 279 | C12 | Pre-market context | 🧰 SUPPORT | Keep |
+| `theme_detector.py` | 339 | C12 | Sector/theme detection | 🧰 SUPPORT | Keep |
+| `universe_scanner.py` | 427 | C12 | Dynamic universe scans | 🧰 SUPPORT | Keep |
+
+## `api/` + `dashboard/` — C13
+
+| File | LoC | Component | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|---|
+| `segment_readers.py` | 86 | C13 | `segment`→reader adapter behind `/ledger/*` — **the target pattern** | ✅ CORE | Keep — build on this |
+| `dashboard_api.py` | 2497 | C13 | FastAPI backend — **95 endpoints**: unified `/book`+`/ledger` **and** legacy clones `/commodity`×20, `/learning`×3, `/us`×2, `/paper`×2 | 🔶 PARTIAL | Retire duplicate clones; split the monolith by concern |
+| `dashboard/index.html` | — | C13 | React UI (single file) | 🧰 SUPPORT | Keep; audit which endpoints it calls |
+| `api/__init__.py` | 0 | C17 | Package init | 🧰 SUPPORT | Keep |
+
+## Root — reviews & cron agents (C14)
+
+| File | LoC | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|
+| `daily_plan.py` | 863 | Pre-market plan | 🧰 SUPPORT | Keep |
+| `daily_review.py` | 322 | End-of-day review — **reads old `paper_trades` directly** | 🔶 SUPPORT | Repoint to ledger when retiring `paper_trading` |
+| `weekly_review.py` | 325 | Weekly performance review | 🧰 SUPPORT | Keep |
+| `journal_analyser.py` | 930 | Trade-journal analytics | 🧰 SUPPORT | Keep |
+| `portfolio_analyser.py` | 954 | Portfolio analytics | 🧰 SUPPORT | Keep |
+| `nightly_agent.py` | 422 | Nightly watchlist/IV/housekeeping | 🧰 SUPPORT | Keep |
+| `weekly_agent.py` | 369 | Weekly maintenance/analytics | 🧰 SUPPORT | Keep |
+| `system_health.py` | 182 | Health snapshot | 🧰 SUPPORT | Keep |
+
+## Root & `notifications/` — infra (C17)
+
+| File | LoC | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|
+| `watchdog.py` | 364 | Process supervisor (systemd entry) | ✅ CORE (infra) | Keep |
+| `token_manager.py` | 217 | Fyers token lifecycle | ✅ CORE (infra) | Keep |
+| `generate_token.py` | 237 | Fyers auth token generation (cron) | ✅ CORE (infra) | Keep |
+| `audit_log.py` | 342 | Append-only audit trail (7 importers) | ✅ CORE (infra) | Keep |
+| `notifications/alert_service.py` | 344 | Telegram/alert dispatch | 🧰 SUPPORT (infra) | Keep; harden (single-channel/fire-and-forget) |
+
+## `backtesting/` — C15
+
+| File | LoC | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|
+| `backtest_engine.py` | 418 | Core backtest loop | ✅ CORE | Keep |
+| `data_fetcher.py` | 235 | Historical data | ✅ CORE | Keep |
+| `performance.py` | 230 | Metrics | ✅ CORE | Keep |
+| `walk_forward.py` | 242 | Walk-forward (wired into `run_analysis`) | ✅ CORE | Keep |
+| `monte_carlo.py` | 195 | Risk-of-ruin / drawdown | ✅ CORE | Keep |
+
+> `run_full_backtest.py` imports the **real** strategy classes (not re-implementations) — arch-compliant.
+
+## `scripts/` — C16 ops & one-offs
+
+| File | LoC | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|
+| `run_backtest.py` · `run_full_backtest.py` | 135 · 1050 | Backtest runners | 🧰 SUPPORT | Keep |
+| `run_analysis.py` | 224 | Analysis runner (walk-forward + monte-carlo) | 🧰 SUPPORT | Keep |
+| `strategy_pnl.py` | 65 | Epoch-aware strategy ranking | 🧰 SUPPORT | Keep |
+| `fetch_lot_sizes.py` | 97 | Refresh F&O lot sizes | 🧰 SUPPORT | Keep (live ops) |
+| `seed_test_trades.py` | 109 | Sandbox trade seeding (dev) | 🧰 SUPPORT | Keep (dev) |
+| `migrate_unified_ledger.py` | 164 | One-time ledger migration (done) | 🗑️ STALE | Archive/delete |
+| `repair_paper_wallet.py` | 125 | One-time wallet repair | 🗑️ STALE | Delete |
+| `resize_open_learning_unified.py` | 115 | One-time resize — refs dead `mirror_learning_open` | 🗑️ STALE | Delete |
+| `parity_check.py` | 97 | Old-vs-new verification one-off | 🗑️ STALE | Delete (or keep if still run) |
+| `_archive/` (17 files) | ~2900 | Archived one-off backtests — no live imports | 🗑️ JUNK | Delete folder |
+
+## `tests/` — C16
+
+| File | LoC | Purpose | Verdict | Suggestion |
+|---|---|---|---|---|
+| `test_pipeline.py` | 367 | NSE pipeline smoke test | 🔶 SUPPORT | Keep — `options_risk_gate` sub-test fails on a stale fixture; fix it |
+| `test_learning_pipeline.py` | 241 | Slice-6c learning wiring test | ✅ SUPPORT | Keep (passes) |
+| `test_sizing.py` | 139 | U4 sizing regression | ✅ SUPPORT | Keep |
+
+> **Coverage gap:** only NSE is tested. **Zero coverage for MCX, US, exit management, or the
+> dashboard feeds** — the direct cause of recurring COPPER-exit and R-column bugs. Any migration
+> must add tests for the migrated engine.
 
 ---
 
-## Cleanup done (2026-06-23)
+## Rollup — the unification state in one place
 
-- Phase-U + Phase-V unification modules added (see header). FILE_INDEX refreshed.
-- Removed stale git worktree `.claude/worktrees/modest-gauss-007baa` (duplicate checkout).
-- New docs: `UNIFIED_EXECUTION_SPEC.md` (architecture), `REFINEMENT_PLAN.md` (backtest-first edge plan).
-- Trade history reset to a clean post-fix baseline (`app_meta.analysis_epoch`); DB backups in `db/backups/`.
+| Bucket | What | Files |
+|---|---|---|
+| ✅ **Healthy** (shared primitive + adapters) | data store, chain parser, indicators, cost/fees, sizing, ledger, run_context, exit primitives, segment_readers, most strategy classes, all analytics/intelligence/infra | ~90 |
+| 🔶 **Half-migrated** | `position_manager` (NSE-only), `orchestrator`+`strategy_selector` (4 run_cycles), `order_manager`/`order_router` (two order layers), risk stack (NSE-only), dashboard (unified + clones), config toggles (two sources), `run_context` derivation | ~10 |
+| ❌ **Divergent** (per-asset engines) | `commodity_options_learning` (2629 LoC), `us_reversal`, `daily_risk_budget` | 3 |
+| 🗑️ **Delete** | `iron_condor`(+config), `paper_trading` (after repoint), `daily_risk_budget` (after fold), 4 one-off scripts, `scripts/_archive/`, dead `/commodity|learning|us|paper` API clones | ~25 + endpoints |
 
-## Cleanup done (2026-06-21 audit)
-
-- Standalone docs moved into `docs/` (LOGIC, ROADMAP, options_bugs, PLAN, architecture_enhancement_spec).
-- Backtest/analysis runners moved root → `scripts/`; one-off dev backtests → `scripts/_archive/`.
-- Deleted stale one-offs (`validate_edges_v2.py`, `validate_fo_leverage.py`) + local cruft
-  (`fyers*.log`, a stray `.env` copy).
-- Root now holds only live engines, entry points, review/report tools, and `paper_trading.py`.
-
-## Remaining (optional, future — coordinate with server release)
-
-The package layout is clean; the root could be grouped further **without moving server-referenced
-entry points** (`watchdog.py`, `main.py`, `generate_token.py`, `nightly_agent.py`, `weekly_agent.py`
-must stay at root, or systemd/cron paths break):
-
-```
-  core/        learning_engine.py, commodity_options_learning.py, us_reversal.py, token_manager.py, audit_log.py
-  reviews/     daily_plan.py, daily_review.py, weekly_review.py, journal_analyser.py, portfolio_analyser.py, system_health.py
-```
-
-> ⚠️ Moving `core/` modules updates absolute imports across many files; moving `reviews/` changes how
-> they're invoked. A dedicated, fully-verified PR — **not** mixed with functional work — done when
-> server cron paths can be updated in the same release. (Tracked as PROJECT_PLAN A5.4.)
+**The thesis, proven by the audit:** every layer built as **"one shared thing + adapters"**
+(`data`, `chain`, `fees`, `sizing`, `ledger`) is healthy. Every layer built as **"one engine per
+asset class"** (entry loop, exits, risk gate, P&L) is the divergent one. `learning_engine` proves
+the fix works — it already runs NSE learning through the shared engine. The remaining work is to
+give **MCX and US the same treatment**, then delete the parallel machinery they leave behind.
