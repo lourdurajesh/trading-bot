@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-from config.settings import DB_PATH, TOTAL_CAPITAL
+from config.settings import DB_PATH, TOTAL_CAPITAL, PAPER_TRADING
 from data.data_store import store
 from execution import fees as txn_fees  # single source for transaction costs
 
@@ -339,6 +339,13 @@ class PortfolioTracker:
         avg_loser  = abs(sum(p.realised_pnl for p in losers) / len(losers)) if losers else 1
         avg_rr     = avg_winner / avg_loser if avg_loser > 0 else 0
 
+        # Profit factor + capital deployed (single source for the paper/portfolio view —
+        # retires the standalone paper_trading wallet, Phase 6)
+        gross_profit     = sum(p.realised_pnl for p in winners)
+        gross_loss       = abs(sum(p.realised_pnl for p in losers))
+        profit_factor    = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 0.0
+        capital_deployed = round(sum((p.get("capital_at_risk", 0) or 0) for p in open_pos), 2)
+
         # Drawdown
         portfolio_value = TOTAL_CAPITAL + total_realised + total_unrealised
         self._peak_value = max(self._peak_value, portfolio_value)
@@ -358,6 +365,13 @@ class PortfolioTracker:
             "drawdown_pct":        round(drawdown_pct, 2),
             "peak_value":          round(self._peak_value, 2),
             "open_positions":      open_pos,
+            # Paper/portfolio view (one ledger-backed source — retires paper_trading_engine, Phase 6)
+            "mode":                "PAPER" if PAPER_TRADING else "LIVE",
+            "profit_factor":       profit_factor,
+            "avg_winner":          round(avg_winner, 2),
+            "avg_loser":           round(avg_loser if losers else 0, 2),
+            "capital_deployed":    capital_deployed,
+            "balance_pct":         round(portfolio_value / TOTAL_CAPITAL * 100, 1),
         }
 
     def force_close(self, symbol: str, reason: str = "MANUAL_CLOSE") -> bool:

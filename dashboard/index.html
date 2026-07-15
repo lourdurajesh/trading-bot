@@ -2175,8 +2175,6 @@ function App() {
   const [services, setServices]       = React.useState(null);
   const [backtest, setBacktest]       = React.useState(null);
   const [btStrat, setBtStrat]         = React.useState(null);
-  const [paperStats, setPaperStats]   = React.useState(null);
-  const [paperPos, setPaperPos]       = React.useState([]);
   const [bookTrades, setBookTrades]   = React.useState([]);   // unified trade history (all books)
 
   /* system alerts */
@@ -2266,11 +2264,8 @@ function App() {
         setBacktest(d);
         if (d.strategies) setBtStrat(Object.keys(d.strategies)[0]);
       }).catch(()=>{});
-    const loadPaper = () => {
-      fetch(`${API}/paper/stats`).then(r=>r.json()).then(setPaperStats).catch(()=>{});
-      fetch(`${API}/paper/positions`).then(r=>r.json()).then(setPaperPos).catch(()=>{});
+    const loadBook = () =>
       fetch(`${API}/book/trades?limit=300`).then(r=>r.json()).then(d=>{if(d.trades)setBookTrades(d.trades);}).catch(()=>{});
-    };
     const loadDrought = () =>
       fetch(`${API}/signals/drought`).then(r=>r.json()).then(setDrought).catch(()=>{});
     const loadComm = () => {
@@ -2286,11 +2281,11 @@ function App() {
     const loadForceStatus = () =>
       fetch(`${API}/conviction/force/status`).then(r=>r.json()).then(setForceStatus).catch(()=>{});
 
-    loadServices(); loadBacktest(); loadPaper(); loadDrought(); loadComm(); loadConfig(); loadMcxConfig(); loadForceStatus();
+    loadServices(); loadBacktest(); loadBook(); loadDrought(); loadComm(); loadConfig(); loadMcxConfig(); loadForceStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
 
     const t1 = setInterval(loadServices,   15000);
-    const t2 = setInterval(loadPaper,       5000);
+    const t2 = setInterval(loadBook,        5000);
     const t3 = setInterval(loadDrought,    60000);
     const t5 = setInterval(loadComm,       60000);
     const t6 = setInterval(loadMcxConfig,  30000);  // refresh cooldown status every 30s
@@ -2337,14 +2332,14 @@ function App() {
   const pnl    = stats?.total_pnl || 0;
   const pnlPct = stats?.total_pnl_pct || 0;
   const heat   = (positions||[]).reduce((s,p)=>s+(p.capital_at_risk||0),0) / ((stats?.total_capital||1)) * 100;
-  const isPaper = mode === "AUTO" && paperStats?.mode === "PAPER";
+  const isPaper = stats?.mode === "PAPER";
 
-  /* when paper mode is active, show paper wallet figures on the Trading tab */
-  const displayPortVal = isPaper ? ((paperStats?.available_balance||0)+(paperStats?.capital_deployed||0)) : (stats?.portfolio_value||0);
-  const displayPnl     = isPaper ? (paperStats?.total_pnl||0) : pnl;
-  const displayPnlPct  = isPaper ? (paperStats?.total_pnl_pct||0) : pnlPct;
-  const displayWinRate = isPaper ? (paperStats?.win_rate||0) : (stats?.win_rate||0);
-  const displayDdPct   = isPaper ? (100-(paperStats?.balance_pct||100)) : (stats?.drawdown_pct||0);
+  /* Paper mode: the production book IS the paper book (PAPER_TRADING) — one ledger-backed source. */
+  const displayPortVal = stats?.portfolio_value||0;
+  const displayPnl     = pnl;
+  const displayPnlPct  = pnlPct;
+  const displayWinRate = stats?.win_rate||0;
+  const displayDdPct   = stats?.drawdown_pct||0;
 
   const logColor = line => {
     if (line.includes("CRITICAL") || line.includes("ERROR")) return "error";
@@ -2618,52 +2613,52 @@ function App() {
           <div className="paper-banner">
             📝 Paper wallet — started at ₹5L, compounds at 1% risk/trade across all learning mirrors. Balance reflects cumulative growth, not a fixed corpus. Not your live portfolio.
           </div>
-          {paperStats ? (
+          {stats ? (
             <div>
               {/* Wallet row — most important number first */}
               <div className="grid4" style={{marginBottom:10}}>
                 <div className="metric">
                   <div className="lbl">Wallet balance</div>
-                  <div className={`val ${(paperStats.total_pnl||0)>=0?"up":"down"}`}>
-                    ₹{fmt(paperStats.available_balance||0)}
+                  <div className={`val ${(stats.total_pnl||0)>=0?"up":"down"}`}>
+                    ₹{fmt(stats.portfolio_value||0)}
                   </div>
                 </div>
                 <div className="metric">
                   <div className="lbl">Starting capital</div>
-                  <div className="val neutral">₹{fmt(paperStats.starting_capital||500000)}</div>
+                  <div className="val neutral">₹{fmt(stats.total_capital||500000)}</div>
                 </div>
                 <div className="metric">
                   <div className="lbl">Capital deployed</div>
-                  <div className="val amber">₹{fmt(paperStats.capital_deployed||0)}</div>
+                  <div className="val amber">₹{fmt(stats.capital_deployed||0)}</div>
                 </div>
                 <div className="metric">
                   <div className="lbl">Wallet %</div>
-                  <div className={`val ${(paperStats.balance_pct||100)>=100?"up":(paperStats.balance_pct||100)>=70?"neutral":"down"}`}>
-                    {paperStats.balance_pct||100}%
+                  <div className={`val ${(stats.balance_pct||100)>=100?"up":(stats.balance_pct||100)>=70?"neutral":"down"}`}>
+                    {stats.balance_pct||100}%
                   </div>
                 </div>
               </div>
               <div className="grid4" style={{marginBottom:16}}>
                 <div className="metric"><div className="lbl">Total P&L</div>
-                  <div className={`val ${(paperStats.total_pnl||0)>=0?"up":"down"}`}>
-                    {(paperStats.total_pnl||0)>=0?"+":""}₹{fmt(paperStats.total_pnl||0)}
+                  <div className={`val ${(stats.total_pnl||0)>=0?"up":"down"}`}>
+                    {(stats.total_pnl||0)>=0?"+":""}₹{fmt(stats.total_pnl||0)}
                   </div></div>
                 <div className="metric"><div className="lbl">Win rate</div>
-                  <div className={`val ${(paperStats.win_rate||0)>=50?"up":"down"}`}>{paperStats.win_rate||0}%</div></div>
+                  <div className={`val ${(stats.win_rate||0)>=50?"up":"down"}`}>{stats.win_rate||0}%</div></div>
                 <div className="metric"><div className="lbl">Profit factor</div>
-                  <div className={`val ${(paperStats.profit_factor||0)>=1.5?"up":(paperStats.profit_factor||0)>=1?"neutral":"down"}`}>{paperStats.profit_factor||0}</div></div>
+                  <div className={`val ${(stats.profit_factor||0)>=1.5?"up":(stats.profit_factor||0)>=1?"neutral":"down"}`}>{stats.profit_factor||0}</div></div>
                 <div className="metric"><div className="lbl">Total trades</div>
-                  <div className="val neutral">{paperStats.total_trades||0}</div></div>
+                  <div className="val neutral">{stats.total_trades||0}</div></div>
               </div>
               <div className="grid2">
                 <div className="card">
                   <h2>Performance</h2>
-                  {[["Realised P&L",`₹${fmt(paperStats.total_realised)}`,(paperStats.total_realised||0)>=0?"up":"down"],
-                    ["Unrealised P&L",`₹${fmt(paperStats.total_unrealised)}`,(paperStats.total_unrealised||0)>=0?"up":"down"],
-                    ["Return on ₹5L",`${paperStats.total_pnl_pct||0}%`,(paperStats.total_pnl_pct||0)>=0?"up":"down"],
-                    ["Avg winner",`₹${fmt(paperStats.avg_winner)}`,"up"],
-                    ["Avg loser",`₹${fmt(paperStats.avg_loser)}`,"down"],
-                    ["Open positions",paperStats.open_positions||0,"neutral"],
+                  {[["Realised P&L",`₹${fmt(stats.total_realised_pnl)}`,(stats.total_realised_pnl||0)>=0?"up":"down"],
+                    ["Unrealised P&L",`₹${fmt(stats.total_unrealised_pnl)}`,(stats.total_unrealised_pnl||0)>=0?"up":"down"],
+                    ["Return on ₹5L",`${stats.total_pnl_pct||0}%`,(stats.total_pnl_pct||0)>=0?"up":"down"],
+                    ["Avg winner",`₹${fmt(stats.avg_winner)}`,"up"],
+                    ["Avg loser",`₹${fmt(stats.avg_loser)}`,"down"],
+                    ["Open positions",stats.open_positions_count||0,"neutral"],
                   ].map(([lbl,val,cls])=>(
                     <div key={lbl} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid #111827",fontSize:12}}>
                       <span style={{color:"#94a3b8"}}>{lbl}</span>

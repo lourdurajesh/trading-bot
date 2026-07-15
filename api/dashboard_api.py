@@ -566,38 +566,10 @@ def book_trades(limit: int = 300, status: str = None):
     return _collect_book_trades(limit=limit, status=status)
 
 
-@app.get("/paper/stats")
-def get_paper_stats():
-    try:
-        from paper_trading import paper_trading_engine
-        return paper_trading_engine.get_paper_stats()
-    except Exception as e:
-        return {"error": str(e)}
+# Paper stats/positions retired (Phase 6): the paper book IS the production book
+# under PAPER_TRADING, so /stats (portfolio_tracker) and /positions are the one
+# ledger-backed source. The old paper_trading ₹5L wallet is deleted.
 
-@app.get("/paper/positions")
-def get_paper_positions():
-    try:
-        from paper_trading import paper_trading_engine
-        return paper_trading_engine.get_paper_positions()
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/us/stats")
-def us_stats():
-    """US index-ETF (SPY/QQQ) Reversal paper stats — shim over /ledger/stats?segment=us."""
-    return ledger_stats(segment="us")
-
-
-@app.get("/us/trades")
-def us_trades(status: str = None, limit: int = 200):
-    """US Reversal paper trades — shim over /ledger/trades?segment=us."""
-    return ledger_trades(segment="us", status=status, limit=limit)
-
-
-# ─────────────────────────────────────────────────────────────────
-# LEARNING PAPER TRADES
-# ─────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────
 # UNIFIED LEDGER VIEW (U7) — one trades/stats/review endpoint for every
@@ -648,42 +620,10 @@ def ledger_review(segment: str = "nse", strategy: str = None):
         return {"error": str(e), "segment": segment}
 
 
-# ── Per-category shims (delegate to the unified adapter; retire at U7-slice-2) ──
-
-@app.get("/learning/trades")
-def learning_trades(status: str = None, limit: int = 200):
-    """NSE learning paper trades — shim over /ledger/trades?segment=nse."""
-    return ledger_trades(segment="nse", status=status, limit=limit)
-
-
-@app.get("/learning/stats")
-def learning_stats():
-    """NSE learning aggregate stats — shim over /ledger/stats?segment=nse."""
-    return ledger_stats(segment="nse")
-
-
-@app.get("/learning/review")
-def learning_review(strategy: str = None):
-    """NSE learning review buckets — shim over /ledger/review?segment=nse."""
-    return ledger_review(segment="nse", strategy=strategy)
-
-
 # ─────────────────────────────────────────────────────────────────
-# COMMODITY OPTIONS LEARNING (MCX paper trades — standalone engine)
+# COMMODITY OPTIONS (MCX-specific: chain, instruments, config — NOT clones;
+# MCX trades/stats are served by the unified /ledger/*?segment=mcx above)
 # ─────────────────────────────────────────────────────────────────
-
-@app.get("/commodity/trades")
-def commodity_trades(status: str = None, symbol: str = None, limit: int = 200):
-    """MCX commodity options paper trades — shim over /ledger/trades?segment=mcx.
-    ?status=OPEN|CLOSED ?symbol=CRUDEOIL (partial match) ?limit=N."""
-    return ledger_trades(segment="mcx", status=status, limit=limit, symbol=symbol)
-
-
-@app.get("/commodity/stats")
-def commodity_stats():
-    """MCX commodity options aggregate stats — shim over /ledger/stats?segment=mcx."""
-    return ledger_stats(segment="mcx")
-
 
 @app.get("/commodity/chain/{symbol:path}")
 def commodity_chain(symbol: str):
@@ -2374,19 +2314,6 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
     except Exception:
         pass
 
-    # Paper wallet balance (only when paper trading is active)
-    paper_wallet = None
-    try:
-        from paper_trading import paper_trading_engine
-        if paper_trading_engine.is_active():
-            from config.settings import TOTAL_CAPITAL
-            paper_wallet = {
-                "balance":      paper_trading_engine.get_balance(),
-                "is_exhausted": paper_trading_engine.is_capital_exhausted(),
-                "starting":     TOTAL_CAPITAL,
-            }
-    except Exception:
-        pass
 
     # System health alerts — any component failures needing attention.
     # Surfaced here so the frontend can show a persistent banner/badge
@@ -2490,7 +2417,6 @@ def _build_live_payload(conn_learning_hash: str = "") -> tuple[dict, str]:
         "learning_ltps":   learning_ltps,
         "commodity_ltps":  commodity_ltps,
         "mcx_session":     mcx_session,
-        "paper_wallet":    paper_wallet,
         "system_alerts":   system_alerts,
         "alert_summary":   alert_summary,   # {count, has_critical, has_error} for badge/banner
         "token_status":    token_status,

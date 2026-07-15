@@ -655,18 +655,11 @@ class PositionManager(Evaluator):
         exit_price = exit_ltp if exit_ltp and exit_ltp > 0 else pos.entry_price
 
         if self._book == "LEARNING":
-            # Same reasoning as _exit_position: no real order, no paper_trading_engine
-            # call (separate symbol-keyed wallet mirror, owned by learning_engine).
             order_id = "LEARNING-EXIT"
         elif PAPER_TRADING:
-            from paper_trading import paper_trading_engine
-            paper_trading_engine.close_order(
-                symbol     = symbol,
-                qty        = size,
-                direction  = pos.direction,
-                reason     = reason,
-                exit_price = exit_price,   # option premium, not index spot
-            )
+            # Paper mode: the ledger close below (close_position_by_id) IS the record of
+            # the exit. Exit price was resolved above. No separate wallet to update since
+            # paper_trading was retired (Phase 6) — exits no longer gate on it.
             order_id = "PAPER-OPT-EXIT"
         else:
             order_id = self._place_options_exit_orders(pos, size, options_meta)
@@ -737,21 +730,12 @@ class PositionManager(Evaluator):
         logger.info(f"[PositionManager] EXITING {symbol} × {size} @ {price:.2f} — {reason}")
 
         if self._book == "LEARNING":
-            # No real order, and no paper_trading_engine call — that engine's
-            # ₹5L wallet mirror is a SEPARATE bookkeeping system keyed by its own
-            # trade-id (learning_engine's mirror_learning_open/close); calling
-            # close_order() here by SYMBOL could match and corrupt the wrong row.
             order_id = "LEARNING-EXIT"
         elif PAPER_TRADING:
-            # Paper mode — simulate exit via paper trading engine
-            from paper_trading import paper_trading_engine
-            paper_trading_engine.close_order(
-                symbol    = symbol,
-                qty       = size,
-                direction = pos.direction,
-                reason    = reason,
-            )
-            order_id = f"PAPER-EXIT"
+            # Paper mode — the ledger close below (close_position_by_id) IS the record
+            # of the exit. paper_trading wallet retired (Phase 6); exits no longer gate
+            # on a parallel wallet (which could fail the exit if its LTP lookup missed).
+            order_id = "PAPER-EXIT"
         else:
             from execution.order_router import order_router
             exit_direction = "SHORT" if pos.direction == "LONG" else "LONG"
@@ -800,13 +784,9 @@ class PositionManager(Evaluator):
         logger.info(f"[PositionManager] PARTIAL EXIT {symbol} × {size} @ {price:.2f}")
 
         if PAPER_TRADING:
-            from paper_trading import paper_trading_engine
-            order_id = paper_trading_engine.close_order(
-                symbol    = symbol,
-                qty       = size,
-                direction = pos.direction,
-                reason    = f"PARTIAL_{reason}",
-            )
+            # Paper mode — partial exit recorded in the ledger; no parallel wallet
+            # (paper_trading retired, Phase 6).
+            order_id = "PAPER-PARTIAL-EXIT"
         else:
             from execution.order_router import order_router
             exit_direction = "SHORT" if pos.direction == "LONG" else "LONG"

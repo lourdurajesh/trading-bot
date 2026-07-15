@@ -269,7 +269,7 @@ def test_directional_options_strategy():
 def test_full_pipeline():
     """
     End-to-end: strategy_selector.run_cycle() with mocked intelligence + options executor.
-    Verifies the full path from evaluation to paper_trading_engine.
+    Verifies the full path from evaluation through the order manager (paper ledger record).
     """
     logger.info("\n── Test: full pipeline (strategy → intelligence → order → paper trade) ──")
 
@@ -296,31 +296,20 @@ def test_full_pipeline():
     mock_intel.summary     = "Strong bearish setup"
     mock_intel.size_factor = 1.0
 
-    # Mock: paper trading engine — place_order(signal) signature
-    paper_orders = []
-    def mock_place_paper(signal):
-        paper_orders.append({"symbol": signal.symbol, "direction": signal.direction.value,
-                              "qty": signal.position_size, "entry": signal.entry})
-        return f"PAPER-{len(paper_orders):04d}"
-
     with (
         patch("analysis.regime_detector.regime_detector.get_regime", return_value=mock_regime),
         patch("execution.options_executor.options_executor.get_best_option", return_value=mock_opt),
         patch("intelligence.intelligence_engine.intelligence_engine.evaluate", return_value=mock_intel),
-        patch("paper_trading.paper_trading_engine.place_order", side_effect=mock_place_paper),
     ):
         selector = StrategySelector()
         submitted = selector.run_cycle()
 
     logger.info(f"  Signals submitted: {len(submitted)}")
-    logger.info(f"  Paper orders placed: {len(paper_orders)}")
     for s in submitted:
         logger.info(f"    {s.symbol} | {s.strategy} | {s.direction.value} | entry={s.entry}")
-    for o in paper_orders:
-        logger.info(f"    Paper order: {o}")
 
     logger.info("  PASS — pipeline ran without errors")
-    return len(submitted), len(paper_orders)
+    return len(submitted)
 
 
 # ─────────────────────────────────────────────────────────────────
