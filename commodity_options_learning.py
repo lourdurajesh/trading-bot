@@ -1855,6 +1855,29 @@ class CommodityOptionsLearning:
                             f"(gap={_gap_now:.1f}% >= {_gap_thresh:.1f}%)"
                         )
 
+            # ── Structural / reversal exit (shared single source — the SAME rule NSE uses) ──
+            # Close a reversing/stalling trade BEFORE it round-trips to the spot stop, via
+            # execution/exit_signals.structural_exit on the underlying future's OHLCV
+            # (ATR trail / swing break / trend break / momentum fade / stagnation). It
+            # self-gates to arm only once in profit, so a fresh entry is never choked — it
+            # protects an open gain, complementing the profit-lock. This gives MCX the same
+            # "trend reversed → exit" protection NSE has. (MCX still runs its own exit loop —
+            # Phase-U debt — but now shares the exit RULE, not a re-implementation.)
+            if exit_reason is None:
+                try:
+                    from execution.exit_signals import structural_exit, config as _xs_cfg
+                    _sx_tf = _xs_cfg().get("timeframe", "5m")
+                    _sx = structural_exit(store.get_ohlcv(stored_sym, _sx_tf), direction, entry_spot)
+                    if _sx:
+                        exit_reason = _sx
+                        pnl_approx  = round(est_pnl, 2)
+                        logger.info(
+                            f"[CommOpts] {instrument} structural exit {_sx} — "
+                            f"spot {spot:.2f} (entry {entry_spot:.2f}, {direction})"
+                        )
+                except Exception as _sxe:
+                    logger.debug(f"[CommOpts] {instrument} structural_exit error: {_sxe}")
+
             # ── Spot-based SL (shared spot_breached predicate) ──────────────────
             if exit_reason is None:
                 from execution.exit_rules import spot_breached
